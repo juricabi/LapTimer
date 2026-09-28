@@ -4,8 +4,9 @@ Usage:
   python tools/boot_log.py <port> [seconds] [--reset]
   e.g. python tools/boot_log.py COM3 20 --reset
 
-Opening the port does not restart the board (DTR/RTS held low); --reset pulses RTS
-to restart it and capture the boot. Needs pyserial (included in PlatformIO's Python).
+--reset pulses RTS to restart the board and capture the boot. Without it the lines are held
+low, but opening the port can still restart the board with some USB drivers (the owner's
+CH340 on Windows does): expect a restart either way. Needs pyserial (PlatformIO's Python).
 """
 import sys, time
 
