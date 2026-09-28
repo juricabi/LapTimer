@@ -8,7 +8,7 @@
 #include "kalman.h"
 #include "led.h"
 
-#define MAX_LAPS 100              // stored per pilot per race (entry 0 is the start pass)
+#define MAX_LAPS 200              // stored per pilot per race (entry 0 is the start pass); a full pilot finishes
 #define RSSI_HISTORY 240          // per pilot, one value per RSSI_HISTORY_STEP_MS (6 s)
 #define RSSI_HISTORY_STEP_MS 25
 #define PEAK_TOLERANCE 2          // RSSI units below the peak that still count as "at the peak"
@@ -22,10 +22,13 @@
 // tune, wait RX_LOCK_MS, then average the RSSI for HOP_DWELL_MS. One value per pilot every
 // (RX_LOCK_MS + HOP_DWELL_MS) x pilots; the pass time is refined with a 3-point peak fit.
 #define HOP_DWELL_MS 5
-// With several pilots, a pass only counts while this pilot's RSSI beats the others'
-// by this much (a close drone can bleed into the other channels)
-#define DOMINANCE_DELTA 10
-#define MAX_PASS_MS 3000          // above the enter threshold longer than this = hovering, ignore
+// With several pilots, a pass doesn't count while another pilot's RSSI is more than this
+// above it: a close drone bleeds into the other channels, but weaker than on its own.
+// Pilots crossing together (similar RSSI) both count.
+#define BLEED_DELTA 20
+// Still above exit this long after the peak: landed or hovering near the timer. A racing
+// pilot's pass is counted at the peak; before the pilot's first pass the old peak is dropped.
+#define PEAK_TIMEOUT_MS 3000
 
 // Spectrum scan: RSSI across the 5.8 GHz band to spot channels already in use
 #define SPECTRUM_START_MHZ 5645
@@ -64,7 +67,7 @@ struct PilotState {
 
     // pass detection
     bool inPass;
-    bool hoverBlocked;           // held above enter too long: ignore until RSSI drops below exit
+    bool hoverBlocked;           // pass counted at a timeout: ignore until RSSI drops below exit
     uint32_t passStartMs;
     uint8_t peak;
     uint32_t peakFirstMs;
@@ -85,6 +88,7 @@ struct PilotState {
     uint32_t laps[MAX_LAPS];     // [0] = start pass (ms after race start), [n] = lap n time
     volatile int lapCount;       // number of entries in laps[]
     volatile bool finished;
+    bool full;                   // laps[] full: finished early
 
     uint8_t history[RSSI_HISTORY];
 };
@@ -128,8 +132,9 @@ class LapTimer {
     // The current/last race as JSON (shared by /api/race and the race history)
     void raceToJson(JsonObject out);
 
-    // Lap correction on the current/last race (only while no race is running)
-    bool editLaps(uint8_t pilot, uint8_t op, int index);
+    // Lap correction on the current/last race (only while no race is running). Queued like
+    // the race commands; editCount changes once it is applied. False if one is still queued.
+    bool requestEdit(uint8_t pilot, uint8_t op, int index);
 
     // Spectrum scan (not during a race)
     bool requestSpectrum();
@@ -168,6 +173,9 @@ class LapTimer {
     uint8_t pilotCount = 1;
     uint16_t raceFreq[MAX_PILOTS] = {0, 0};
     char raceNames[MAX_PILOTS][21];   // names at race start (renaming later doesn't relabel the race)
+    uint8_t raceEnter[MAX_PILOTS];    // thresholds at race start, used if the slot's channel changes
+    uint8_t raceExit[MAX_PILOTS];
+    uint32_t raceMinLapMs = 0;
     volatile uint16_t editCount = 0;  // lap corrections since the race started
     volatile uint32_t raceStartMs = 0;
     uint32_t startEpochSec = 0;
@@ -177,6 +185,7 @@ class LapTimer {
 
     // receiver scheduling
     uint8_t activePilot = 0;
+    bool settling = false;       // one pilot: waiting for the receiver to lock
     uint32_t settleUntilMs = 0;
     uint32_t slotEndMs = 0;
     uint16_t slotFreq = 0;       // frequency tuned for the current hop slot
@@ -218,9 +227,14 @@ class LapTimer {
     void stop();
     void clear();
     void runPendingCommand();
+    void runPendingEdit();
     uint8_t nextActivePilot(uint8_t from, uint8_t count, bool racing);
 
     enum { CMD_NONE, CMD_START, CMD_STOP, CMD_CLEAR };
     volatile uint8_t pendingCommand = CMD_NONE;
     volatile uint32_t pendingEpoch = 0;
+    volatile bool editPending = false;
+    uint8_t editPilot = 0;
+    uint8_t editOp = 0;
+    int editIndex = 0;
 };

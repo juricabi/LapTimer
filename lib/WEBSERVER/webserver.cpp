@@ -89,17 +89,15 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
         }
         if (best < 0)
         {
-            DEBUG("No saved WiFi network in range\n");
-            changeMode = WIFI_AP;
-            changeTimeMs = currentTimeMs - WIFI_RECONNECT_TIMEOUT_MS - 1; // switch right away
-            wifiMode = WIFI_OFF;
+            // Not seen by name: it may be hidden, or still starting up (a phone hotspot
+            // switched on with the timer). Try the newest one anyway; the connection
+            // timeout falls back to the hotspot.
+            DEBUG("No saved WiFi network seen, trying the newest one\n");
+            best = 0;
         }
-        else
-        {
-            DEBUG("Joining WiFi %s\n", wifiList->ssid(best));
-            WiFi.begin(wifiList->ssid(best), wifiList->password(best));
-            changeTimeMs = currentTimeMs;
-        }
+        DEBUG("Joining WiFi %s\n", wifiList->ssid(best));
+        WiFi.begin(wifiList->ssid(best), wifiList->password(best));
+        changeTimeMs = currentTimeMs;
     }
 
     wl_status_t status = WiFi.status();
@@ -193,6 +191,12 @@ static void handleRoot(AsyncWebServerRequest *request)
 {
     // always fresh, so it points to the current ?v= of style.css / script.js
     AsyncWebServerResponse *response = request->beginResponse(LittleFS, "/index.html", "text/html");
+    if (!response)
+    {
+        // web files missing (only the firmware was flashed, or the file system is damaged)
+        request->send(500, "text/plain", "LapTimer: the web files are missing. Upload littlefs.bin (see README).");
+        return;
+    }
     response->addHeader("Cache-Control", "no-cache");
     request->send(response);
 }
@@ -318,21 +322,24 @@ Battery Voltage:\t%0.1fv";
 
     server.on("/config", HTTP_GET, [this](AsyncWebServerRequest *request)
               {
-        AsyncResponseStream *response = request->beginResponseStream("application/json");
-        conf->toJson(*response);
-        request->send(response);
+        String body;
+        conf->toJson(body);
+        request->send(200, "application/json", body);
         led->on(200); });
 
     AsyncCallbackJsonWebHandler *configJsonHandler = new AsyncCallbackJsonWebHandler("/config", [this](AsyncWebServerRequest *request, JsonVariant &json)
                                                                                      {
         JsonObject jsonObj = json.as<JsonObject>();
+        // base = revision before this change: if the page's known revision differs,
+        // another device changed settings in between and the page reloads them
+        uint32_t base = conf->getRevision();
         conf->fromJson(jsonObj);
         // Older pages send the home WiFi with the settings: keep it in the saved networks
         const char *ssid = jsonObj["ssid"] | "";
         if (ssid[0] != 0 && strcmp(ssid, "undefined") != 0)
             wifiList->add(ssid, jsonObj["pwd"] | "");
-        char reply[48];
-        snprintf(reply, sizeof(reply), "{\"status\":\"OK\",\"rev\":%u}", conf->getRevision());
+        char reply[64];
+        snprintf(reply, sizeof(reply), "{\"status\":\"OK\",\"base\":%u,\"rev\":%u}", base, conf->getRevision());
         request->send(200, "application/json", reply);
         led->on(200); });
 

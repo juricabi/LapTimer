@@ -75,6 +75,8 @@ void LapTimer::raceToJson(JsonObject out)
         p["name"] = raceNames[i];
         p["freq"] = raceFreq[i];
         p["fin"] = pilots[i].finished;
+        if (pilots[i].full)
+            p["full"] = true;
         JsonArray laps = p["laps"].to<JsonArray>();
         int count = pilots[i].lapCount; // read once: laps below this index are complete
         for (int l = 0; l < count; l++)
@@ -92,6 +94,7 @@ void LapTimer::resetPilot(PilotState &p)
     p.lastPassMs = 0;
     p.lapCount = 0;
     p.finished = false;
+    p.full = false;
     memset(p.laps, 0, sizeof(p.laps));
 }
 
@@ -123,6 +126,7 @@ void LapTimer::start(uint32_t epochSec)
     staggered = conf->getStaggered();
     raceMs = conf->getRaceMs();
     raceLaps = conf->getRaceLaps();
+    raceMinLapMs = conf->getMinLapMs();
     startEpochSec = epochSec;
     editCount = 0;
     for (uint8_t i = 0; i < MAX_PILOTS; i++)
@@ -134,6 +138,8 @@ void LapTimer::start(uint32_t epochSec)
     for (uint8_t i = 0; i < MAX_PILOTS; i++)
     {
         raceFreq[i] = conf->getFrequency(i);
+        raceEnter[i] = conf->getEnterRssi(i);
+        raceExit[i] = conf->getExitRssi(i);
         resetPilot(pilots[i]);
     }
     timeUp = false;
@@ -247,17 +253,32 @@ void LapTimer::runPendingCommand()
     }
 }
 
-bool LapTimer::editLaps(uint8_t pilot, uint8_t op, int index)
+bool LapTimer::requestEdit(uint8_t pilot, uint8_t op, int index)
 {
-    if (isRacing() || savePending || pilot >= pilotCount)
+    if (editPending)
         return false;
-    PilotState &p = pilots[pilot];
-    int count = p.lapCount;
-    bool ok = applyLapEdit(p.laps, count, MAX_LAPS, op, index);
-    p.lapCount = count;
-    if (ok)
-        editCount++;
-    return ok;
+    editPilot = pilot;
+    editOp = op;
+    editIndex = index;
+    editPending = true;
+    return true;
+}
+
+void LapTimer::runPendingEdit()
+{
+    if (!editPending)
+        return;
+    if (!isRacing() && !savePending && editPilot < pilotCount)
+    {
+        PilotState &p = pilots[editPilot];
+        int count = p.lapCount;
+        if (applyLapEdit(p.laps, count, MAX_LAPS, editOp, editIndex))
+        {
+            p.lapCount = count;
+            editCount++;
+        }
+    }
+    editPending = false;
 }
 
 bool LapTimer::requestStepTest(uint16_t fromMhz, uint16_t toMhz)
@@ -340,6 +361,7 @@ void LapTimer::spectrumStep(uint32_t nowMs)
 void LapTimer::update(uint32_t nowMs)
 {
     runPendingCommand();
+    runPendingEdit();
     if (spectrumRequested && isRacing())
     {
         spectrumRequested = false; // a race started meanwhile: the race wins
@@ -391,9 +413,16 @@ void LapTimer::scan(uint32_t nowMs)
         {
             rx->setFrequency(freq);
             settleUntilMs = nowMs + RX_LOCK_MS;
+            settling = true;
         }
-        if (freq == POWER_DOWN_FREQ_MHZ || (int32_t)(nowMs - settleUntilMs) < 0)
-            return; // receiver off or not locked yet
+        if (settling)
+        {
+            if ((int32_t)(nowMs - settleUntilMs) < 0)
+                return; // not locked yet
+            settling = false;
+        }
+        if (freq == POWER_DOWN_FREQ_MHZ)
+            return; // receiver off
         sample(0, round(pilots[0].filter.filter(rx->readRssiRaw(), 0)), nowMs);
         return;
     }
@@ -483,10 +512,17 @@ void LapTimer::sample(uint8_t pilot, uint8_t v, uint32_t nowMs)
 
     bool racing = isRacing();
     uint8_t count = racing ? pilotCount : conf->getPilotCount();
+    // Live thresholds, so calibrating during a race works. If the slot was switched to another
+    // channel (the next heat being prepared), keep the thresholds of the pilot still flying.
     uint8_t enter = conf->getEnterRssi(pilot);
     uint8_t exit = conf->getExitRssi(pilot);
+    if (racing && conf->getFrequency(pilot) != raceFreq[pilot])
+    {
+        enter = raceEnter[pilot];
+        exit = raceExit[pilot];
+    }
 
-    // After hovering at the gate, wait until the drone has left before detecting again
+    // After a pass counted at the peak timeout, wait until the drone has left
     if (p.hoverBlocked)
     {
         if (v < exit)
@@ -494,15 +530,15 @@ void LapTimer::sample(uint8_t pilot, uint8_t v, uint32_t nowMs)
         return;
     }
 
-    // With several pilots, only count this channel while it clearly beats all the
-    // others (a close drone can bleed into the other channels)
+    // With several pilots, ignore this channel while another pilot's is much stronger
+    // (a close drone bleeds into the other channels, but weaker than on its own)
     bool dominant = true;
     for (uint8_t other = 0; other < count; other++)
     {
         uint16_t otherFreq = racing ? raceFreq[other] : conf->getFrequency(other);
         if (otherFreq == POWER_DOWN_FREQ_MHZ)
             continue; // not scanned, its RSSI is stale
-        if (other != pilot && v < pilots[other].rssi + DOMINANCE_DELTA)
+        if (other != pilot && pilots[other].rssi > v + BLEED_DELTA)
         {
             dominant = false;
             break;
@@ -533,11 +569,24 @@ void LapTimer::sample(uint8_t pilot, uint8_t v, uint32_t nowMs)
         }
     }
 
-    if (p.inPass && (nowMs - p.passStartMs) > MAX_PASS_MS)
+    if (p.inPass && (nowMs - p.peakLastMs) > PEAK_TIMEOUT_MS)
     {
-        p.inPass = false; // hovering near the gate, not a pass
-        p.hoverBlocked = true;
-        return;
+        if (state == RACE_RUNNING && p.hasPassed)
+        {
+            // Landed or hovering near the timer after passing the gate: the pass was at
+            // the peak. Wait until the drone has left before detecting again.
+            p.inPass = false;
+            p.hoverBlocked = true;
+            onPass(pilot, passTime(p));
+            return;
+        }
+        // Waiting near the gate before the pilot's first pass (e.g. on the start pad while
+        // the signal drifts): drop the old peak, the take-off through the gate makes a new one
+        p.peak = v;
+        p.peakFirstMs = p.peakLastMs = nowMs;
+        p.peakPrev = prevV;
+        p.peakPrevMs = prevMs;
+        p.peakNextMs = 0;
     }
 
     if (p.inPass && v < exit)
@@ -559,7 +608,7 @@ void LapTimer::onPass(uint8_t pilot, uint32_t passMs)
     {
         return;
     }
-    if (p.hasPassed && (passMs - p.lastPassMs) < conf->getMinLapMs())
+    if (p.hasPassed && (passMs - p.lastPassMs) < raceMinLapMs)
     {
         return; // too soon after the previous pass
     }
@@ -569,11 +618,6 @@ void LapTimer::onPass(uint8_t pilot, uint32_t passMs)
         // Without countdown the race starts on the first pass of any pilot
         raceStartMs = passMs;
         state = RACE_RUNNING;
-    }
-
-    if (p.lapCount >= MAX_LAPS)
-    {
-        return;
     }
 
     // Write the time before publishing the new count, so readers on
@@ -597,10 +641,13 @@ void LapTimer::onPass(uint8_t pilot, uint32_t passMs)
     DEBUG("Pilot %u pass %d: %u ms\n", pilot + 1, index, p.laps[index]);
 
     int completedLaps = p.lapCount - 1;
-    // Staggered: each pilot's race time runs from their own first pass
-    bool pilotTimeUp = staggered ? (passMs - p.firstPassMs) >= raceMs : timeUp;
+    // The pass time decides, not when it was detected (the exit comes later). Staggered:
+    // each pilot's race time runs from their own first pass.
+    uint32_t pilotStartMs = staggered ? p.firstPassMs : raceStartMs;
+    bool pilotTimeUp = (int32_t)(passMs - pilotStartMs) >= (int32_t)raceMs;
+    p.full = p.lapCount >= MAX_LAPS;
     if ((mode == RACE_LAPS && completedLaps >= raceLaps) ||
-        (mode == RACE_TIMED && pilotTimeUp && completedLaps >= 1))
+        (mode == RACE_TIMED && pilotTimeUp && completedLaps >= 1) || p.full)
     {
         p.finished = true;
         buz->beep(700);
@@ -674,7 +721,7 @@ void LapTimer::updateRace(uint32_t nowMs)
         {
             DEBUG("Race finished\n");
             state = RACE_FINISHED;
-            savePending = true;
+            savePending = hasRaceData(); // a race nobody started isn't worth a history slot
             buz->beep(1200);
             led->on(1200);
         }

@@ -122,16 +122,19 @@ typedef struct
 
 static_assert(sizeof(laptimer_config_t) <= EEPROM_RESERVED_SIZE, "config does not fit the reserved EEPROM size");
 
+// Copies at most size - 1 bytes without cutting a UTF-8 character in half
+void copyUtf8(char *dst, const char *src, size_t size);
+
 class Config
 {
 public:
     void init();
     void load();
     void write();
-    void toJson(AsyncResponseStream &destination);
+    void toJson(String &destination);
     void toJsonString(char *buf, size_t size);
     void fromJson(JsonObject source);
-    void handleEeprom(uint32_t currentTimeMs);
+    void handleEeprom(uint32_t currentTimeMs, bool allowWrite);
 
     // getters; pilot index 0 .. MAX_PILOTS - 1
     uint8_t getPilotCount();

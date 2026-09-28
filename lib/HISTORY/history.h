@@ -13,6 +13,8 @@
 #define PROFILES_FILE "/profiles.json"
 #define MAX_PROFILES_SIZE 4096
 
+enum { EDIT_OK, EDIT_INVALID, EDIT_STALE };
+
 // Race history and pilot profiles, stored as JSON files on LittleFS
 class RaceHistory {
    public:
@@ -24,23 +26,34 @@ class RaceHistory {
     uint32_t lastSavedId = 0;      // history id of the newest saved race
     uint32_t lastSavedRaceId = 0;  // the timer's race id it came from
 
-    // Corrects laps of a saved race (see LAP_EDIT_*); updates the history list too
-    bool editRace(uint32_t id, uint8_t pilot, uint8_t op, int lapIndex);
+    // Corrects laps of a saved race (see LAP_EDIT_*); updates the history list too.
+    // expect >= 0: the lap's current value as the page shows it (EDIT_STALE if it differs).
+    int editRace(uint32_t id, uint8_t pilot, uint8_t op, int lapIndex, int64_t expect);
 
+    // Files are sent from memory, so no file stays open while a phone downloads it
+    // (an open file can't be replaced, which made saves fail)
     void sendList(AsyncWebServerRequest *request);  // newest-first sorting is done by the page
     void sendRace(AsyncWebServerRequest *request, uint32_t id);
     void clear();
 
+    // Saved pilots, changed one at a time so two phones can't overwrite each other's list
     void sendProfiles(AsyncWebServerRequest *request);
-    bool saveProfiles(const uint8_t *data, size_t len);
+    int saveProfile(const char *name, const char *prevName, uint16_t freq, uint8_t enter, uint8_t exit);  // 200, 400, 507
+    bool removeProfile(const char *name);
+    volatile uint32_t profilesRevision = 1;  // changes with every saved-pilot change
 
    private:
     uint32_t nextId = 1;
     bool ready = false;
+    bool indexDirty = false;  // index.json is out of date: rebuild it from the race files
     SemaphoreHandle_t mutex = nullptr;
     size_t listIds(uint32_t *ids, size_t max);
     void loadIndex(JsonDocument &index);
-    void rebuildIndex();
+    void buildIndex(JsonDocument &index);
+    void writeIndex(JsonDocument &index);
+    void recoverTempFiles(const char *dir);
+    bool readFile(const String &path, String &out);
+    void loadProfiles(JsonDocument &doc);
     static bool writeJson(const String &path, JsonDocument &doc);
     bool deleteOldest(JsonDocument &index);
     static String racePath(uint32_t id);

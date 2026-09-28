@@ -14,6 +14,31 @@ static void sendOk(AsyncWebServerRequest *request)
     request->send(200, "application/json", "{\"status\":\"OK\"}");
 }
 
+// Responses are built in memory and sent in one piece. (A response stream is drained one
+// byte at a time, O(n^2), and the web task can run on the timing core while it does.)
+static void sendJson(AsyncWebServerRequest *request, JsonDocument &doc)
+{
+    String body;
+    serializeJson(doc, body);
+    request->send(200, "application/json", body);
+}
+
+// Appends "[a,b,c]" of 8-bit values
+template <typename F>
+static void appendArray(String &out, uint16_t count, F value)
+{
+    out += '[';
+    for (uint16_t i = 0; i < count; i++)
+    {
+        if (i)
+            out += ',';
+        out += (unsigned)value(i);
+    }
+    out += ']';
+}
+
+static uint32_t bootId = 0; // random per start, so pages notice a restart
+
 static uint32_t paramU32(AsyncWebServerRequest *request, const char *name, uint32_t fallback)
 {
     if (!request->hasParam(name))
@@ -23,20 +48,24 @@ static uint32_t paramU32(AsyncWebServerRequest *request, const char *name, uint3
 
 void Webserver::registerApi()
 {
+    if (bootId == 0)
+        bootId = (esp_random() & 0x7FFFFFFF) | 1;
+
     // Polled by the page: race state and per-pilot RSSI / lap counts
     server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *request)
               {
-        char buf[512];
+        char buf[640];
         uint32_t now = millis();
         int n = snprintf(buf, sizeof(buf),
                          "{\"state\":%d,\"mode\":%d,\"cd\":%d,\"race\":%u,\"elapsed\":%d,\"raceMs\":%u,"
                          "\"raceLaps\":%u,\"timeUp\":%d,\"stag\":%d,\"vbat\":%u,\"saveErr\":%d,"
-                         "\"savedId\":%u,\"savedRace\":%u,\"spectrum\":%d,\"edits\":%u,\"cfg\":%u,\"pilots\":[",
+                         "\"savedId\":%u,\"savedRace\":%u,\"spectrum\":%d,\"edits\":%u,\"cfg\":%u,"
+                         "\"boot\":%u,\"prof\":%u,\"pilots\":[",
                          timer->getState(), timer->getMode(), timer->getCountdown(), timer->getRaceId(),
                          timer->getElapsedMs(now), timer->getRaceMs(), timer->getRaceLaps(), timer->isTimeUp(),
                          timer->getStaggered(), monitor->getBatteryVoltage(), !history->lastSaveOk,
                          history->lastSavedId, history->lastSavedRaceId, timer->isSpectrumRunning(),
-                         timer->getEditCount(), conf->getRevision());
+                         timer->getEditCount(), conf->getRevision(), bootId, history->profilesRevision);
         // configured pilots (live RSSI) and the race's pilots (laps), whichever is more
         uint8_t count = conf->getPilotCount();
         if ((timer->isRacing() || timer->hasRaceData()) && timer->getPilotCount() > count)
@@ -54,9 +83,7 @@ void Webserver::registerApi()
               {
         JsonDocument doc;
         timer->raceToJson(doc.to<JsonObject>());
-        AsyncResponseStream *response = request->beginResponseStream("application/json");
-        serializeJson(doc, *response);
-        request->send(response); });
+        sendJson(request, doc); });
 
     // RSSI history (max per 25 ms) since a sequence number, for the calibration graph
     server.on("/api/rssi", HTTP_GET, [this](AsyncWebServerRequest *request)
@@ -66,17 +93,21 @@ void Webserver::registerApi()
         if (since > seq || seq - since > RSSI_HISTORY - 1)
             since = seq > RSSI_HISTORY - 1 ? seq - (RSSI_HISTORY - 1) : 0;
         uint8_t count = timer->isRacing() ? timer->getPilotCount() : conf->getPilotCount();
-        AsyncResponseStream *response = request->beginResponseStream("application/json");
-        response->printf("{\"seq\":%u,\"step\":%u,\"pilots\":[", seq, RSSI_HISTORY_STEP_MS);
+        String body;
+        body.reserve(48 + count * ((seq - since) * 4 + 3));
+        body += "{\"seq\":";
+        body += seq;
+        body += ",\"step\":";
+        body += RSSI_HISTORY_STEP_MS;
+        body += ",\"pilots\":[";
         for (uint8_t i = 0; i < count; i++)
         {
-            response->print(i ? ",[" : "[");
-            for (uint32_t s = since + 1; s <= seq; s++)
-                response->printf(s == since + 1 ? "%u" : ",%u", timer->getHistory(i, s));
-            response->print("]");
+            if (i)
+                body += ',';
+            appendArray(body, seq - since, [&](uint16_t k) { return timer->getHistory(i, since + 1 + k); });
         }
-        response->print("]}");
-        request->send(response); });
+        body += "]}";
+        request->send(200, "application/json", body); });
 
     // Race control; t = browser time (epoch seconds) for the race history
     server.on("/timer/start", HTTP_POST, [this](AsyncWebServerRequest *request)
@@ -105,19 +136,28 @@ void Webserver::registerApi()
         else
             history->sendList(request); });
 
-    // Lap correction: {id, pilot, op: 0 merge with next / 1 split, lap}
+    // Lap correction: {id, pilot, op: 0 merge with next / 1 split, lap, expect}.
+    // expect = the lap's value as the page shows it; 409 if the race changed meanwhile.
     server.addHandler(new AsyncCallbackJsonWebHandler("/api/races/edit", [this](AsyncWebServerRequest *request, JsonVariant &json)
                                                       {
         uint32_t id = json["id"] | 0;
         uint8_t pilot = json["pilot"] | 0;
         uint8_t op = json["op"] | 255;
         int lap = json["lap"] | -1;
-        bool ok = history->editRace(id, pilot, op, lap);
-        // the race still shown on the Race tab gets the same correction
-        if (ok && id == history->lastSavedId && timer->getRaceId() == history->lastSavedRaceId)
-            timer->editLaps(pilot, op, lap);
-        request->send(ok ? 200 : 400, "application/json",
-                      ok ? "{\"status\":\"OK\"}" : "{\"status\":\"invalid\"}"); }));
+        int64_t expect = json["expect"].isNull() ? -1 : json["expect"].as<int64_t>();
+        int result = history->editRace(id, pilot, op, lap, expect);
+        // the race still shown on the Race tab gets the same correction, on the timing core
+        if (result == EDIT_OK && id == history->lastSavedId && timer->getRaceId() == history->lastSavedRaceId)
+        {
+            for (int i = 0; i < 50 && !timer->requestEdit(pilot, op, lap); i++)
+                delay(1); // the previous edit is applied within a loop pass
+        }
+        if (result == EDIT_OK)
+            sendOk(request);
+        else if (result == EDIT_STALE)
+            request->send(409, "application/json", "{\"status\":\"stale\"}");
+        else
+            request->send(400, "application/json", "{\"status\":\"invalid\"}"); }));
 
     // Spectrum scan: ?start=1 starts a scan (not during a race)
     server.on("/api/spectrum", HTTP_GET, [this](AsyncWebServerRequest *request)
@@ -129,14 +169,14 @@ void Webserver::registerApi()
                           ok ? "{\"status\":\"OK\"}" : "{\"status\":\"busy\"}");
             return;
         }
-        AsyncResponseStream *response = request->beginResponseStream("application/json");
-        response->printf("{\"running\":%d,\"done\":%u,\"total\":%u,\"start\":%u,\"step\":%u,\"rssi\":[",
-                         timer->isSpectrumRunning(), timer->getSpectrumProgress(), SPECTRUM_POINTS * SPECTRUM_SWEEPS,
-                         SPECTRUM_START_MHZ, SPECTRUM_STEP_MHZ);
-        for (uint8_t i = 0; i < SPECTRUM_POINTS; i++)
-            response->printf(i ? ",%u" : "%u", timer->getSpectrumRssi(i));
-        response->print("]}");
-        request->send(response); });
+        char head[128];
+        snprintf(head, sizeof(head), "{\"running\":%d,\"done\":%u,\"total\":%u,\"start\":%u,\"step\":%u,\"rssi\":",
+                 timer->isSpectrumRunning(), timer->getSpectrumProgress(), SPECTRUM_POINTS * SPECTRUM_SWEEPS,
+                 SPECTRUM_START_MHZ, SPECTRUM_STEP_MHZ);
+        String body = head;
+        appendArray(body, SPECTRUM_POINTS, [this](uint16_t i) { return timer->getSpectrumRssi(i); });
+        body += '}';
+        request->send(200, "application/json", body); });
 
     // Diagnostics: receiver response when switching frequency.
     // ?from=5880&to=5800 starts a test; without parameters returns {done, intervalUs, rise, fall}
@@ -148,45 +188,35 @@ void Webserver::registerApi()
             request->send(ok ? 200 : 409, "application/json", ok ? "{\"status\":\"OK\"}" : "{\"status\":\"busy\"}");
             return;
         }
-        AsyncResponseStream *response = request->beginResponseStream("application/json");
-        response->printf("{\"done\":%d,\"intervalUs\":%u,\"rise\":[", timer->isStepTestDone(), STEP_TEST_INTERVAL_US);
-        for (uint16_t i = 0; i < STEP_TEST_HALF; i++)
-            response->printf(i ? ",%u" : "%u", timer->getStepTestSample(i));
-        response->print("],\"fall\":[");
-        for (uint16_t i = 0; i < STEP_TEST_HALF; i++)
-            response->printf(i ? ",%u" : "%u", timer->getStepTestSample(STEP_TEST_HALF + i));
-        response->print("]}");
-        request->send(response); });
+        String body = String("{\"done\":") + (timer->isStepTestDone() ? 1 : 0) +
+                      ",\"intervalUs\":" + STEP_TEST_INTERVAL_US + ",\"rise\":";
+        appendArray(body, STEP_TEST_HALF, [this](uint16_t i) { return timer->getStepTestSample(i); });
+        body += ",\"fall\":";
+        appendArray(body, STEP_TEST_HALF, [this](uint16_t i) { return timer->getStepTestSample(STEP_TEST_HALF + i); });
+        body += '}';
+        request->send(200, "application/json", body); });
 
     server.on("/api/races/clear", HTTP_POST, [this](AsyncWebServerRequest *request)
               {
         history->clear();
         sendOk(request); });
 
-    // Pilot profiles: a JSON array stored as a file
+    // Saved pilots: a JSON array [{name, freq, enter, exit}], changed one pilot at a time
     server.on("/api/profiles", HTTP_GET, [this](AsyncWebServerRequest *request)
               { history->sendProfiles(request); });
 
-    // The body is collected into a per-request buffer, and refused up front if too large
-    server.on(
-        "/api/profiles", HTTP_POST,
-        [this](AsyncWebServerRequest *request)
-        {
-            const char *body = (const char *)request->_tempObject; // freed with the request
-            bool ok = body && history->saveProfiles((const uint8_t *)body, strlen(body));
-            request->send(ok ? 200 : 400, "application/json",
-                          ok ? "{\"status\":\"OK\"}" : "{\"status\":\"invalid\"}");
-        },
-        nullptr,
-        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
-        {
-            if (total > MAX_PROFILES_SIZE)
-                return;
-            if (index == 0)
-                request->_tempObject = calloc(total + 1, 1);
-            if (request->_tempObject && index + len <= total)
-                memcpy((char *)request->_tempObject + index, data, len);
-        });
+    // {name, freq, enter, exit, prev}: add or update (prev = old name after a rename)
+    server.addHandler(new AsyncCallbackJsonWebHandler("/api/profiles/save", [this](AsyncWebServerRequest *request, JsonVariant &json)
+                                                      {
+        int code = history->saveProfile(json["name"] | "", json["prev"] | "", json["freq"] | 0,
+                                        json["enter"] | 0, json["exit"] | 0);
+        request->send(code, "application/json",
+                      code == 200 ? "{\"status\":\"OK\"}" : code == 507 ? "{\"status\":\"full\"}" : "{\"status\":\"invalid\"}"); }));
+
+    server.addHandler(new AsyncCallbackJsonWebHandler("/api/profiles/remove", [this](AsyncWebServerRequest *request, JsonVariant &json)
+                                                      {
+        bool ok = history->removeProfile(json["name"] | "");
+        request->send(ok ? 200 : 507, "application/json", ok ? "{\"status\":\"OK\"}" : "{\"status\":\"full\"}"); }));
 
     // Saved WiFi networks (names only; passwords never leave the timer)
     server.on("/api/wifi/saved", HTTP_GET, [this](AsyncWebServerRequest *request)
@@ -197,9 +227,7 @@ void Webserver::registerApi()
             list.add(wifiList->ssid(i));
         doc["connected"] = wifiMode == WIFI_STA && WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String("");
         doc["max"] = MAX_WIFI_NETWORKS;
-        AsyncResponseStream *response = request->beginResponseStream("application/json");
-        serializeJson(doc, *response);
-        request->send(response); });
+        sendJson(request, doc); });
 
     server.addHandler(new AsyncCallbackJsonWebHandler("/api/wifi/saved/add", [this](AsyncWebServerRequest *request, JsonVariant &json)
                                                       {
@@ -257,9 +285,7 @@ void Webserver::registerApi()
             e["rssi"] = WiFi.RSSI(i);
             e["open"] = WiFi.encryptionType(i) == WIFI_AUTH_OPEN;
         }
-        AsyncResponseStream *response = request->beginResponseStream("application/json");
-        serializeJson(doc, *response);
-        request->send(response); });
+        sendJson(request, doc); });
 
     // Device info for the Setup page
     server.on("/api/info", HTTP_GET, [this](AsyncWebServerRequest *request)
@@ -274,7 +300,5 @@ void Webserver::registerApi()
         if (!ap)
             doc["signal"] = WiFi.RSSI();
         doc["maxPilots"] = MAX_PILOTS;
-        AsyncResponseStream *response = request->beginResponseStream("application/json");
-        serializeJson(doc, *response);
-        request->send(response); });
+        sendJson(request, doc); });
 }

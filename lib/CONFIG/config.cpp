@@ -56,12 +56,12 @@ void Config::write(void)
 
     DEBUG("Writing to EEPROM\n");
 
+    // cleared first: a change arriving during the commit is written next time
+    modified = false;
     EEPROM.put(0, conf);
     EEPROM.commit();
 
     DEBUG("Writing to EEPROM done\n");
-
-    modified = false;
 }
 
 void Config::toJsonDoc(JsonDocument &config)
@@ -96,7 +96,7 @@ void Config::toJsonDoc(JsonDocument &config)
     // WiFi networks (with passwords) are managed by WifiList and never sent back to the page
 }
 
-void Config::toJson(AsyncResponseStream &destination)
+void Config::toJson(String &destination)
 {
     JsonDocument config;
     toJsonDoc(config);
@@ -124,22 +124,48 @@ static bool updateField(JsonObject source, const char *key, T &field)
     return true;
 }
 
+// Copies at most size - 1 bytes without cutting a UTF-8 character in half
+void copyUtf8(char *dst, const char *src, size_t size)
+{
+    size_t n = strnlen(src, size - 1);
+    if (src[n] != 0)
+    {
+        while (n > 0 && (src[n] & 0xC0) == 0x80)
+            n--; // src[n] continues a character that doesn't fit: drop the whole character
+    }
+    memcpy(dst, src, n);
+    dst[n] = 0;
+}
+
 static bool updateString(JsonObject source, const char *key, char *field, size_t size)
 {
     JsonVariant value = source[key];
     if (value.isNull())
         return false;
     const char *newValue = value.as<const char *>();
-    if (newValue == nullptr)
-        newValue = "";
-    if (strncmp(newValue, field, size) == 0)
+    char buf[64];
+    copyUtf8(buf, newValue ? newValue : "", size < sizeof(buf) ? size : sizeof(buf));
+    if (strcmp(buf, field) == 0)
         return false;
-    strlcpy(field, newValue, size);
+    strlcpy(field, buf, size);
     return true;
 }
 
+// Exit must stay below enter, or every reading between them would open and close a pass
+static void fixThresholds(uint8_t &enter, uint8_t &exit)
+{
+    if (enter < 1)
+        enter = 1;
+    if (exit >= enter)
+        exit = enter - 1;
+}
+
+// Changes are made on a copy and checked before they are published: the timing core
+// reads the settings at any moment (a pilot count of 0 would divide by zero there)
 void Config::fromJson(JsonObject source)
 {
+    laptimer_config_t next = this->conf;
+    laptimer_config_t &conf = next; // the updates below go to the copy
     bool changed = false;
     changed |= updateField(source, "freq", conf.frequency);
     changed |= updateField(source, "minLap", conf.minLap);
@@ -195,9 +221,13 @@ void Config::fromJson(JsonObject source)
         conf.raceSeconds = 10;
     if (conf.raceLaps < 1)
         conf.raceLaps = 1;
+    fixThresholds(conf.enterRssi, conf.exitRssi);
+    for (uint8_t i = 0; i < MAX_PILOTS - 1; i++)
+        fixThresholds(conf.extraPilots[i].enterRssi, conf.extraPilots[i].exitRssi);
 
     if (changed)
     {
+        this->conf = next;
         modified = true;
         revision++;
     }
@@ -341,9 +371,10 @@ void Config::setDefaults(void)
     write();
 }
 
-void Config::handleEeprom(uint32_t currentTimeMs)
+// allowWrite = false during a race: a flash write stalls both cores, including RSSI sampling
+void Config::handleEeprom(uint32_t currentTimeMs, bool allowWrite)
 {
-    if (modified && ((currentTimeMs - checkTimeMs) > EEPROM_CHECK_TIME_MS))
+    if (allowWrite && modified && ((currentTimeMs - checkTimeMs) > EEPROM_CHECK_TIME_MS))
     {
         checkTimeMs = currentTimeMs;
         write();

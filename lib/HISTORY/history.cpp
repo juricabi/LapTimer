@@ -37,7 +37,8 @@ bool RaceHistory::parseId(const char *name, uint32_t &id)
     return true;
 }
 
-// Writes via a temporary file and a rename, so a reader never sees a half-written file
+// Writes via a temporary file and a rename, so a reader never sees a half-written file.
+// The rename replaces the old file in one step (LittleFS); a reset leaves the old or the new.
 bool RaceHistory::writeJson(const String &path, JsonDocument &doc)
 {
     String tmp = path + ".tmp";
@@ -51,8 +52,49 @@ bool RaceHistory::writeJson(const String &path, JsonDocument &doc)
         LittleFS.remove(tmp);
         return false;
     }
-    LittleFS.remove(path);
-    return LittleFS.rename(tmp, path);
+    if (LittleFS.rename(tmp, path))
+        return true;
+    LittleFS.remove(path); // in case this LittleFS build refuses to replace
+    if (LittleFS.rename(tmp, path))
+        return true;
+    LittleFS.remove(tmp);
+    return false;
+}
+
+// Reads a whole (small) file, so it is closed again before it is sent
+bool RaceHistory::readFile(const String &path, String &out)
+{
+    File f = LittleFS.open(path, "r");
+    if (!f)
+        return false;
+    out.reserve(f.size() + 1);
+    out = f.readString();
+    f.close();
+    return true;
+}
+
+// A reset between writing "x.tmp" and the rename leaves the temp file: keep it only if
+// the file it was meant to replace is missing
+void RaceHistory::recoverTempFiles(const char *dir)
+{
+    String names[8];
+    size_t count = 0;
+    File d = LittleFS.open(dir);
+    for (File f = d.openNextFile(); f && count < 8; f = d.openNextFile())
+    {
+        String name = f.path();
+        if (name.endsWith(".tmp"))
+            names[count++] = name;
+    }
+    d.close();
+    for (size_t i = 0; i < count; i++)
+    {
+        String target = names[i].substring(0, names[i].length() - 4);
+        if (LittleFS.exists(target))
+            LittleFS.remove(names[i]);
+        else
+            LittleFS.rename(names[i], target);
+    }
 }
 
 // Summary shown in the history list: {id, date, mode, pilots: [{name, laps, best}]}
@@ -95,34 +137,45 @@ size_t RaceHistory::listIds(uint32_t *ids, size_t max)
     return count;
 }
 
-// Loads the summary index; an unreadable index starts empty
+// Loads the summary index. A missing, unreadable or out-of-date index is rebuilt from
+// the race files. Call with the lock held.
 void RaceHistory::loadIndex(JsonDocument &index)
 {
-    File in = LittleFS.open(INDEX_FILE, "r");
-    if (!in || deserializeJson(index, in) || !index.is<JsonArray>())
+    if (!indexDirty)
     {
-        index.to<JsonArray>();
+        File in = LittleFS.open(INDEX_FILE, "r");
+        bool ok = in && !deserializeJson(index, in) && index.is<JsonArray>();
+        in.close();
+        if (ok)
+            return;
     }
+    buildIndex(index);
+    writeIndex(index);
 }
 
-// Rebuilds the summary index from the race files (only needed if it is missing)
-void RaceHistory::rebuildIndex()
+void RaceHistory::buildIndex(JsonDocument &index)
 {
     uint32_t ids[MAX_SAVED_RACES + 8];
     size_t count = listIds(ids, sizeof(ids) / sizeof(ids[0]));
-    JsonDocument index;
     JsonArray list = index.to<JsonArray>();
     for (size_t i = 0; i < count; i++)
     {
         File f = LittleFS.open(racePath(ids[i]), "r");
         JsonDocument race;
-        if (f && !deserializeJson(race, f))
+        bool ok = f && !deserializeJson(race, f);
+        f.close();
+        if (ok)
         {
             race["id"] = ids[i];
             addSummary(list, race.as<JsonObjectConst>());
         }
     }
-    writeJson(INDEX_FILE, index);
+}
+
+// A failed write (e.g. flash full) marks the index for a rebuild on the next read
+void RaceHistory::writeIndex(JsonDocument &index)
+{
+    indexDirty = !writeJson(INDEX_FILE, index);
 }
 
 void RaceHistory::init()
@@ -145,10 +198,12 @@ void RaceHistory::init()
             maxId = ids[i];
     }
     nextId = maxId + 1;
-    if (!LittleFS.exists(INDEX_FILE))
-    {
-        rebuildIndex();
-    }
+    recoverTempFiles(RACES_DIR);
+    recoverTempFiles("/");
+    // rebuild the index on every start: cheap, and repairs anything a reset left behind
+    indexDirty = true;
+    JsonDocument index;
+    loadIndex(index);
     ready = true;
     DEBUG("Race history ready, next id %u\n", nextId);
 }
@@ -165,7 +220,8 @@ bool RaceHistory::deleteOldest(JsonDocument &index)
         if (list[i]["id"].as<uint32_t>() < list[oldest]["id"].as<uint32_t>())
             oldest = i;
     }
-    LittleFS.remove(racePath(list[oldest]["id"].as<uint32_t>()));
+    if (!LittleFS.remove(racePath(list[oldest]["id"].as<uint32_t>())))
+        indexDirty = true; // the file is still there: rebuild the index from the files later
     list.remove(oldest);
     return true;
 }
@@ -211,22 +267,23 @@ void RaceHistory::save(LapTimer &timer)
         lastSaveOk = false;
         DEBUG("Race %u could not be saved\n", id);
     }
-    writeJson(INDEX_FILE, index);
+    writeIndex(index);
 }
 
-bool RaceHistory::editRace(uint32_t id, uint8_t pilot, uint8_t op, int lapIndex)
+int RaceHistory::editRace(uint32_t id, uint8_t pilot, uint8_t op, int lapIndex, int64_t expect)
 {
     HistoryLock lock(mutex);
     String path = racePath(id);
     JsonDocument race;
     File in = LittleFS.open(path, "r");
-    if (!in || deserializeJson(race, in))
-        return false;
+    bool readOk = in && !deserializeJson(race, in);
     in.close();
+    if (!readOk)
+        return EDIT_INVALID;
 
     JsonArray pilots = race["pilots"].as<JsonArray>();
     if (pilot >= pilots.size())
-        return false;
+        return EDIT_INVALID;
     JsonArray lapsJson = pilots[pilot]["laps"].as<JsonArray>();
     uint32_t laps[MAX_LAPS];
     int count = 0;
@@ -235,13 +292,16 @@ bool RaceHistory::editRace(uint32_t id, uint8_t pilot, uint8_t op, int lapIndex)
         if (count < MAX_LAPS)
             laps[count++] = v.as<uint32_t>();
     }
+    // the page's copy must still match (a double tap or another phone may have edited it)
+    if (expect >= 0 && (lapIndex < 0 || lapIndex >= count || laps[lapIndex] != (uint32_t)expect))
+        return EDIT_STALE;
     if (!applyLapEdit(laps, count, MAX_LAPS, op, lapIndex))
-        return false;
+        return EDIT_INVALID;
     lapsJson.clear();
     for (int i = 0; i < count; i++)
         lapsJson.add(laps[i]);
     if (!writeJson(path, race))
-        return false;
+        return EDIT_INVALID;
 
     // refresh this race's entry in the history list
     JsonDocument index;
@@ -256,29 +316,36 @@ bool RaceHistory::editRace(uint32_t id, uint8_t pilot, uint8_t op, int lapIndex)
         }
     }
     addSummary(list, race.as<JsonObjectConst>());
-    writeJson(INDEX_FILE, index);
-    return true;
+    writeIndex(index);
+    return EDIT_OK;
 }
 
 void RaceHistory::sendList(AsyncWebServerRequest *request)
 {
-    if (!LittleFS.exists(INDEX_FILE))
+    String body;
     {
-        request->send(200, "application/json", "[]");
-        return;
+        HistoryLock lock(mutex);
+        JsonDocument index;
+        loadIndex(index);
+        serializeJson(index, body);
     }
-    request->send(LittleFS, INDEX_FILE, "application/json");
+    request->send(200, "application/json", body);
 }
 
 void RaceHistory::sendRace(AsyncWebServerRequest *request, uint32_t id)
 {
-    String path = racePath(id);
-    if (!LittleFS.exists(path))
+    String body;
+    bool found;
+    {
+        HistoryLock lock(mutex);
+        found = readFile(racePath(id), body);
+    }
+    if (!found)
     {
         request->send(404, "application/json", "{\"error\":\"not found\"}");
         return;
     }
-    request->send(LittleFS, path, "application/json");
+    request->send(200, "application/json", body);
 }
 
 void RaceHistory::clear()
@@ -289,26 +356,89 @@ void RaceHistory::clear()
     for (size_t i = 0; i < count; i++)
         LittleFS.remove(racePath(ids[i]));
     LittleFS.remove(INDEX_FILE);
+    indexDirty = true; // rebuilt (from whatever could not be deleted) on the next read
     lastSavedId = 0; // the race on the Race tab is no longer saved
     lastSavedRaceId = 0;
 }
 
 void RaceHistory::sendProfiles(AsyncWebServerRequest *request)
 {
-    if (!LittleFS.exists(PROFILES_FILE))
+    String body;
     {
-        request->send(200, "application/json", "[]");
-        return;
+        HistoryLock lock(mutex);
+        JsonDocument doc;
+        loadProfiles(doc);
+        serializeJson(doc, body);
     }
-    request->send(LittleFS, PROFILES_FILE, "application/json");
+    request->send(200, "application/json", body);
 }
 
-bool RaceHistory::saveProfiles(const uint8_t *data, size_t len)
+// An unreadable file starts an empty list. Call with the lock held.
+void RaceHistory::loadProfiles(JsonDocument &doc)
 {
-    if (len > MAX_PROFILES_SIZE)
-        return false;
+    File in = LittleFS.open(PROFILES_FILE, "r");
+    bool ok = in && !deserializeJson(doc, in) && doc.is<JsonArray>();
+    in.close();
+    if (!ok)
+        doc.to<JsonArray>();
+}
+
+// Adds or updates one saved pilot (names match without case). prevName: the pilot's old
+// name after a rename, that entry is replaced.
+int RaceHistory::saveProfile(const char *name, const char *prevName, uint16_t freq, uint8_t enter, uint8_t exit)
+{
+    char clean[21];
+    copyUtf8(clean, name ? name : "", sizeof(clean));
+    if (clean[0] == 0)
+        return 400;
+    if (enter < 1)
+        enter = 1;
+    if (exit >= enter)
+        exit = enter - 1;
+    HistoryLock lock(mutex);
     JsonDocument doc;
-    if (deserializeJson(doc, data, len) || !doc.is<JsonArray>())
+    loadProfiles(doc);
+    JsonArray list = doc.as<JsonArray>();
+    for (size_t i = list.size(); i-- > 0;)
+    {
+        const char *n = list[i]["name"] | "";
+        if (strcasecmp(n, clean) == 0 || (prevName && prevName[0] && strcasecmp(n, prevName) == 0))
+            list.remove(i);
+    }
+    JsonObject p = list.add<JsonObject>();
+    p["name"] = clean;
+    p["freq"] = freq;
+    p["enter"] = enter;
+    p["exit"] = exit;
+    if (measureJson(doc) > MAX_PROFILES_SIZE)
+        return 507;
+    if (!writeJson(PROFILES_FILE, doc))
+        return 507;
+    profilesRevision++;
+    return 200;
+}
+
+bool RaceHistory::removeProfile(const char *name)
+{
+    if (!name || !name[0])
         return false;
-    return writeJson(PROFILES_FILE, doc);
+    HistoryLock lock(mutex);
+    JsonDocument doc;
+    loadProfiles(doc);
+    JsonArray list = doc.as<JsonArray>();
+    bool found = false;
+    for (size_t i = list.size(); i-- > 0;)
+    {
+        if (strcasecmp(list[i]["name"] | "", name) == 0)
+        {
+            list.remove(i);
+            found = true;
+        }
+    }
+    if (!found)
+        return true; // already gone (another phone removed it)
+    if (!writeJson(PROFILES_FILE, doc))
+        return false;
+    profilesRevision++;
+    return true;
 }

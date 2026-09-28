@@ -24,7 +24,7 @@ static void parallelTask(void *pvArgs) {
         buzzer.handleBuzzer(currentTimeMs);
         led.handleLed(currentTimeMs);
         ws.handleWebUpdate(currentTimeMs);
-        config.handleEeprom(currentTimeMs);
+        config.handleEeprom(currentTimeMs, !timer.isRacing());
         monitor.checkBatteryState(currentTimeMs, config.getAlarmThreshold());
         if (timer.savePending) {
             history.save(timer);
