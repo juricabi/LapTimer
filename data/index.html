@@ -47,8 +47,8 @@
             <span class="freq-pill"><span id="pilotFreq">----</span><small>MHz</small></span>
           </div>
           <div class="pilot-freq">
-            <select id="pilotBand" aria-label="Band"></select>
-            <select id="pilotChannel" aria-label="Channel"></select>
+            <select id="pilotBand" aria-label="Band" autocomplete="off"></select>
+            <select id="pilotChannel" aria-label="Channel" autocomplete="off"></select>
           </div>
         </div>
         <p class="hint warn" id="pilotHint" hidden>No channel yet: pick a band and channel.</p>
@@ -102,7 +102,7 @@
         <h2>Announcer</h2>
         <label class="field">
           <span class="field-label">Announce</span>
-          <select id="announcerSelect">
+          <select id="announcerSelect" autocomplete="off">
             <option value="none">Nothing</option>
             <option value="beep">Beep</option>
             <option value="1lap">Lap time</option>
@@ -286,7 +286,7 @@
     <div id="rsPilot" class="rs-pilot"></div>
   </div>
 
-  <script src="script.js?v=17a345f3"></script>
+  <script src="script.js?v=86000f64"></script>
 </body>
 
 </html>

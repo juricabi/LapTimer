@@ -21,7 +21,13 @@ const STATE = { IDLE: 0, COUNTDOWN: 1, WAITING: 2, RUNNING: 3, FINISHED: 4 };
 const MODE = { PRACTICE: 0, TIMED: 1, LAPS: 2 };
 const MODE_NAMES = ["Practice", "Timed race", "Lap race"];
 
-function bandChannel(freq) {
+// Some frequencies are in two bands (5880 = F8 = R7): the preferred band wins when it has
+// the frequency, so the picker doesn't jump to the other band
+function bandChannel(freq, preferBand = -1) {
+  if (preferBand >= 0 && preferBand < FREQ_TABLE.length) {
+    const c = FREQ_TABLE[preferBand].indexOf(freq);
+    if (c >= 0) return { band: preferBand, channel: c };
+  }
   for (let b = 0; b < FREQ_TABLE.length; b++) {
     const c = FREQ_TABLE[b].indexOf(freq);
     if (c >= 0) return { band: b, channel: c };
@@ -30,7 +36,8 @@ function bandChannel(freq) {
 }
 
 function channelName(freq) {
-  const bc = bandChannel(freq);
+  const picker = document.getElementById("pilotBand"); // same band as the pilot's picker shows
+  const bc = bandChannel(freq, picker ? +picker.value : -1);
   return bc ? BANDS[bc.band] + (bc.channel + 1) : "";
 }
 
@@ -205,7 +212,7 @@ ui.pilotChannel.addEventListener("change", onFreqChange);
 // Who is flying: name, channel, the saved pilot it matches, and the calibration
 function renderPilot() {
   ui.pilotName.value = pilot.name || "";
-  const bc = bandChannel(pilot.freq);
+  const bc = bandChannel(pilot.freq, +ui.pilotBand.value);
   ui.pilotBand.value = bc ? bc.band : 4;
   ui.pilotChannel.value = bc ? bc.channel : 0;
   $("pilotFreq").textContent = bc ? pilot.freq : "Off";
