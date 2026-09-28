@@ -31,11 +31,12 @@ void Webserver::registerApi()
         int n = snprintf(buf, sizeof(buf),
                          "{\"state\":%d,\"mode\":%d,\"cd\":%d,\"race\":%u,\"elapsed\":%d,\"raceMs\":%u,"
                          "\"raceLaps\":%u,\"timeUp\":%d,\"stag\":%d,\"vbat\":%u,\"saveErr\":%d,"
-                         "\"savedId\":%u,\"savedRace\":%u,\"spectrum\":%d,\"pilots\":[",
+                         "\"savedId\":%u,\"savedRace\":%u,\"spectrum\":%d,\"edits\":%u,\"cfg\":%u,\"pilots\":[",
                          timer->getState(), timer->getMode(), timer->getCountdown(), timer->getRaceId(),
                          timer->getElapsedMs(now), timer->getRaceMs(), timer->getRaceLaps(), timer->isTimeUp(),
                          timer->getStaggered(), monitor->getBatteryVoltage(), !history->lastSaveOk,
-                         history->lastSavedId, history->lastSavedRaceId, timer->isSpectrumRunning());
+                         history->lastSavedId, history->lastSavedRaceId, timer->isSpectrumRunning(),
+                         timer->getEditCount(), conf->getRevision());
         // configured pilots (live RSSI) and the race's pilots (laps), whichever is more
         uint8_t count = conf->getPilotCount();
         if ((timer->isRacing() || timer->hasRaceData()) && timer->getPilotCount() > count)
@@ -52,26 +53,7 @@ void Webserver::registerApi()
     server.on("/api/race", HTTP_GET, [this](AsyncWebServerRequest *request)
               {
         JsonDocument doc;
-        doc["race"] = timer->getRaceId();
-        doc["state"] = timer->getState();
-        doc["mode"] = timer->getMode();
-        doc["cd"] = timer->getCountdown();
-        doc["stag"] = timer->getStaggered();
-        doc["raceMs"] = timer->getRaceMs();
-        doc["raceLaps"] = timer->getRaceLaps();
-        doc["date"] = timer->getStartEpoch();
-        JsonArray pilots = doc["pilots"].to<JsonArray>();
-        for (uint8_t i = 0; i < timer->getPilotCount(); i++)
-        {
-            JsonObject p = pilots.add<JsonObject>();
-            p["name"] = conf->getPilotName(i);
-            p["freq"] = timer->getRaceFrequency(i);
-            p["fin"] = timer->isFinished(i);
-            JsonArray laps = p["laps"].to<JsonArray>();
-            int count = timer->getLapCount(i); // read once: laps below this index are complete
-            for (int l = 0; l < count; l++)
-                laps.add(timer->getLap(i, l));
-        }
+        timer->raceToJson(doc.to<JsonObject>());
         AsyncResponseStream *response = request->beginResponseStream("application/json");
         serializeJson(doc, *response);
         request->send(response); });
@@ -83,7 +65,7 @@ void Webserver::registerApi()
         uint32_t since = paramU32(request, "since", 0);
         if (since > seq || seq - since > RSSI_HISTORY - 1)
             since = seq > RSSI_HISTORY - 1 ? seq - (RSSI_HISTORY - 1) : 0;
-        uint8_t count = timer->getState() == RACE_IDLE ? conf->getPilotCount() : timer->getPilotCount();
+        uint8_t count = timer->isRacing() ? timer->getPilotCount() : conf->getPilotCount();
         AsyncResponseStream *response = request->beginResponseStream("application/json");
         response->printf("{\"seq\":%u,\"step\":%u,\"pilots\":[", seq, RSSI_HISTORY_STEP_MS);
         for (uint8_t i = 0; i < count; i++)

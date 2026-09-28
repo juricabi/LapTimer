@@ -18,8 +18,8 @@ class RaceHistory {
    public:
     void init();  // call after LittleFS is mounted
 
-    // Saves the timer's current race (call from one task only)
-    void save(LapTimer &timer, Config &config);
+    // Saves the timer's current race
+    void save(LapTimer &timer);
     bool lastSaveOk = true;
     uint32_t lastSavedId = 0;      // history id of the newest saved race
     uint32_t lastSavedRaceId = 0;  // the timer's race id it came from
@@ -37,9 +37,11 @@ class RaceHistory {
    private:
     uint32_t nextId = 1;
     bool ready = false;
+    SemaphoreHandle_t mutex = nullptr;
     size_t listIds(uint32_t *ids, size_t max);
+    void loadIndex(JsonDocument &index);
     void rebuildIndex();
-    void writeIndex(JsonDocument &index);
+    static bool writeJson(const String &path, JsonDocument &doc);
     bool deleteOldest(JsonDocument &index);
     static String racePath(uint32_t id);
     static bool parseId(const char *name, uint32_t &id);

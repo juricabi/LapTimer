@@ -1307,3 +1307,33 @@ a.chip {
 .note.warn {
   color: var(--warn-text);
 }
+
+/* Channel scan frequency labels (page text, so the chart can stretch) */
+.spectrum-labels {
+  position: relative;
+  height: 40px;
+  margin-top: var(--space-1);
+}
+
+.spectrum-labels span {
+  position: absolute;
+  top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transform: translateX(-70%) rotate(-45deg);
+  transform-origin: right top;
+}
+
+.spectrum-pilots {
+  position: relative;
+  height: 18px;
+}
+
+.spectrum-pilots span {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 12px;
+  font-weight: 700;
+}

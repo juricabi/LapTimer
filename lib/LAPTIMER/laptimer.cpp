@@ -52,8 +52,34 @@ void LapTimer::init(Config *config, RX5808 *rx5808, Buzzer *buzzer, Led *l)
         pilots[i].rssi = 0;
         resetPilot(pilots[i]);
     }
+    memset(raceNames, 0, sizeof(raceNames));
     state = RACE_IDLE;
     DEBUG("LapTimer stopped\n");
+}
+
+void LapTimer::raceToJson(JsonObject out)
+{
+    out["race"] = raceId;
+    out["state"] = state;
+    out["mode"] = mode;
+    out["cd"] = countdown;
+    out["stag"] = staggered;
+    out["raceMs"] = raceMs;
+    out["raceLaps"] = raceLaps;
+    out["date"] = startEpochSec;
+    out["edits"] = editCount;
+    JsonArray list = out["pilots"].to<JsonArray>();
+    for (uint8_t i = 0; i < pilotCount; i++)
+    {
+        JsonObject p = list.add<JsonObject>();
+        p["name"] = raceNames[i];
+        p["freq"] = raceFreq[i];
+        p["fin"] = pilots[i].finished;
+        JsonArray laps = p["laps"].to<JsonArray>();
+        int count = pilots[i].lapCount; // read once: laps below this index are complete
+        for (int l = 0; l < count; l++)
+            laps.add(pilots[i].laps[l]);
+    }
 }
 
 void LapTimer::resetPilot(PilotState &p)
@@ -98,6 +124,13 @@ void LapTimer::start(uint32_t epochSec)
     raceMs = conf->getRaceMs();
     raceLaps = conf->getRaceLaps();
     startEpochSec = epochSec;
+    editCount = 0;
+    for (uint8_t i = 0; i < MAX_PILOTS; i++)
+        strlcpy(raceNames[i], conf->getPilotName(i), sizeof(raceNames[i]));
+    // A race always wins over a channel scan: stop it so the receiver listens to the pilots
+    spectrumRequested = false;
+    spectrumActive = false;
+    spectrumTuned = false;
     for (uint8_t i = 0; i < MAX_PILOTS; i++)
     {
         raceFreq[i] = conf->getFrequency(i);
@@ -222,12 +255,14 @@ bool LapTimer::editLaps(uint8_t pilot, uint8_t op, int index)
     int count = p.lapCount;
     bool ok = applyLapEdit(p.laps, count, MAX_LAPS, op, index);
     p.lapCount = count;
+    if (ok)
+        editCount++;
     return ok;
 }
 
 bool LapTimer::requestSpectrum()
 {
-    if (isRacing() || isSpectrumRunning())
+    if (isRacing() || isSpectrumRunning() || pendingCommand == CMD_START)
         return false;
     spectrumRequested = true;
     return true;
@@ -271,7 +306,11 @@ void LapTimer::spectrumStep(uint32_t nowMs)
 void LapTimer::update(uint32_t nowMs)
 {
     runPendingCommand();
-    if (spectrumRequested && !isRacing())
+    if (spectrumRequested && isRacing())
+    {
+        spectrumRequested = false; // a race started meanwhile: the race wins
+    }
+    if (spectrumRequested)
     {
         spectrumRequested = false;
         spectrumActive = true;
@@ -293,7 +332,7 @@ void LapTimer::update(uint32_t nowMs)
 void LapTimer::scan(uint32_t nowMs)
 {
     // During a race use the race's pilots and frequencies, otherwise the live settings
-    bool racing = state != RACE_IDLE;
+    bool racing = isRacing();
     uint8_t count = racing ? pilotCount : conf->getPilotCount();
 
     if (count == 1)
@@ -349,7 +388,7 @@ void LapTimer::sample(uint8_t pilot, uint8_t raw, uint32_t nowMs)
         p.stepHasSample = true;
     }
 
-    bool racing = state != RACE_IDLE;
+    bool racing = isRacing();
     uint8_t count = racing ? pilotCount : conf->getPilotCount();
     uint8_t enter = conf->getEnterRssi(pilot);
     uint8_t exit = conf->getExitRssi(pilot);
@@ -533,7 +572,9 @@ void LapTimer::updateRace(uint32_t nowMs)
         bool allFinished = true;
         for (uint8_t i = 0; i < pilotCount; i++)
         {
-            allFinished &= pilots[i].finished;
+            bool noChannel = raceFreq[i] == POWER_DOWN_FREQ_MHZ;
+            bool didNotStart = mode == RACE_TIMED && !staggered && timeUp && !pilots[i].hasPassed;
+            allFinished &= pilots[i].finished || noChannel || didNotStart;
         }
         if (allFinished)
         {

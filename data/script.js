@@ -177,11 +177,15 @@ function buildPilotRows() {
       p.name = e.target.value;
       renderCalibPilotButtons();
     });
-    row.querySelector(".p-name").addEventListener("change", () => rememberPilots());
+    row.querySelector(".p-name").addEventListener("change", () => {
+      touchedPilots.add(i);
+      rememberPilots();
+    });
     const onFreq = () => {
       const b = +row.querySelector(".p-band").value;
       const c = +row.querySelector(".p-channel").value;
       p.freq = FREQ_TABLE[b][c];
+      touchedPilots.add(i);
       renderPilotRow(i);
       renderPilotHint();
     };
@@ -314,7 +318,7 @@ async function loadConfig() {
   pilotCount = Math.min(Math.max(config.pilots || 1, 1), MAX_PILOTS);
   raceMode = config.raceMode || 0;
 
-  buildPilotRows();
+  if (!ui.pilotList.children.length) buildPilotRows();
   renderPilots();
   renderRaceModeFields();
 
@@ -333,17 +337,14 @@ async function loadConfig() {
   [updateRaceTimeLabel, updateRaceLapsLabel, updateMinLapLabel, updateRateLabel, updateAlarmLabel].forEach((f) => f());
 
   renderCalibPilotButtons();
+  renderCalibration();
+  savedBody = configBody();
   configLoaded = true;
   setSaveState("saved");
 }
 
 function configBody() {
-  const p0 = pilots[0];
   return {
-    name: p0.name,
-    freq: p0.freq,
-    enterRssi: p0.enter,
-    exitRssi: p0.exit,
     pilots: pilotCount,
     p: pilots.map((p) => ({ name: p.name, freq: p.freq, enter: p.enter, exit: p.exit })),
     raceMode: raceMode,
@@ -361,15 +362,67 @@ function configBody() {
   };
 }
 
+let savedBody = null; // settings as last loaded from / saved to the timer
+let knownRev = null; // the timer's settings revision this page has
+let savingNow = false;
+
+// Only the settings that changed since the last load/save. Pilots are positional,
+// so unchanged pilots before a changed one are sent as {} (the timer skips them).
+function changedSettings() {
+  const now = configBody();
+  const diff = {};
+  for (const key of Object.keys(now)) {
+    if (key === "p") continue;
+    if (JSON.stringify(now[key]) !== JSON.stringify(savedBody[key])) diff[key] = now[key];
+  }
+  const p = [];
+  now.p.forEach((pilot, i) => {
+    const before = savedBody.p[i] || {};
+    const changed = {};
+    for (const k of Object.keys(pilot)) if (pilot[k] !== before[k]) changed[k] = pilot[k];
+    p.push(changed);
+  });
+  while (p.length && !Object.keys(p[p.length - 1]).length) p.pop();
+  if (p.length) diff.p = p;
+  return { diff, now };
+}
+
 // Returns a promise resolving to true when the timer confirmed the save
-function saveConfig() {
-  if (!configLoaded) return Promise.resolve(false);
-  return postJson("/config", configBody())
-    .then((response) => response.status === "OK")
-    .catch((err) => {
-      console.error("/config save failed:", err);
-      return false;
-    });
+async function saveConfig() {
+  if (!configLoaded) return false;
+  const { diff, now } = changedSettings();
+  if (!Object.keys(diff).length) return true;
+  savingNow = true;
+  try {
+    const response = await postJson("/config", diff);
+    if (response.status !== "OK") return false;
+    savedBody = now;
+    if (response.rev) knownRev = response.rev;
+    return true;
+  } catch (err) {
+    console.error("/config save failed:", err);
+    return false;
+  } finally {
+    savingNow = false;
+  }
+}
+
+// Another phone changed the settings: reload them, unless this page is being edited
+function isEditingSettings() {
+  const el = document.activeElement;
+  return !!el && !!el.closest("#config, #calib") && /INPUT|SELECT|TEXTAREA/.test(el.tagName);
+}
+
+function checkSettingsRevision(rev) {
+  if (!configLoaded || rev === undefined) return;
+  if (knownRev === null) {
+    knownRev = rev;
+    return;
+  }
+  if (rev === knownRev || saveTimer || savingNow || isEditingSettings()) return;
+  knownRev = rev;
+  loadConfig().catch(() => {});
+  loadProfiles();
 }
 
 // ── Automatic saving ──
@@ -410,7 +463,7 @@ for (const el of document.querySelectorAll("[data-save-state]")) {
 window.addEventListener("pagehide", () => {
   if (!saveTimer || !configLoaded) return;
   clearTimeout(saveTimer);
-  navigator.sendBeacon("/config", new Blob([JSON.stringify(configBody())], { type: "application/json" }));
+  navigator.sendBeacon("/config", new Blob([JSON.stringify(changedSettings().diff)], { type: "application/json" }));
 });
 
 function onSettingsEdit(e) {
@@ -434,9 +487,15 @@ async function loadProfiles() {
 
 // Pilots are remembered automatically: every named pilot (name, channel, thresholds)
 // is kept in the saved pilots list. Names still being typed are skipped.
+const touchedPilots = new Set(); // pilot slots edited since the last save
+
 async function rememberPilots() {
+  const touched = [...touchedPilots];
+  touchedPilots.clear();
   const updated = profiles.map((pr) => ({ ...pr }));
-  pilots.slice(0, pilotCount).forEach((p, i) => {
+  touched.forEach((i) => {
+    if (i >= pilotCount) return;
+    const p = pilots[i];
     const name = (p.name || "").trim();
     const nameInput = ui.pilotList.children[i].querySelector(".p-name");
     if (!name || !bandChannel(p.freq) || document.activeElement === nameInput) return;
@@ -615,7 +674,8 @@ let seenLaps = []; // lap entries per pilot already announced
 let seenTimeUp = false;
 let seenFinished = [];
 let seenRaceFinished = false;
-let lastLapCalled = []; // staggered timed race: "last lap" announced per pilot
+let lastLapCalled = [];
+let seenEdits = 0; // lap corrections already taken over // staggered timed race: "last lap" announced per pilot
 let raceFetchPending = false;
 let raceFetchAgain = false; // laps changed while a fetch was running
 
@@ -655,10 +715,12 @@ function handleStatus(s) {
   $("bvolt").textContent = (s.vbat / 10).toFixed(1) + "V";
   if (currentTab === "calib" && s.pilots[calibIndex]) $("rssiNow").textContent = s.pilots[calibIndex].rssi;
 
+  checkSettingsRevision(s.cfg);
   const lapCountsChanged =
     !previous ||
     previous.race !== s.race ||
     previous.state !== s.state ||
+    previous.edits !== s.edits ||
     s.pilots.some((p, i) => !previous.pilots[i] || previous.pilots[i].laps !== p.laps || previous.pilots[i].fin !== p.fin);
   if (lapCountsChanged) fetchRace();
 
@@ -743,6 +805,7 @@ function renderRaceControls() {
   $("startRaceButton").disabled = racing;
   $("stopRaceButton").disabled = !racing;
   $("clearLapsButton").disabled = racing;
+  if (!spectrumScanning) $("spectrumButton").disabled = racing;
   // the finished race can be corrected once it has been saved
   const saved = status && status.savedId > 0 && raceData && status.savedRace === raceData.race && raceData.pilots.some((p) => p.laps.length);
   $("editLapsButton").disabled = racing || !saved;
@@ -811,7 +874,13 @@ function handleRace(r) {
     r.pilots = pilots.slice(0, pilotCount).map((p) => ({ name: p.name, freq: p.freq, laps: [], fin: false }));
   }
   raceData = r;
+  if (seenRaceId === r.race && r.edits !== seenEdits) {
+    // laps were corrected (merge/split): take the new lap list without announcing it
+    seenEdits = r.edits;
+    seenLaps = r.pilots.map((p) => p.laps.length);
+  }
   if (seenRaceId !== r.race) {
+    seenEdits = r.edits;
     // First sight of this race. If it hasn't started yet, announce everything
     // from its first pass; otherwise just show it (don't replay old laps).
     seenRaceId = r.race;
@@ -1096,6 +1165,7 @@ function renderCalibration() {
 enterInput.addEventListener("input", () => {
   const p = pilots[calibIndex];
   p.enter = +enterInput.value;
+  touchedPilots.add(calibIndex);
   if (p.exit >= p.enter) p.exit = Math.max(0, p.enter - 1);
   renderCalibration();
   scheduleSave();
@@ -1104,6 +1174,7 @@ enterInput.addEventListener("input", () => {
 exitInput.addEventListener("input", () => {
   const p = pilots[calibIndex];
   p.exit = +exitInput.value;
+  touchedPilots.add(calibIndex);
   if (p.exit >= p.enter) p.enter = Math.min(255, p.exit + 1);
   renderCalibration();
   scheduleSave();
@@ -1232,6 +1303,7 @@ function renderAutoCal() {
     const p = pilots[calibIndex];
     p.enter = result.enter;
     p.exit = result.exit;
+    touchedPilots.add(calibIndex);
     renderCalibration();
     scheduleSave();
   });
@@ -1243,15 +1315,19 @@ $("autoCal").addEventListener("change", () => {
 });
 
 // ── Channel scan (spectrum) ──
+// A scan and a race never run together: the timer refuses a scan during a race,
+// and starting a race cancels a running scan.
+let spectrumScanning = false;
+
 $("spectrumButton").addEventListener("click", async (e) => {
   const button = e.target;
   button.disabled = true;
+  spectrumScanning = true;
   showButtonStatus(button, "Scanning… (about 3 s)", 0);
   try {
     const start = await fetch("/api/spectrum?start=1");
     if (start.status === 409) {
       showButtonStatus(button, "Not possible during a race");
-      button.disabled = false;
       return;
     }
     let data = { running: true };
@@ -1259,13 +1335,21 @@ $("spectrumButton").addEventListener("click", async (e) => {
       await new Promise((r) => setTimeout(r, 500));
       data = await fetchJson("/api/spectrum");
     }
+    const raceStarted = status && status.state >= STATE.COUNTDOWN && status.state <= STATE.RUNNING;
+    if (raceStarted) {
+      showButtonStatus(button, "Stopped: a race started", 4000);
+      return;
+    }
     renderSpectrum(data);
     button.dataset.label = "Scan again";
     showButtonStatus(button, "Scan again", 1);
   } catch (err) {
     showButtonStatus(button, "Scan failed");
+  } finally {
+    spectrumScanning = false;
+    renderRaceControls();
+    if (!(status && status.state >= STATE.COUNTDOWN && status.state <= STATE.RUNNING)) button.disabled = false;
   }
-  button.disabled = false;
 });
 
 // Bar chart of RSSI per frequency, with the active pilots' channels marked
@@ -1276,8 +1360,8 @@ function renderSpectrum(data) {
   const barW = 10;
   const width = values.length * barW;
   const height = 170;
-  const bottom = height - 20; // room for the frequency labels
-  const top = 22; // room for the pilot labels
+  const bottom = height - 4;
+  const top = 6;
   const min = Math.min(...values);
   const max = Math.max(min + 20, ...values);
   const freqX = (f) => ((f - data.start) / data.step) * barW + barW / 2;
@@ -1288,17 +1372,28 @@ function renderSpectrum(data) {
     const strength = (v - min) / (max - min);
     svg += `<rect x="${i * barW + 1}" y="${bottom - h}" width="${barW - 2}" height="${h}" rx="2" fill="var(--accent)" opacity="${(0.35 + 0.65 * strength).toFixed(2)}"><title>${data.start + i * data.step} MHz: ${v}</title></rect>`;
   });
-  for (let f = 5650; f <= data.start + (values.length - 1) * data.step; f += 50) {
-    svg += `<text x="${freqX(f)}" y="${height - 5}" text-anchor="middle" class="spectrum-axis">${f}</text>`;
-  }
+
   pilots.slice(0, pilotCount).forEach((p, i) => {
     if (!bandChannel(p.freq)) return;
     const x = freqX(p.freq);
     svg += `<line x1="${x}" x2="${x}" y1="${top - 4}" y2="${bottom}" stroke="var(--p${i + 1})" stroke-width="2" stroke-dasharray="4 3" />`;
-    svg += `<text x="${x}" y="${top - 8}" text-anchor="middle" class="spectrum-pilot" fill="var(--p${i + 1})">${escapeHtml(channelName(p.freq))}</text>`;
   });
   svg += "</svg>";
-  box.innerHTML = svg;
+  // frequency labels as normal text (the chart itself stretches), rotated to fit
+  const lastFreq = data.start + (values.length - 1) * data.step;
+  let labels = '<div class="spectrum-labels">';
+  for (let f = 5650; f <= lastFreq; f += 25) {
+    labels += `<span style="left:${((freqX(f) / width) * 100).toFixed(2)}%">${f}</span>`;
+  }
+  labels += "</div>";
+  // pilot channel names above the chart, also as normal text
+  let names = '<div class="spectrum-pilots">';
+  pilots.slice(0, pilotCount).forEach((p, i) => {
+    if (!bandChannel(p.freq)) return;
+    names += `<span style="left:${((freqX(p.freq) / width) * 100).toFixed(2)}%;color:var(--p${i + 1})">${escapeHtml(channelName(p.freq))}</span>`;
+  });
+  names += "</div>";
+  box.innerHTML = names + svg + labels;
   box.hidden = false;
 }
 

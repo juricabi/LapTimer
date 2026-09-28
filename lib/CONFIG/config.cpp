@@ -197,7 +197,10 @@ void Config::fromJson(JsonObject source)
         conf.raceLaps = 1;
 
     if (changed)
+    {
         modified = true;
+        revision++;
+    }
 }
 
 uint8_t Config::getPilotCount()

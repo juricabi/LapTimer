@@ -151,10 +151,12 @@ public:
     bool getCountdown();
     rank_by_e getRankBy();
     bool getStaggered();
+    uint32_t getRevision() { return revision; }  // changes on every settings change, so pages can reload
 
 private:
     laptimer_config_t conf;
     volatile bool modified;
+    volatile uint32_t revision = 1;
     volatile uint32_t checkTimeMs = 0;
     void setDefaults();
     void setV1Defaults();

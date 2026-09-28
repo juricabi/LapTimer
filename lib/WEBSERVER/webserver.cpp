@@ -328,7 +328,9 @@ Battery Voltage:\t%0.1fv";
         const char *ssid = jsonObj["ssid"] | "";
         if (ssid[0] != 0 && strcmp(ssid, "undefined") != 0)
             wifiList->add(ssid, jsonObj["pwd"] | "");
-        request->send(200, "application/json", "{\"status\": \"OK\"}");
+        char reply[48];
+        snprintf(reply, sizeof(reply), "{\"status\":\"OK\",\"rev\":%u}", conf->getRevision());
+        request->send(200, "application/json", reply);
         led->on(200); });
 
 

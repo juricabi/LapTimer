@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ArduinoJson.h>
+
 #include "RX5808.h"
 #include "buzzer.h"
 #include "config.h"
@@ -107,6 +109,11 @@ class LapTimer {
     uint32_t getLap(uint8_t pilot, int index) { return pilots[pilot].laps[index]; }
     bool isFinished(uint8_t pilot) { return pilots[pilot].finished; }
     uint16_t getRaceFrequency(uint8_t pilot) { return raceFreq[pilot]; }
+    const char *getRaceName(uint8_t pilot) { return raceNames[pilot]; }
+    uint16_t getEditCount() { return editCount; }
+
+    // The current/last race as JSON (shared by /api/race and the race history)
+    void raceToJson(JsonObject out);
 
     // Lap correction on the current/last race (only while no race is running)
     bool editLaps(uint8_t pilot, uint8_t op, int index);
@@ -138,6 +145,8 @@ class LapTimer {
     uint8_t raceLaps = 0;
     uint8_t pilotCount = 1;
     uint16_t raceFreq[MAX_PILOTS] = {0, 0};
+    char raceNames[MAX_PILOTS][21];   // names at race start (renaming later doesn't relabel the race)
+    volatile uint16_t editCount = 0;  // lap corrections since the race started
     volatile uint32_t raceStartMs = 0;
     uint32_t startEpochSec = 0;
     uint32_t raceId = 0;
