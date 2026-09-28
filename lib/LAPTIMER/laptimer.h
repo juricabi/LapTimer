@@ -29,9 +29,9 @@
 #define SPECTRUM_START_MHZ 5645
 #define SPECTRUM_STEP_MHZ 5
 #define SPECTRUM_POINTS 61        // 5645 - 5945 MHz (bands A, B, E, F, R)
-#define SPECTRUM_SWEEPS 3         // highest value of 3 sweeps (~2.6 s)
-#define SPECTRUM_SETTLE_MS 10
-#define SPECTRUM_SAMPLE_MS 4
+#define SPECTRUM_SWEEPS 3         // highest average of 3 sweeps (~3.5 s)
+#define SPECTRUM_SETTLE_MS 14     // a little longer than hopping: early samples after a big jump read high
+#define SPECTRUM_SAMPLE_MS 5      // readings in this window are averaged (single samples are noisy)
 
 // Correcting laps after a race
 enum {
@@ -122,6 +122,8 @@ class LapTimer {
     bool requestSpectrum();
     bool isSpectrumRunning() { return spectrumActive || spectrumRequested; }
     uint8_t getSpectrumRssi(uint8_t point) { return spectrumRssi[point]; }
+    // measured steps so far (all sweeps); SPECTRUM_POINTS * SPECTRUM_SWEEPS when complete
+    uint16_t getSpectrumProgress() { return spectrumActive ? spectrumSweep * SPECTRUM_POINTS + spectrumIndex : spectrumDone; }
 
     // RSSI history for the calibration graph
     uint32_t getHistorySeq() { return historySeq; }
@@ -165,9 +167,11 @@ class LapTimer {
     volatile bool spectrumActive = false;
     uint8_t spectrumRssi[SPECTRUM_POINTS];
     uint8_t spectrumIndex = 0;
+    uint16_t spectrumDone = 0;   // progress of the last finished scan
     uint8_t spectrumSweep = 0;
     bool spectrumTuned = false;
-    uint8_t spectrumMax = 0;
+    uint32_t spectrumSum = 0;
+    uint16_t spectrumSamples = 0;
     uint32_t spectrumSettleUntilMs = 0;
     uint32_t spectrumSampleUntilMs = 0;
     void spectrumStep(uint32_t nowMs);

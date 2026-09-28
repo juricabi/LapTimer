@@ -161,11 +161,14 @@ class H(SimpleHTTPRequestHandler):
                         return self._json({"status": "busy"}, 409)
                     R["specAt"] = time.time()
                     return self._json({"status": "OK"})
-                running = time.time() - R.get("specAt", 0) < 2.5
+                elapsed = time.time() - R.get("specAt", 0)
+                total = 61 * 3
+                done = min(total, int(elapsed / 3.5 * total))
+                running = done < total
                 peaks = [(5800, 75), (5880, 55), (5740, 30)]
-                vals = [max([60 + random.randint(0, 6)] + [int(60 + h * math.exp(-((5645 + k * 5 - f) ** 2) / 150)) for f, h in peaks])
-                        for k in range(61)]
-                return self._json({"running": running, "start": 5645, "step": 5, "rssi": vals})
+                vals = [max([55 + random.randint(0, 6)] + [int(55 + h * math.exp(-((5645 + k * 5 - f) ** 2) / 150)) for f, h in peaks])
+                        if (done >= 61 or k < done) else 0 for k in range(61)]
+                return self._json({"running": running, "done": done, "total": total, "start": 5645, "step": 5, "rssi": vals})
             if u.path == "/api/wifi/saved":
                 return self._json({"networks": SAVED, "connected": SAVED[0] if SAVED else "", "max": 5})
             if u.path == "/api/info":

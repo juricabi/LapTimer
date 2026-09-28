@@ -1337,3 +1337,24 @@ a.chip {
   font-size: 12px;
   font-weight: 700;
 }
+
+/* Channel scan drawn like the live RSSI graph */
+.spectrum-plot {
+  position: relative;
+}
+
+.spectrum-scale {
+  position: absolute;
+  right: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.spectrum-scale-max {
+  top: 2px;
+}
+
+.spectrum-scale-min {
+  bottom: 2px;
+}

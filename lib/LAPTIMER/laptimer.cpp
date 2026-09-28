@@ -268,7 +268,7 @@ bool LapTimer::requestSpectrum()
     return true;
 }
 
-// Sweeps the band one frequency at a time: tune, settle, keep the highest RSSI
+// Sweeps the band one frequency at a time: tune, settle, average the RSSI
 void LapTimer::spectrumStep(uint32_t nowMs)
 {
     if (!spectrumTuned)
@@ -277,7 +277,8 @@ void LapTimer::spectrumStep(uint32_t nowMs)
         rx->setFrequency(freq, false);
         spectrumSettleUntilMs = nowMs + SPECTRUM_SETTLE_MS;
         spectrumSampleUntilMs = spectrumSettleUntilMs + SPECTRUM_SAMPLE_MS;
-        spectrumMax = 0;
+        spectrumSum = 0;
+        spectrumSamples = 0;
         spectrumTuned = true;
         return;
     }
@@ -285,19 +286,21 @@ void LapTimer::spectrumStep(uint32_t nowMs)
         return;
     if ((int32_t)(nowMs - spectrumSampleUntilMs) < 0)
     {
-        uint8_t v = rx->readRssiRaw();
-        if (v > spectrumMax)
-            spectrumMax = v;
+        spectrumSum += rx->readRssiRaw();
+        spectrumSamples++;
         return;
     }
-    if (spectrumSweep == 0 || spectrumMax > spectrumRssi[spectrumIndex])
-        spectrumRssi[spectrumIndex] = spectrumMax;
+    // average of this window; across sweeps keep the highest average (a transmitter is steady, noise is not)
+    uint8_t average = spectrumSamples ? spectrumSum / spectrumSamples : 0;
+    if (spectrumSweep == 0 || average > spectrumRssi[spectrumIndex])
+        spectrumRssi[spectrumIndex] = average;
     spectrumTuned = false;
     if (++spectrumIndex >= SPECTRUM_POINTS)
     {
         spectrumIndex = 0;
         if (++spectrumSweep >= SPECTRUM_SWEEPS)
         {
+            spectrumDone = SPECTRUM_POINTS * SPECTRUM_SWEEPS;
             spectrumActive = false; // scan() tunes back to the pilots' channels
         }
     }
@@ -317,6 +320,8 @@ void LapTimer::update(uint32_t nowMs)
         spectrumIndex = 0;
         spectrumSweep = 0;
         spectrumTuned = false;
+        spectrumDone = 0;
+        memset(spectrumRssi, 0, sizeof(spectrumRssi)); // 0 = not measured yet (the page draws as it goes)
     }
     if (spectrumActive)
     {

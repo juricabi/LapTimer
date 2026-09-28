@@ -713,7 +713,7 @@ function handleStatus(s) {
   statusAtMs = Date.now();
 
   $("bvolt").textContent = (s.vbat / 10).toFixed(1) + "V";
-  if (currentTab === "calib" && s.pilots[calibIndex]) $("rssiNow").textContent = s.pilots[calibIndex].rssi;
+  if (currentTab === "calib" && !rssiPaused && !s.spectrum && s.pilots[calibIndex]) $("rssiNow").textContent = s.pilots[calibIndex].rssi;
 
   checkSettingsRevision(s.cfg);
   const lapCountsChanged =
@@ -1226,7 +1226,30 @@ function stopCalibration() {
 }
 
 // High-resolution RSSI history (one value per 25 ms) from the timer
+// While a channel scan runs the receiver is busy sweeping: freeze the live graph
+let rssiPaused = false;
+
+function setRssiPaused(paused) {
+  if (paused === rssiPaused) return;
+  rssiPaused = paused;
+  $("rssiPaused").hidden = !paused;
+  if (paused) {
+    if (rssiChart) rssiChart.stop();
+    $("rssiNow").textContent = "--";
+  } else {
+    rssiSeries.clear(); // start fresh, instead of a line bridging the pause
+    lastPointMs = 0;
+    if (rssiChart && currentTab === "calib") rssiChart.start();
+  }
+}
+
 function pollRssi() {
+  const scanning = spectrumScanning || (status && status.spectrum);
+  setRssiPaused(!!scanning);
+  if (scanning) {
+    calibTimer = currentTab === "calib" ? setTimeout(pollRssi, 250) : null;
+    return;
+  }
   fetchJson("/api/rssi?since=" + rssiSeq)
     .then((r) => {
       const values = r.pilots[calibIndex] || [];
@@ -1323,17 +1346,22 @@ $("spectrumButton").addEventListener("click", async (e) => {
   const button = e.target;
   button.disabled = true;
   spectrumScanning = true;
-  showButtonStatus(button, "Scanning… (about 3 s)", 0);
+  showButtonStatus(button, "Scanning… (about 4 s)", 0);
   try {
     const start = await fetch("/api/spectrum?start=1");
     if (start.status === 409) {
       showButtonStatus(button, "Not possible during a race");
       return;
     }
+    // draw as the data comes in: bars appear during the first sweep and grow in the next ones
     let data = { running: true };
-    for (let i = 0; i < 20 && data.running; i++) {
-      await new Promise((r) => setTimeout(r, 500));
+    for (let i = 0; i < 40 && data.running; i++) {
+      await new Promise((r) => setTimeout(r, 300));
       data = await fetchJson("/api/spectrum");
+      if (data.running && data.total) {
+        showButtonStatus(button, `Scanning… ${Math.round((100 * data.done) / data.total)}%`, 0);
+        renderSpectrum(data);
+      }
     }
     const raceStarted = status && status.state >= STATE.COUNTDOWN && status.state <= STATE.RUNNING;
     if (raceStarted) {
@@ -1356,27 +1384,34 @@ $("spectrumButton").addEventListener("click", async (e) => {
 function renderSpectrum(data) {
   const box = $("spectrum");
   const values = data.rssi || [];
-  if (!values.length) return;
+  const measured = values.filter((v) => v > 0); // 0 = not measured yet
+  if (!measured.length) return;
+  // Drawn like the live RSSI graph: same line and fill colours and a scale that fits the
+  // data. Noise stays small because the range is at least 90 RSSI units.
   const barW = 10;
   const width = values.length * barW;
   const height = 170;
-  const bottom = height - 4;
-  const top = 6;
-  const min = Math.min(...values);
-  const max = Math.max(min + 20, ...values);
+  const min = Math.max(0, Math.min(...measured) - 5);
+  const max = Math.max(min + 90, ...measured);
   const freqX = (f) => ((f - data.start) / data.step) * barW + barW / 2;
+  const y = (v) => height - ((v - min) / (max - min)) * height;
 
   let svg = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Signal strength per frequency">`;
+  const points = [];
   values.forEach((v, i) => {
-    const h = Math.max(2, ((v - min) / (max - min)) * (bottom - top));
-    const strength = (v - min) / (max - min);
-    svg += `<rect x="${i * barW + 1}" y="${bottom - h}" width="${barW - 2}" height="${h}" rx="2" fill="var(--accent)" opacity="${(0.35 + 0.65 * strength).toFixed(2)}"><title>${data.start + i * data.step} MHz: ${v}</title></rect>`;
+    if (v) points.push([i * barW + barW / 2, y(v)]);
   });
+  if (points.length) {
+    const line = points.map(([px, py], k) => `${k ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join(" ");
+    const area = `${line} L${points[points.length - 1][0]},${height} L${points[0][0]},${height} Z`;
+    svg += `<path d="${area}" fill="hsla(214, 70%, 60%, 0.2)" />`;
+    svg += `<path d="${line}" fill="none" stroke="hsl(214, 70%, 60%)" stroke-width="2" vector-effect="non-scaling-stroke" />`;
+  }
 
   pilots.slice(0, pilotCount).forEach((p, i) => {
     if (!bandChannel(p.freq)) return;
     const x = freqX(p.freq);
-    svg += `<line x1="${x}" x2="${x}" y1="${top - 4}" y2="${bottom}" stroke="var(--p${i + 1})" stroke-width="2" stroke-dasharray="4 3" />`;
+    svg += `<line x1="${x}" x2="${x}" y1="0" y2="${height}" stroke="var(--p${i + 1})" stroke-width="2" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" />`;
   });
   svg += "</svg>";
   // frequency labels as normal text (the chart itself stretches), rotated to fit
@@ -1393,7 +1428,11 @@ function renderSpectrum(data) {
     names += `<span style="left:${((freqX(p.freq) / width) * 100).toFixed(2)}%;color:var(--p${i + 1})">${escapeHtml(channelName(p.freq))}</span>`;
   });
   names += "</div>";
-  box.innerHTML = names + svg + labels;
+  const complete = !data.running;
+  const busy = Math.max(...measured) - min >= 15;
+  const note = !complete || busy ? "" : '<p class="hint spectrum-quiet">No busy channels found: everything is at the background level.</p>';
+  const scale = `<span class="spectrum-scale spectrum-scale-max">${Math.round(max)}</span><span class="spectrum-scale spectrum-scale-min">${Math.round(min)}</span>`;
+  box.innerHTML = names + `<div class="spectrum-plot">${svg}${scale}</div>` + labels + note;
   box.hidden = false;
 }
 

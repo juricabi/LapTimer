@@ -130,8 +130,9 @@ void Webserver::registerApi()
             return;
         }
         AsyncResponseStream *response = request->beginResponseStream("application/json");
-        response->printf("{\"running\":%d,\"start\":%u,\"step\":%u,\"rssi\":[",
-                         timer->isSpectrumRunning(), SPECTRUM_START_MHZ, SPECTRUM_STEP_MHZ);
+        response->printf("{\"running\":%d,\"done\":%u,\"total\":%u,\"start\":%u,\"step\":%u,\"rssi\":[",
+                         timer->isSpectrumRunning(), timer->getSpectrumProgress(), SPECTRUM_POINTS * SPECTRUM_SWEEPS,
+                         SPECTRUM_START_MHZ, SPECTRUM_STEP_MHZ);
         for (uint8_t i = 0; i < SPECTRUM_POINTS; i++)
             response->printf(i ? ",%u" : "%u", timer->getSpectrumRssi(i));
         response->print("]}");
