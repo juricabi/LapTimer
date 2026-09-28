@@ -97,6 +97,8 @@ try:
     check("second start refused while racing", st == 409, st)
     st, _ = req("/timer/clear", {})
     check("clear refused while racing", st == 409, st)
+    st, _ = req("/api/profiles/save", {"name": TEST_PILOT, "freq": 5800, "enter": 120, "exit": 100})
+    check("saved pilots refused while racing (flash write)", st == 409, st)
     req("/timer/stop", {})
     time.sleep(0.3)
     st, _ = req("/api/spectrum?start=1")
