@@ -28,8 +28,18 @@ Every change goes through all steps; a step is done when its check passes.
   `CONFIG_VERSION`, add a `setVNDefaults()` and a step in `Config::load`, so users keep their
   settings through updates. `fromJson` changes only keys that are present, and the page sends
   only changed settings — two open phones rely on this.
-- **Race data** changes only on the timing core in `LapTimer::update`. The web server (other
-  core) queues commands with `requestStart/requestStop/requestClear`.
+- **Race data** changes only on the timing core in `LapTimer::update`. The web server (core 0,
+  pinned with `CONFIG_ASYNC_TCP_RUNNING_CORE=0`; unpinned it preempted RSSI sampling) queues
+  commands with `requestStart/requestStop/requestClear/requestEdit`.
+- **Timing core stalls**: web replies are built in memory (`sendJson`, `String`), never with
+  `AsyncResponseStream` (drained byte by byte, O(n^2)). Flash writes stall both cores, so
+  settings reach EEPROM only outside a race.
+- **Settings from the page** are applied to a copy, checked (pilot count, exit < enter, UTF-8
+  names) and then published: the timing core reads them at any moment.
+- **Multi-device**: `POST /config` replies `{base, rev}`; a page adopts `rev` only if `base` is
+  the revision it knew, otherwise it reloads. `/api/status` carries `boot` (random per start)
+  and `prof` (saved-pilot revision). Saved pilots change one at a time
+  (`/api/profiles/save|remove`); lap fixes carry `expect` and get 409 when stale.
 - **Race wins over a channel scan**: starting a race cancels a scan; a scan is refused during
   a race, the countdown or a queued start.
 - **Cache busting** is automatic: `tools/stamp_versions.py` runs before every PlatformIO build
@@ -39,6 +49,7 @@ Every change goes through all steps; a step is done when its check passes.
 - **Storage**: a web-files (LittleFS) update replaces race history and saved pilots; settings
   (EEPROM) and saved WiFi networks (NVS) survive both kinds of update. Every race/profile
   write goes through `RaceHistory::writeJson` (temp file + rename) under the history lock.
+  Files are read into memory before sending: LittleFS can't replace a file that is open.
 - **WiFi passwords** stay on the timer; `/config` and `/api/wifi/saved` return names only.
 - **UI**: design tokens in `style.css` with contrast ratios noted beside them — text ≥ 4.5:1,
   controls ≥ 3:1, touch targets ≥ 44 px; plain CSS/JS, no new libraries.
