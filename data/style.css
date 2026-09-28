@@ -1146,3 +1146,102 @@ a.chip {
   color: var(--topbar-text);
   text-decoration: none;
 }
+
+/* Saved WiFi networks */
+.saved-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.saved-list:empty {
+  display: none;
+}
+
+.saved-list .hint {
+  padding: var(--space-3);
+}
+
+.saved-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--tap);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.saved-row:last-child {
+  border-bottom: 0;
+}
+
+.saved-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--go-text);
+}
+
+.btn-small {
+  min-height: 36px;
+  padding: var(--space-1) var(--space-3);
+  font-size: 13px;
+}
+
+/* Automatic save status (replaces the Save buttons) */
+.save-status {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  padding: var(--space-2) var(--space-3);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.save-bar .save-status {
+  width: fit-content;
+  margin: 0 auto;
+  box-shadow: var(--shadow);
+}
+
+.save-status[data-save-state="saved"] {
+  color: var(--go-text);
+}
+
+.save-status[data-save-state="error"] {
+  color: var(--stop-text);
+  border-color: var(--stop-text);
+  cursor: pointer;
+}
+
+/* Race screen additions */
+.rs-empty {
+  color: #475569;
+}
+
+.rs-finished {
+  color: #4ade80;
+}
+
+.rs-current-row {
+  color: #94a3b8;
+  font-size: clamp(16px, 3vw, 28px);
+}
+
+.rs-current {
+  color: #e2e8f0;
+}

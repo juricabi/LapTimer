@@ -18,9 +18,10 @@ static const char *wifi_ap_password = "laptimer";
 static const char *wifi_ap_address = "192.168.4.1";
 String wifi_ap_ssid;
 
-void Webserver::init(Config *config, LapTimer *lapTimer, RaceHistory *raceHistory, BatteryMonitor *batMonitor, Buzzer *buzzer, Led *l)
+void Webserver::init(Config *config, LapTimer *lapTimer, RaceHistory *raceHistory, WifiList *networks, BatteryMonitor *batMonitor, Buzzer *buzzer, Led *l)
 {
     history = raceHistory;
+    wifiList = networks;
 
     ipAddress.fromString(wifi_ap_address);
 
@@ -41,7 +42,7 @@ void Webserver::init(Config *config, LapTimer *lapTimer, RaceHistory *raceHistor
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
     esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_LR);
-    if (conf->getSsid()[0] == 0)
+    if (wifiList->count() == 0)
     {
         changeMode = WIFI_AP;
     }
@@ -55,6 +56,52 @@ void Webserver::init(Config *config, LapTimer *lapTimer, RaceHistory *raceHistor
 
 void Webserver::handleWebUpdate(uint32_t currentTimeMs)
 {
+    // Power-up scan for saved networks: join the strongest one in range, or use the hotspot
+    if (staScanning)
+    {
+        int16_t found = WiFi.scanComplete();
+        // The WiFi library reports WIFI_SCAN_FAILED once a scan takes longer than
+        // 20 x 300 ms = 6 s, but a full scan here takes ~5.95 s and is a little slower on
+        // the first boot after an update. The real result still arrives a moment later,
+        // so keep waiting for it (up to 12 s) instead of treating that as a failure.
+        if ((found == WIFI_SCAN_RUNNING || found == WIFI_SCAN_FAILED) && (currentTimeMs - scanStartMs) < 12000)
+        {
+            return;
+        }
+        staScanning = false;
+        DEBUG("WiFi scan result %d after %u ms\n", found, currentTimeMs - scanStartMs);
+        int best = found > 0 ? wifiList->pickBest(found) : -1;
+        WiFi.scanDelete();
+        if (found < 0)
+        {
+            // The scan itself failed (can happen right after power-up): just try the newest network
+            DEBUG("WiFi scan failed, trying the newest saved network\n");
+            best = 0;
+        }
+        else if (best < 0 && ++scanAttempts < 3)
+        {
+            // Networks sometimes don't show up in the first scan: look again before giving up
+            DEBUG("No saved WiFi network found, scanning again\n");
+            WiFi.scanNetworks(true);
+            staScanning = true;
+            scanStartMs = currentTimeMs;
+            return;
+        }
+        if (best < 0)
+        {
+            DEBUG("No saved WiFi network in range\n");
+            changeMode = WIFI_AP;
+            changeTimeMs = currentTimeMs - WIFI_RECONNECT_TIMEOUT_MS - 1; // switch right away
+            wifiMode = WIFI_OFF;
+        }
+        else
+        {
+            DEBUG("Joining WiFi %s\n", wifiList->ssid(best));
+            WiFi.begin(wifiList->ssid(best), wifiList->password(best));
+            changeTimeMs = currentTimeMs;
+        }
+    }
+
     wl_status_t status = WiFi.status();
 
     if (status != lastStatus && wifiMode == WIFI_STA)
@@ -125,7 +172,10 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
             WiFi.setHostname(wifi_hostname); // hostname must be set before the mode is set to STA
             WiFi.mode(wifiMode);
             changeTimeMs = currentTimeMs;
-            WiFi.begin(conf->getSsid(), conf->getPassword());
+            // look for the saved networks first (handled at the top of this function)
+            WiFi.scanNetworks(true);
+            staScanning = true;
+            scanStartMs = currentTimeMs;
             startServices();
             led->blink(200);
         default:
@@ -273,11 +323,11 @@ Battery Voltage:\t%0.1fv";
     AsyncCallbackJsonWebHandler *configJsonHandler = new AsyncCallbackJsonWebHandler("/config", [this](AsyncWebServerRequest *request, JsonVariant &json)
                                                                                      {
         JsonObject jsonObj = json.as<JsonObject>();
-#ifdef DEBUG_OUT
-        serializeJsonPretty(jsonObj, DEBUG_OUT);
-        DEBUG("\n");
-#endif
         conf->fromJson(jsonObj);
+        // Older pages send the home WiFi with the settings: keep it in the saved networks
+        const char *ssid = jsonObj["ssid"] | "";
+        if (ssid[0] != 0 && strcmp(ssid, "undefined") != 0)
+            wifiList->add(ssid, jsonObj["pwd"] | "");
         request->send(200, "application/json", "{\"status\": \"OK\"}");
         led->on(200); });
 

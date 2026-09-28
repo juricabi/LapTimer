@@ -30,14 +30,14 @@ void Webserver::registerApi()
         uint32_t now = millis();
         int n = snprintf(buf, sizeof(buf),
                          "{\"state\":%d,\"mode\":%d,\"cd\":%d,\"race\":%u,\"elapsed\":%d,\"raceMs\":%u,"
-                         "\"raceLaps\":%u,\"timeUp\":%d,\"vbat\":%u,\"pilots\":[",
+                         "\"raceLaps\":%u,\"timeUp\":%d,\"vbat\":%u,\"saveErr\":%d,\"pilots\":[",
                          timer->getState(), timer->getMode(), timer->getCountdown(), timer->getRaceId(),
                          timer->getElapsedMs(now), timer->getRaceMs(), timer->getRaceLaps(), timer->isTimeUp(),
-                         monitor->getBatteryVoltage());
-        // while idle the live pilot settings apply, during/after a race the race's pilots
-        uint8_t count = timer->getState() == RACE_IDLE && timer->getLapCount(0) == 0
-                            ? conf->getPilotCount()
-                            : timer->getPilotCount();
+                         monitor->getBatteryVoltage(), !history->lastSaveOk);
+        // configured pilots (live RSSI) and the race's pilots (laps), whichever is more
+        uint8_t count = conf->getPilotCount();
+        if ((timer->isRacing() || timer->hasRaceData()) && timer->getPilotCount() > count)
+            count = timer->getPilotCount();
         for (uint8_t i = 0; i < count && n < (int)sizeof(buf) - 64; i++)
         {
             n += snprintf(buf + n, sizeof(buf) - n, "%s{\"rssi\":%u,\"laps\":%d,\"fin\":%d}",
@@ -96,20 +96,21 @@ void Webserver::registerApi()
     // Race control; t = browser time (epoch seconds) for the race history
     server.on("/timer/start", HTTP_POST, [this](AsyncWebServerRequest *request)
               {
-        timer->start(paramU32(request, "t", 0));
-        bool armed = timer->getState() != RACE_IDLE && timer->getState() != RACE_FINISHED;
-        request->send(armed ? 200 : 409, "application/json",
-                      armed ? "{\"status\":\"OK\"}" : "{\"status\":\"busy\"}"); });
+        // busy = already racing, or the previous race is still being saved (the page retries)
+        bool queued = timer->requestStart(paramU32(request, "t", 0));
+        request->send(queued ? 200 : 409, "application/json",
+                      queued ? "{\"status\":\"OK\"}" : "{\"status\":\"busy\"}"); });
 
     server.on("/timer/stop", HTTP_POST, [this](AsyncWebServerRequest *request)
               {
-        timer->stop();
+        timer->requestStop();
         sendOk(request); });
 
     server.on("/timer/clear", HTTP_POST, [this](AsyncWebServerRequest *request)
               {
-        timer->clear();
-        sendOk(request); });
+        bool queued = timer->requestClear();
+        request->send(queued ? 200 : 409, "application/json",
+                      queued ? "{\"status\":\"OK\"}" : "{\"status\":\"busy\"}"); });
 
     // Race history
     server.on("/api/races", HTTP_GET, [this](AsyncWebServerRequest *request)
@@ -128,37 +129,71 @@ void Webserver::registerApi()
     server.on("/api/profiles", HTTP_GET, [this](AsyncWebServerRequest *request)
               { history->sendProfiles(request); });
 
+    // The body is collected into a per-request buffer, and refused up front if too large
     server.on(
         "/api/profiles", HTTP_POST,
-        [](AsyncWebServerRequest *request) {},
-        nullptr,
-        [this](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+        [this](AsyncWebServerRequest *request)
         {
-            // collect the body (it can arrive in several chunks)
-            static String body;
-            if (index == 0)
-                body = "";
-            body.concat((const char *)data, len);
-            if (index + len < total)
-                return;
-            bool ok = history->saveProfiles((const uint8_t *)body.c_str(), body.length());
-            body = "";
+            const char *body = (const char *)request->_tempObject; // freed with the request
+            bool ok = body && history->saveProfiles((const uint8_t *)body, strlen(body));
             request->send(ok ? 200 : 400, "application/json",
                           ok ? "{\"status\":\"OK\"}" : "{\"status\":\"invalid\"}");
+        },
+        nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+        {
+            if (total > MAX_PROFILES_SIZE)
+                return;
+            if (index == 0)
+                request->_tempObject = calloc(total + 1, 1);
+            if (request->_tempObject && index + len <= total)
+                memcpy((char *)request->_tempObject + index, data, len);
         });
+
+    // Saved WiFi networks (names only; passwords never leave the timer)
+    server.on("/api/wifi/saved", HTTP_GET, [this](AsyncWebServerRequest *request)
+              {
+        JsonDocument doc;
+        JsonArray list = doc["networks"].to<JsonArray>();
+        for (uint8_t i = 0; i < wifiList->count(); i++)
+            list.add(wifiList->ssid(i));
+        doc["connected"] = wifiMode == WIFI_STA && WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String("");
+        doc["max"] = MAX_WIFI_NETWORKS;
+        AsyncResponseStream *response = request->beginResponseStream("application/json");
+        serializeJson(doc, *response);
+        request->send(response); });
+
+    server.addHandler(new AsyncCallbackJsonWebHandler("/api/wifi/saved/add", [this](AsyncWebServerRequest *request, JsonVariant &json)
+                                                      {
+        bool ok = wifiList->add(json["ssid"] | "", json["pwd"] | "");
+        request->send(ok ? 200 : 400, "application/json",
+                      ok ? "{\"status\":\"OK\"}" : "{\"status\":\"invalid\"}"); }));
+
+    server.addHandler(new AsyncCallbackJsonWebHandler("/api/wifi/saved/remove", [this](AsyncWebServerRequest *request, JsonVariant &json)
+                                                      {
+        wifiList->remove(json["ssid"] | "");
+        sendOk(request); }));
+
+    server.on("/api/wifi/saved/clear", HTTP_POST, [this](AsyncWebServerRequest *request)
+              {
+        wifiList->clear();
+        sendOk(request); });
 
     // WiFi scan for the home WiFi picker. ?start=1 starts a new scan.
     server.on("/api/wifi/scan", HTTP_GET, [](AsyncWebServerRequest *request)
               {
+        static uint32_t scanStartMs = 0;
         if (request->hasParam("start"))
         {
             WiFi.scanDelete();
             WiFi.scanNetworks(true);
+            scanStartMs = millis();
             request->send(200, "application/json", "{\"scanning\":true}");
             return;
         }
         int16_t n = WiFi.scanComplete();
-        if (n == WIFI_SCAN_RUNNING)
+        // the library reports a scan longer than 6 s as failed although it finishes shortly after
+        if (n == WIFI_SCAN_RUNNING || (n == WIFI_SCAN_FAILED && millis() - scanStartMs < 12000))
         {
             request->send(200, "application/json", "{\"scanning\":true}");
             return;

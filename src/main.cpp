@@ -2,6 +2,7 @@
 #include "history.h"
 #include "led.h"
 #include "webserver.h"
+#include "wifilist.h"
 #include <ElegantOTA.h>
 
 static RX5808 rx(PIN_RX5808_RSSI, PIN_RX5808_DATA, PIN_RX5808_SELECT, PIN_RX5808_CLOCK);
@@ -11,6 +12,7 @@ static Buzzer buzzer;
 static Led led;
 static LapTimer timer;
 static RaceHistory history;
+static WifiList wifiList;
 static BatteryMonitor monitor;
 
 static TaskHandle_t xTimerTask = NULL;
@@ -45,7 +47,8 @@ void setup() {
     led.init(PIN_LED, false);
     timer.init(&config, &rx, &buzzer, &led);
     monitor.init(PIN_VBAT, VBAT_SCALE, VBAT_ADD, &buzzer, &led);
-    ws.init(&config, &timer, &history, &monitor, &buzzer, &led);
+    wifiList.init(&config);
+    ws.init(&config, &timer, &history, &wifiList, &monitor, &buzzer, &led);
     led.on(400);
     buzzer.beep(200);
     initParallelTask();

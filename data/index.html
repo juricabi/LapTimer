@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0f172a" />
   <title>LapTimer</title>
   <link rel="icon" type="image/png" href="favicon.ico" />
-  <link rel="stylesheet" type="text/css" href="style.css?v=3" />
+  <link rel="stylesheet" type="text/css" href="style.css?v=6" />
   <script src="smoothie.js"></script>
 </head>
 
@@ -119,7 +119,7 @@
             <span class="switch-title">Voice on this phone</span><br />
             <span class="hint">Speaks lap times through this device</span>
           </span>
-          <span class="switch"><input type="checkbox" id="voiceToggle" checked /><span class="slider"></span></span>
+          <span class="switch"><input type="checkbox" id="voiceToggle" data-local checked /><span class="slider"></span></span>
         </label>
         <button id="GenerateAudioButton" class="btn btn-ghost btn-block">Test voice</button>
       </div>
@@ -144,23 +144,22 @@
       </div>
 
       <div class="card">
-        <h2>Home WiFi</h2>
-        <p class="hint">Join the timer to your home WiFi, or leave empty to use its own hotspot. Save, then restart to apply.</p>
+        <h2>WiFi networks</h2>
+        <p class="hint">When it powers on, the timer joins the strongest saved network in range. If none is in range, it starts its own hotspot.</p>
+        <div id="savedNetworks" class="saved-list"></div>
         <div class="field">
-          <label class="field-label" for="ssid">Network name</label>
+          <label class="field-label" for="ssid">Add a network</label>
           <div class="input-row">
-            <input type="text" id="ssid" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <input type="text" id="ssid" data-local maxlength="32" placeholder="Network name" autocomplete="off" autocapitalize="off" spellcheck="false" />
             <button id="wifiScanButton" class="btn btn-ghost">Scan</button>
           </div>
           <div id="wifiScanResults" class="scan-results" hidden></div>
         </div>
-        <label class="field">
-          <span class="field-label">Password</span>
-          <input type="password" id="pwd" maxlength="32" autocomplete="off" />
-        </label>
+        <input type="password" id="pwd" data-local maxlength="64" placeholder="Password" autocomplete="off" aria-label="Password" />
+        <button id="addWifiButton" class="btn btn-ghost btn-block">Save network</button>
         <div class="button-row">
           <button id="restartEspButton" class="btn btn-ghost">Restart timer</button>
-          <button id="forgetWifiButton" class="btn btn-ghost btn-danger">Forget home WiFi</button>
+          <button id="forgetWifiButton" class="btn btn-ghost btn-danger">Forget all</button>
         </div>
         <p id="wifiForgotten" class="note" hidden>
           <b>Restarting into the hotspot.</b> In a few seconds join <b>LapTimer_xxxx&nbsp;192.168.4.1</b>
@@ -168,8 +167,8 @@
         </p>
         <ul class="info-list">
           <li><b>On your WiFi</b> open <b>http://laptimer.local</b>, or the timer's IP from your router.</li>
-          <li><b>WiFi not found</b> within 60&nbsp;s of power-on: the timer starts its own hotspot <b>LapTimer_xxxx&nbsp;192.168.4.1</b>, password <b>laptimer</b>.</li>
-          <li><b>Once connected</b> it stays on your WiFi and reconnects if the WiFi drops.</li>
+          <li><b>No saved network in range</b> (or it can't join within 60&nbsp;s): the timer starts its own hotspot <b>LapTimer_xxxx&nbsp;192.168.4.1</b>, password <b>laptimer</b>.</li>
+          <li><b>New networks</b> are used after the next restart. Passwords stay on the timer.</li>
         </ul>
       </div>
 
@@ -184,7 +183,7 @@
       </div>
 
       <div class="save-bar">
-        <button id="saveButton" class="btn btn-primary btn-block">Save configuration</button>
+        <div class="save-status" data-save-state="saved" role="status">Saved to timer ✓</div>
       </div>
     </section>
 
@@ -240,7 +239,7 @@
           <span class="switch"><input type="checkbox" id="autoCal" /><span class="slider"></span></span>
         </label>
         <div id="autoCalResult" class="note" hidden></div>
-        <button class="btn btn-primary btn-block" id="saveThresholdsButton">Save thresholds</button>
+        <div class="save-status" data-save-state="saved" role="status">Saved to timer ✓</div>
       </div>
     </section>
 
@@ -265,7 +264,7 @@
     <div id="rsPilots" class="rs-pilots"></div>
   </div>
 
-  <script src="script.js?v=3"></script>
+  <script src="script.js?v=6"></script>
 </body>
 
 </html>

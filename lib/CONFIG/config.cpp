@@ -88,8 +88,7 @@ void Config::toJsonDoc(JsonDocument &config)
     config["raceSec"] = conf.raceSeconds;
     config["raceLaps"] = conf.raceLaps;
     config["countdown"] = conf.countdown;
-    config["ssid"] = conf.ssid;
-    config["pwd"] = conf.password;
+    // WiFi networks (with passwords) are managed by WifiList and never sent back to the page
 }
 
 void Config::toJson(AsyncResponseStream &destination)
@@ -175,8 +174,6 @@ void Config::fromJson(JsonObject source)
     changed |= updateField(source, "raceSec", conf.raceSeconds);
     changed |= updateField(source, "raceLaps", conf.raceLaps);
     changed |= updateField(source, "countdown", conf.countdown);
-    changed |= updateString(source, "ssid", conf.ssid, sizeof(conf.ssid));
-    changed |= updateString(source, "pwd", conf.password, sizeof(conf.password));
 
     // keep values in sane ranges
     if (conf.pilotCount < 1)
@@ -217,6 +214,15 @@ uint8_t Config::getExitRssi(uint8_t pilot)
 const char *Config::getPilotName(uint8_t pilot)
 {
     return pilot == 0 ? conf.pilotName : conf.extraPilots[pilot - 1].name;
+}
+
+// The network is moved into the saved WiFi list; forget it here
+void Config::clearWifi()
+{
+    memset(conf.ssid, 0, sizeof(conf.ssid));
+    memset(conf.password, 0, sizeof(conf.password));
+    modified = true;
+    write();
 }
 
 uint32_t Config::getMinLapMs()

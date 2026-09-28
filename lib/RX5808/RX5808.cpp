@@ -9,7 +9,6 @@ RX5808::RX5808(uint8_t _rssiInputPin, uint8_t _rx5808DataPin, uint8_t _rx5808Sel
     rx5808DataPin = _rx5808DataPin;
     rx5808SelPin = _rx5808SelPin;
     rx5808ClkPin = _rx5808ClkPin;
-    lastSetFreqTimeMs = millis();
 }
 
 void RX5808::init() {
@@ -22,75 +21,6 @@ void RX5808::init() {
     digitalWrite(rx5808DataPin, LOW);
     resetRxModule();
     setFrequency(POWER_DOWN_FREQ_MHZ);
-}
-
-void RX5808::handleFrequencyChange(uint32_t currentTimeMs, uint16_t potentiallyNewFreq) {
-    if ((currentFrequency != potentiallyNewFreq) && ((currentTimeMs - lastSetFreqTimeMs) > RX5808_MIN_BUSTIME)) {
-        lastSetFreqTimeMs = currentTimeMs;
-        setFrequency(potentiallyNewFreq);
-    }
-
-    if (recentSetFreqFlag && (currentTimeMs - lastSetFreqTimeMs) > RX5808_MIN_TUNETIME) {
-        lastSetFreqTimeMs = currentTimeMs;
-        DEBUG("RX5808 Tune done\n");
-        verifyFrequency();
-        recentSetFreqFlag = false;  // don't need to check again until next freq change
-    }
-}
-
-bool RX5808::verifyFrequency() {
-    // Start of Read Reg code :
-    // Verify read HEX value in RX5808 module Frequency Register 0x01
-    uint16_t vtxRegisterHex = 0;
-    //  Modified copy of packet code in setRxModuleToFreq(), to read Register 0x01
-    //  20 bytes of register data are read, but the
-    //  MSB 4 bits are zeros
-    //  Data Packet is: register address (4-bits) = 0x1, read/write bit = 1 for read, data D0-D15 stored in vtxHexVerify, data15-19=0x0
-
-    rx5808SerialEnableHigh();
-    rx5808SerialEnableLow();
-
-    rx5808SerialSendBit1();  // Register 0x1
-    rx5808SerialSendBit0();
-    rx5808SerialSendBit0();
-    rx5808SerialSendBit0();
-
-    rx5808SerialSendBit0();  // Read register r/w
-
-    // receive data D0-D15, and ignore D16-D19
-    pinMode(rx5808DataPin, INPUT_PULLUP);
-    for (uint8_t i = 0; i < 20; i++) {
-        delayMicroseconds(10);
-        // only use D0-D15, ignore D16-D19
-        if (i < 16) {
-            if (digitalRead(rx5808DataPin)) {
-                bitWrite(vtxRegisterHex, i, 1);
-            } else {
-                bitWrite(vtxRegisterHex, i, 0);
-            }
-        }
-        if (i >= 16) {
-            digitalRead(rx5808DataPin);
-        }
-        digitalWrite(rx5808ClkPin, HIGH);
-        delayMicroseconds(10);
-        digitalWrite(rx5808ClkPin, LOW);
-        delayMicroseconds(10);
-    }
-
-    pinMode(rx5808DataPin, OUTPUT);  // return status of Data pin after INPUT_PULLUP above
-    rx5808SerialEnableHigh();        // Finished clocking data in
-    delay(2);
-
-    digitalWrite(rx5808ClkPin, LOW);
-    digitalWrite(rx5808DataPin, LOW);
-
-    if (vtxRegisterHex != freqMhzToRegVal(currentFrequency)) {
-        DEBUG("RX5808 frequency not matching, register = %u, currentFreq = %u\n", vtxRegisterHex, currentFrequency);
-        return false;
-    }
-    DEBUG("RX5808 frequency verified properly\n");
-    return true;
 }
 
 // Set frequency on RX5808 module to given value
@@ -144,16 +74,9 @@ void RX5808::setFrequency(uint16_t vtxFreq, bool verbose) {
 
     digitalWrite(rx5808ClkPin, LOW);
     digitalWrite(rx5808DataPin, LOW);
-
-    recentSetFreqFlag = true;  // indicate need to wait RX5808_MIN_TUNETIME before reading RSSI
 }
 
-// Read the RSSI value
-uint8_t RX5808::readRssi() {
-    if (recentSetFreqFlag) return 0;  // RSSI is unstable
-    return readRssiRaw();
-}
-
+// Read the RSSI value. The caller (LapTimer::scan) waits for the receiver to settle after tuning.
 uint8_t RX5808::readRssiRaw() {
     volatile uint16_t rssi = 0;
 

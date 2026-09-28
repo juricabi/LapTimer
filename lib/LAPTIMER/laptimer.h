@@ -39,6 +39,7 @@ struct PilotState {
 
     // pass detection
     bool inPass;
+    bool hoverBlocked;           // held above enter too long: ignore until RSSI drops below exit
     uint32_t passStartMs;
     uint8_t peak;
     uint32_t peakFirstMs;
@@ -59,9 +60,14 @@ class LapTimer {
     void init(Config *config, RX5808 *rx5808, Buzzer *buzzer, Led *l);
     void update(uint32_t nowMs);  // call continuously from the main loop
 
-    void start(uint32_t startEpochSec);  // epoch time from the browser, for race history
-    void stop();
-    void clear();                        // forget the last race's laps (not while racing)
+    // Race commands. They are called from the web server (another core), so they only
+    // queue the command; update() carries it out on the timing core.
+    // requestStart/requestClear return false if the timer is busy (racing or saving).
+    bool requestStart(uint32_t startEpochSec);  // epoch time from the browser, for race history
+    void requestStop();
+    bool requestClear();                        // forget the last race's laps (not while racing)
+    bool isRacing() { return state == RACE_COUNTDOWN || state == RACE_WAITING || state == RACE_RUNNING; }
+    bool hasRaceData();                         // any pilot has laps in the current/last race
 
     // race state
     race_state_e getState() { return state; }
@@ -122,5 +128,13 @@ class LapTimer {
     void updateRace(uint32_t nowMs);
     void recordHistory(uint32_t nowMs);
     void resetPilot(PilotState &p);
-    bool hasLaps();
+    void start(uint32_t startEpochSec);
+    void stop();
+    void clear();
+    void runPendingCommand();
+    uint8_t nextActivePilot(uint8_t from, uint8_t count, bool racing);
+
+    enum { CMD_NONE, CMD_START, CMD_STOP, CMD_CLEAR };
+    volatile uint8_t pendingCommand = CMD_NONE;
+    volatile uint32_t pendingEpoch = 0;
 };

@@ -95,21 +95,6 @@ function showButtonStatus(button, text, holdMs = 4000) {
   if (holdMs) button.statusTimer = setTimeout(() => (button.textContent = button.dataset.label), holdMs);
 }
 
-// Briefly show the save result on the button that was pressed.
-function showSaveResult(button, ok) {
-  if (!button) return;
-  if (!button.dataset.label) button.dataset.label = button.textContent;
-  clearTimeout(button.saveTimer);
-  button.textContent = ok ? "Saved ✓" : "Save failed ✗";
-  button.classList.toggle("save-ok", ok);
-  button.classList.toggle("save-failed", !ok);
-  button.disabled = false;
-  button.saveTimer = setTimeout(() => {
-    button.textContent = button.dataset.label;
-    button.classList.remove("save-ok", "save-failed");
-  }, 2000);
-}
-
 function setupSegmented(container, onChange) {
   container.addEventListener("click", (e) => {
     const button = e.target.closest("button");
@@ -189,7 +174,10 @@ function buildPilotRows() {
         <button class="btn btn-ghost p-save-profile">Save profile</button>
       </div>`;
     const p = pilots[i];
-    row.querySelector(".p-name").addEventListener("input", (e) => (p.name = e.target.value));
+    row.querySelector(".p-name").addEventListener("input", (e) => {
+      p.name = e.target.value;
+      renderCalibPilotButtons();
+    });
     const onFreq = () => {
       const b = +row.querySelector(".p-band").value;
       const c = +row.querySelector(".p-channel").value;
@@ -207,6 +195,7 @@ function buildPilotRows() {
       renderPilotRow(i);
       renderPilotHint();
       renderCalibration();
+      renderCalibPilotButtons();
     });
     row.querySelector(".p-save-profile").addEventListener("click", (e) => saveProfile(i, e.target));
     ui.pilotList.appendChild(row);
@@ -221,7 +210,7 @@ function renderPilotRow(i) {
   const bc = bandChannel(p.freq) || { band: 4, channel: 0 };
   row.querySelector(".p-band").value = bc.band;
   row.querySelector(".p-channel").value = bc.channel;
-  row.querySelector(".p-freq").textContent = p.freq;
+  row.querySelector(".p-freq").textContent = bandChannel(p.freq) ? p.freq : "Off";
   renderProfileSelect(row.querySelector(".p-profile"));
 }
 
@@ -247,8 +236,12 @@ function renderPilotHint() {
   }
   const active = pilots.slice(0, pilotCount);
   const warnings = [];
+  active.forEach((p, i) => {
+    if (!bandChannel(p.freq)) warnings.push(`Pilot ${i + 1} has no channel yet: pick a band and channel.`);
+  });
   for (let a = 0; a < active.length; a++) {
     for (let b = a + 1; b < active.length; b++) {
+      if (!bandChannel(active[a].freq) || !bandChannel(active[b].freq)) continue;
       const gap = Math.abs(active[a].freq - active[b].freq);
       if (gap === 0) warnings.push(`Pilots ${a + 1} and ${b + 1} are on the same channel.`);
       else if (gap < 30) warnings.push(`Pilots ${a + 1} and ${b + 1} are only ${gap} MHz apart; laps may be mixed up.`);
@@ -261,11 +254,13 @@ setupSegmented($("pilotCount"), (v) => {
   pilotCount = +v;
   renderPilots();
   renderCalibPilotButtons();
+  scheduleSave();
 });
 
 setupSegmented($("raceMode"), (v) => {
   raceMode = +v;
   renderRaceModeFields();
+  scheduleSave();
 });
 
 function renderRaceModeFields() {
@@ -299,12 +294,11 @@ async function loadConfig() {
   ui.anDelta.checked = !!config.anDelta;
   ui.buzzer.checked = !!config.buzzerOn;
   ui.alarm.value = (config.alarm / 10).toFixed(1);
-  ui.ssid.value = config.ssid;
-  ui.pwd.value = config.pwd;
   [updateRaceTimeLabel, updateRaceLapsLabel, updateMinLapLabel, updateRateLabel, updateAlarmLabel].forEach((f) => f());
 
   renderCalibPilotButtons();
   configLoaded = true;
+  setSaveState("saved");
 }
 
 function configBody() {
@@ -326,32 +320,55 @@ function configBody() {
     anRate: Math.round(announcerRate * 10),
     anDelta: ui.anDelta.checked,
     buzzerOn: ui.buzzer.checked,
-    ssid: ui.ssid.value,
-    pwd: ui.pwd.value,
   };
 }
 
 // Returns a promise resolving to true when the timer confirmed the save
-function saveConfig(button) {
-  if (!configLoaded) {
-    showButtonStatus(button, "Settings not loaded yet");
-    return Promise.resolve(false);
-  }
-  if (button) button.disabled = true;
+function saveConfig() {
+  if (!configLoaded) return Promise.resolve(false);
   return postJson("/config", configBody())
-    .then((response) => {
-      const ok = response.status === "OK";
-      showSaveResult(button, ok);
-      return ok;
-    })
+    .then((response) => response.status === "OK")
     .catch((err) => {
       console.error("/config save failed:", err);
-      showSaveResult(button, false);
       return false;
     });
 }
 
-$("saveButton").addEventListener("click", (e) => saveConfig(e.target));
+// ── Automatic saving ──
+// Every settings change is sent to the timer shortly afterwards, so all screens
+// (and the timer) always use the same settings. Fields marked data-local are not settings.
+let saveTimer = null;
+
+function scheduleSave() {
+  if (!configLoaded) return;
+  setSaveState("saving");
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    const ok = await saveConfig();
+    setSaveState(ok ? "saved" : "error");
+  }, 600);
+}
+
+function setSaveState(state) {
+  const text = { saving: "Saving…", saved: "Saved to timer ✓", error: "Not saved · tap to retry" }[state];
+  for (const el of document.querySelectorAll("[data-save-state]")) {
+    el.dataset.saveState = state;
+    el.textContent = text;
+  }
+}
+
+for (const el of document.querySelectorAll("[data-save-state]")) {
+  el.addEventListener("click", () => {
+    if (el.dataset.saveState === "error") scheduleSave();
+  });
+}
+
+function onSettingsEdit(e) {
+  if (e.target.closest("[data-local]")) return;
+  scheduleSave();
+}
+$("config").addEventListener("input", onSettingsEdit);
+$("config").addEventListener("change", onSettingsEdit);
 
 // ── Pilot profiles (stored on the timer) ──
 async function loadProfiles() {
@@ -433,15 +450,63 @@ $("restartEspButton").addEventListener("click", async (e) => {
   e.target.disabled = false;
 });
 
-// Clears the home WiFi and restarts the timer into its own hotspot
+// ── Saved WiFi networks ──
+async function loadSavedNetworks() {
+  const container = $("savedNetworks");
+  let saved;
+  try {
+    saved = await fetchJson("/api/wifi/saved");
+  } catch (e) {
+    container.textContent = "";
+    return;
+  }
+  container.innerHTML = "";
+  if (!saved.networks.length) {
+    container.appendChild(el("p", "hint", "No saved networks: the timer uses its own hotspot."));
+  }
+  for (const name of saved.networks) {
+    const row = el("div", "saved-row");
+    const label = el("span", "saved-name", name);
+    row.appendChild(label);
+    if (name === saved.connected) row.appendChild(el("span", "badge", "Connected"));
+    const remove = el("button", "btn btn-ghost btn-small", "Remove");
+    remove.addEventListener("click", async () => {
+      if (!confirm(`Forget "${name}"?`)) return;
+      await postJson("/api/wifi/saved/remove", { ssid: name }).catch(() => {});
+      loadSavedNetworks();
+    });
+    row.appendChild(remove);
+    container.appendChild(row);
+  }
+}
+
+$("addWifiButton").addEventListener("click", async (e) => {
+  const button = e.target;
+  const ssid = ui.ssid.value.trim();
+  if (!ssid) {
+    showButtonStatus(button, "Enter a network name");
+    return;
+  }
+  try {
+    await postJson("/api/wifi/saved/add", { ssid, pwd: ui.pwd.value });
+    ui.ssid.value = "";
+    ui.pwd.value = "";
+    $("wifiScanResults").hidden = true;
+    showButtonStatus(button, "Saved ✓ · used after a restart", 4000);
+    loadSavedNetworks();
+  } catch (err) {
+    showButtonStatus(button, "Could not save");
+  }
+});
+
+// Forgets every saved network and restarts the timer into its own hotspot
 $("forgetWifiButton").addEventListener("click", async (e) => {
   const button = e.target;
-  if (!confirm("Forget the home WiFi and restart the timer into its own hotspot?")) return;
-  ui.ssid.value = "";
-  ui.pwd.value = "";
+  if (!confirm("Forget all saved WiFi networks and restart the timer into its own hotspot?")) return;
   button.disabled = true;
-  const ok = await saveConfig(null);
-  if (!ok) {
+  try {
+    await postJson("/api/wifi/saved/clear");
+  } catch (err) {
     button.disabled = false;
     showButtonStatus(button, "Failed, try again");
     return;
@@ -497,6 +562,25 @@ let seenTimeUp = false;
 let seenFinished = [];
 let seenRaceFinished = false;
 let raceFetchPending = false;
+let raceFetchAgain = false; // laps changed while a fetch was running
+
+function fetchRace() {
+  if (raceFetchPending) {
+    raceFetchAgain = true;
+    return;
+  }
+  raceFetchPending = true;
+  fetchJson("/api/race")
+    .then(handleRace)
+    .catch((err) => console.debug("/api/race failed:", err))
+    .finally(() => {
+      raceFetchPending = false;
+      if (raceFetchAgain) {
+        raceFetchAgain = false;
+        fetchRace();
+      }
+    });
+}
 
 const timerEl = $("timer");
 
@@ -521,13 +605,7 @@ function handleStatus(s) {
     previous.race !== s.race ||
     previous.state !== s.state ||
     s.pilots.some((p, i) => !previous.pilots[i] || previous.pilots[i].laps !== p.laps || previous.pilots[i].fin !== p.fin);
-  if (lapCountsChanged && !raceFetchPending) {
-    raceFetchPending = true;
-    fetchJson("/api/race")
-      .then(handleRace)
-      .catch((err) => console.debug("/api/race failed:", err))
-      .finally(() => (raceFetchPending = false));
-  }
+  if (lapCountsChanged) fetchRace();
 
   if (s.timeUp && !seenTimeUp && seenRaceId === s.race) {
     queueSpeak("Time's up");
@@ -587,7 +665,10 @@ function statusText() {
 setInterval(() => {
   const text = clockText();
   if (currentTab === "race") timerEl.textContent = text;
-  if (!$("raceScreen").hidden) $("rsClock").textContent = text;
+  if (!$("raceScreen").hidden) {
+    $("rsClock").textContent = text;
+    updateCurrentLaps();
+  }
 }, 50);
 
 function renderRaceControls() {
@@ -596,7 +677,11 @@ function renderRaceControls() {
   $("startRaceButton").disabled = racing;
   $("stopRaceButton").disabled = !racing;
   $("clearLapsButton").disabled = racing;
-  const [text, cls] = statusText();
+  let [text, cls] = statusText();
+  if (status && status.saveErr) {
+    text += " · last race not saved";
+    cls = "waiting";
+  }
   const statusEl = $("raceStatus");
   statusEl.textContent = text;
   statusEl.className = "race-status" + (cls ? " " + cls : "");
@@ -769,13 +854,21 @@ function renderRacePilots(r) {
 }
 
 // ── Race controls ──
-function startRace() {
-  const t = Math.floor(Date.now() / 1000);
-  queueSpeak(ui.countdown.checked ? "Get ready" : "Start racing when ready");
-  return fetch("/timer/start?t=" + t, { method: "POST" }).then((r) => {
-    if (r.status === 409) showButtonStatus($("startRaceButton"), "Busy, try again");
-    pollOnce();
-  });
+// The timer refuses a start while it is still saving the previous race, so retry briefly
+async function startRace() {
+  const button = $("startRaceButton");
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const t = Math.floor(Date.now() / 1000);
+    const r = await fetch("/timer/start?t=" + t, { method: "POST" }).catch(() => null);
+    if (r && r.ok) {
+      queueSpeak(ui.countdown.checked ? "Get ready" : "Start racing when ready");
+      pollOnce();
+      return;
+    }
+    await new Promise((res) => setTimeout(res, 250));
+  }
+  showButtonStatus(button, "Timer busy, try again");
+  pollOnce();
 }
 
 function stopRace() {
@@ -784,7 +877,10 @@ function stopRace() {
 }
 
 function clearRace() {
-  return fetch("/timer/clear", { method: "POST" }).then(pollOnce);
+  return fetch("/timer/clear", { method: "POST" }).then((r) => {
+    if (r.status === 409) showButtonStatus($("clearLapsButton"), "Busy, try again");
+    pollOnce();
+  });
 }
 
 function pollOnce() {
@@ -821,12 +917,32 @@ function renderRaceScreen(r) {
       const [text, cls] = deltaText(st.delta);
       deltaHtml = `<span class="${cls.replace("delta-", "rs-delta-")}">${text}</span>`;
     }
+    const lapGoal = r.mode === MODE.LAPS ? "/" + r.raceLaps : "";
+    const lapText = p.fin ? "Finished ✓" : p.laps.length ? `Lap ${st.laps}${lapGoal}` : "Not started";
     tile.innerHTML = `
-      <div class="rs-name"><span>${r.pilots.length > 1 ? pos[i] + ". " : ""}${escapeHtml(pilotLabel(p.name, i))}</span><span class="rs-lapno">${p.fin ? "Finished" : "Lap " + st.laps}</span></div>
-      <div class="rs-last">${st.last === null ? "–" : secs(st.last)}</div>
-      <div class="rs-row">${deltaHtml || "<span></span>"}<span class="rs-best">Best ${st.best === null ? "–" : secs(st.best)}</span></div>`;
+      <div class="rs-name"><span>${r.pilots.length > 1 ? pos[i] + ". " : ""}${escapeHtml(pilotLabel(p.name, i))}</span><span class="rs-lapno${p.fin ? " rs-finished" : ""}">${lapText}</span></div>
+      <div class="rs-last${st.last === null ? " rs-empty" : ""}">${st.last === null ? "--.--" : secs(st.last)}</div>
+      <div class="rs-row">${deltaHtml || "<span></span>"}<span class="rs-best">Best ${st.best === null ? "--.--" : secs(st.best)}</span></div>
+      <div class="rs-row rs-current-row"><span>This lap</span><span class="rs-current" data-pilot="${i}">--.--</span></div>`;
     container.appendChild(tile);
   });
+  updateCurrentLaps();
+}
+
+// Live "this lap" timer on the race screen: time since the pilot's last gate pass
+function updateCurrentLaps() {
+  if ($("raceScreen").hidden || !raceData) return;
+  const running = status && status.state === STATE.RUNNING;
+  const elapsed = raceElapsed();
+  for (const el of document.querySelectorAll(".rs-current")) {
+    const p = raceData.pilots[+el.dataset.pilot];
+    if (!p || !running || !p.laps.length || p.fin) {
+      el.textContent = "--.--";
+      continue;
+    }
+    const lastPassAt = p.laps.reduce((a, b) => a + b, 0); // ms after the race start
+    el.textContent = secs(Math.max(0, elapsed - lastPassAt));
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -846,7 +962,7 @@ const exitInput = $("exit");
 
 function renderCalibPilotButtons() {
   const container = $("calibPilot");
-  container.hidden = pilotCount < 2;
+  container.hidden = false; // shows the pilot name even with one pilot
   container.innerHTML = "";
   for (let i = 0; i < pilotCount; i++) {
     const b = el("button", i === calibIndex ? "active" : "", pilotLabel(pilots[i] && pilots[i].name, i));
@@ -882,6 +998,7 @@ enterInput.addEventListener("input", () => {
   p.enter = +enterInput.value;
   if (p.exit >= p.enter) p.exit = Math.max(0, p.enter - 1);
   renderCalibration();
+  scheduleSave();
 });
 
 exitInput.addEventListener("input", () => {
@@ -889,9 +1006,8 @@ exitInput.addEventListener("input", () => {
   p.exit = +exitInput.value;
   if (p.exit >= p.enter) p.enter = Math.min(255, p.exit + 1);
   renderCalibration();
+  scheduleSave();
 });
-
-$("saveThresholdsButton").addEventListener("click", (e) => saveConfig(e.target));
 
 function createRssiChart() {
   const css = getComputedStyle(document.documentElement);
@@ -1017,7 +1133,7 @@ function renderAutoCal() {
     p.enter = result.enter;
     p.exit = result.exit;
     renderCalibration();
-    showButtonStatus($("saveThresholdsButton"), "Applied, now save", 3000);
+    scheduleSave();
   });
 }
 
@@ -1362,6 +1478,7 @@ window.addEventListener("load", async () => {
     console.error("Could not load settings", e);
   }
   loadProfiles();
+  loadSavedNetworks();
   loadInfo();
   pollStatus();
   if (ui.voiceToggle.checked) enableAudioLoop();

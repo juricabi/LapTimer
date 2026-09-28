@@ -26,23 +26,114 @@ bool RaceHistory::parseId(const char *name, uint32_t &id)
     return true;
 }
 
+// Summary shown in the history list: {id, date, mode, pilots: [{name, laps, best}]}
+static void addSummary(JsonArray list, JsonObjectConst race)
+{
+    JsonObject item = list.add<JsonObject>();
+    item["id"] = race["id"];
+    item["date"] = race["date"];
+    item["mode"] = race["mode"];
+    JsonArray pilots = item["pilots"].to<JsonArray>();
+    for (JsonObjectConst p : race["pilots"].as<JsonArrayConst>())
+    {
+        uint32_t best = 0;
+        int n = 0;
+        for (JsonVariantConst lap : p["laps"].as<JsonArrayConst>())
+        {
+            if (n++ == 0)
+                continue; // start pass is not a lap
+            uint32_t t = lap.as<uint32_t>();
+            if (best == 0 || t < best)
+                best = t;
+        }
+        JsonObject s = pilots.add<JsonObject>();
+        s["name"] = p["name"];
+        s["laps"] = n > 0 ? n - 1 : 0;
+        s["best"] = best;
+    }
+}
+
+size_t RaceHistory::listIds(uint32_t *ids, size_t max)
+{
+    size_t count = 0;
+    File dir = LittleFS.open(RACES_DIR);
+    for (File f = dir.openNextFile(); f; f = dir.openNextFile())
+    {
+        uint32_t id;
+        if (parseId(f.name(), id) && count < max)
+            ids[count++] = id;
+    }
+    return count;
+}
+
+// Rebuilds the summary index from the race files (only needed if it is missing)
+void RaceHistory::rebuildIndex()
+{
+    uint32_t ids[MAX_SAVED_RACES + 8];
+    size_t count = listIds(ids, sizeof(ids) / sizeof(ids[0]));
+    JsonDocument index;
+    JsonArray list = index.to<JsonArray>();
+    for (size_t i = 0; i < count; i++)
+    {
+        File f = LittleFS.open(racePath(ids[i]), "r");
+        JsonDocument race;
+        if (f && !deserializeJson(race, f))
+        {
+            race["id"] = ids[i];
+            addSummary(list, race.as<JsonObjectConst>());
+        }
+    }
+    writeIndex(index);
+}
+
+void RaceHistory::writeIndex(JsonDocument &index)
+{
+    File f = LittleFS.open(INDEX_FILE, "w");
+    if (f)
+    {
+        serializeJson(index, f);
+        f.close();
+    }
+}
+
 void RaceHistory::init()
 {
     if (!LittleFS.exists(RACES_DIR))
     {
         LittleFS.mkdir(RACES_DIR);
     }
-    File dir = LittleFS.open(RACES_DIR);
+    uint32_t ids[MAX_SAVED_RACES + 8];
+    size_t count = listIds(ids, sizeof(ids) / sizeof(ids[0]));
     uint32_t maxId = 0;
-    for (File f = dir.openNextFile(); f; f = dir.openNextFile())
+    for (size_t i = 0; i < count; i++)
     {
-        uint32_t id;
-        if (parseId(f.name(), id) && id > maxId)
-            maxId = id;
+        if (ids[i] > maxId)
+            maxId = ids[i];
     }
     nextId = maxId + 1;
+    if (!LittleFS.exists(INDEX_FILE))
+    {
+        rebuildIndex();
+    }
     ready = true;
     DEBUG("Race history ready, next id %u\n", nextId);
+}
+
+// Deletes the oldest race (file and index entry)
+bool RaceHistory::deleteOldest(JsonDocument &index)
+{
+    JsonArray list = index.as<JsonArray>();
+    if (list.size() == 0)
+        return false;
+    size_t oldest = 0;
+    for (size_t i = 1; i < list.size(); i++)
+    {
+        if (list[i]["id"].as<uint32_t>() < list[oldest]["id"].as<uint32_t>())
+            oldest = i;
+    }
+    LittleFS.remove(racePath(list[oldest]["id"].as<uint32_t>()));
+    list.remove(oldest);
+    return true;
 }
 
 void RaceHistory::save(LapTimer &timer, Config &config)
@@ -72,87 +163,51 @@ void RaceHistory::save(LapTimer &timer, Config &config)
         for (int l = 0; l < count; l++)
             laps.add(timer.getLap(i, l));
     }
+    timer.savePending = false; // race data copied; the timer may start a new race
+
+    // Load the index, make room (count and free space), then write race + index
+    JsonDocument index;
+    File in = LittleFS.open(INDEX_FILE, "r");
+    if (!in || deserializeJson(index, in) || !index.is<JsonArray>())
+    {
+        index.to<JsonArray>();
+    }
+    if (in)
+        in.close();
+    while (index.as<JsonArray>().size() >= MAX_SAVED_RACES && deleteOldest(index))
+    {
+    }
+    while (LittleFS.totalBytes() - LittleFS.usedBytes() < MIN_FREE_BYTES && deleteOldest(index))
+    {
+    }
 
     File f = LittleFS.open(racePath(id), "w");
+    bool ok = f && serializeJson(doc, f) > 0;
     if (f)
-    {
-        serializeJson(doc, f);
         f.close();
+    if (ok)
+    {
+        addSummary(index.as<JsonArray>(), doc.as<JsonObjectConst>());
+        lastSaveOk = true;
         DEBUG("Race %u saved\n", id);
     }
     else
     {
+        LittleFS.remove(racePath(id));
+        lastSaveOk = false;
         DEBUG("Race %u could not be saved\n", id);
     }
-    timer.savePending = false;
-    prune();
-}
-
-// Keeps the newest MAX_SAVED_RACES races
-void RaceHistory::prune()
-{
-    uint32_t ids[MAX_SAVED_RACES + 8];
-    size_t count = 0;
-    File dir = LittleFS.open(RACES_DIR);
-    for (File f = dir.openNextFile(); f; f = dir.openNextFile())
-    {
-        uint32_t id;
-        if (parseId(f.name(), id) && count < sizeof(ids) / sizeof(ids[0]))
-            ids[count++] = id;
-    }
-    while (count > MAX_SAVED_RACES)
-    {
-        size_t oldest = 0;
-        for (size_t i = 1; i < count; i++)
-        {
-            if (ids[i] < ids[oldest])
-                oldest = i;
-        }
-        LittleFS.remove(racePath(ids[oldest]));
-        ids[oldest] = ids[--count];
-    }
+    writeIndex(index);
 }
 
 void RaceHistory::sendList(AsyncWebServerRequest *request)
 {
-    JsonDocument out;
-    JsonArray list = out.to<JsonArray>();
-    File dir = LittleFS.open(RACES_DIR);
-    for (File f = dir.openNextFile(); f; f = dir.openNextFile())
+    if (!LittleFS.exists(INDEX_FILE))
     {
-        uint32_t id;
-        if (!parseId(f.name(), id))
-            continue;
-        JsonDocument race;
-        if (deserializeJson(race, f))
-            continue;
-        JsonObject item = list.add<JsonObject>();
-        item["id"] = id;
-        item["date"] = race["date"];
-        item["mode"] = race["mode"];
-        JsonArray pilots = item["pilots"].to<JsonArray>();
-        for (JsonObject p : race["pilots"].as<JsonArray>())
-        {
-            JsonArray laps = p["laps"].as<JsonArray>();
-            uint32_t best = 0;
-            int n = 0;
-            for (JsonVariant lap : laps)
-            {
-                if (n++ == 0)
-                    continue; // start pass is not a lap
-                uint32_t t = lap.as<uint32_t>();
-                if (best == 0 || t < best)
-                    best = t;
-            }
-            JsonObject s = pilots.add<JsonObject>();
-            s["name"] = p["name"];
-            s["laps"] = n > 0 ? n - 1 : 0;
-            s["best"] = best;
-        }
+        request->send(200, "application/json", "[]");
+        return;
     }
-    AsyncResponseStream *response = request->beginResponseStream("application/json");
-    serializeJson(out, *response);
-    request->send(response);
+    request->send(LittleFS, INDEX_FILE, "application/json");
 }
 
 void RaceHistory::sendRace(AsyncWebServerRequest *request, uint32_t id)
@@ -168,18 +223,11 @@ void RaceHistory::sendRace(AsyncWebServerRequest *request, uint32_t id)
 
 void RaceHistory::clear()
 {
-    File dir = LittleFS.open(RACES_DIR);
-    String paths[MAX_SAVED_RACES + 8];
-    size_t count = 0;
-    for (File f = dir.openNextFile(); f; f = dir.openNextFile())
-    {
-        uint32_t id;
-        if (parseId(f.name(), id) && count < sizeof(paths) / sizeof(paths[0]))
-            paths[count++] = racePath(id);
-    }
-    dir.close();
+    uint32_t ids[MAX_SAVED_RACES + 8];
+    size_t count = listIds(ids, sizeof(ids) / sizeof(ids[0]));
     for (size_t i = 0; i < count; i++)
-        LittleFS.remove(paths[i]);
+        LittleFS.remove(racePath(ids[i]));
+    LittleFS.remove(INDEX_FILE);
 }
 
 void RaceHistory::sendProfiles(AsyncWebServerRequest *request)

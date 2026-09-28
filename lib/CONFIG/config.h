@@ -111,6 +111,8 @@ typedef struct
     bool announceDelta;     // announce the difference to the best lap
 } laptimer_config_t;
 
+static_assert(sizeof(laptimer_config_t) <= EEPROM_RESERVED_SIZE, "config does not fit the reserved EEPROM size");
+
 class Config
 {
 public:
@@ -132,6 +134,7 @@ public:
     uint8_t getAlarmThreshold();
     char *getSsid();
     char *getPassword();
+    void clearWifi();
     bool getBuzzerOn();
     race_mode_e getRaceMode();
     uint32_t getRaceMs();
