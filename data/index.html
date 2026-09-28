@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0f172a" />
   <title>LapTimer</title>
   <link rel="icon" type="image/png" href="favicon.ico" />
-  <link rel="stylesheet" type="text/css" href="style.css?v=f4e59139" />
+  <link rel="stylesheet" type="text/css" href="style.css?v=e8325af6" />
   <script src="smoothie.js"></script>
 </head>
 
@@ -38,7 +38,7 @@
   <main>
     <!-- ───────────── Setup ───────────── -->
     <section id="config" class="tabcontent">
-      <div class="card">
+      <div class="card" data-needs-config>
         <h2>Pilots</h2>
         <div class="segmented" id="pilotCount" role="radiogroup" aria-label="Number of pilots">
           <button data-value="1" class="active">1</button>
@@ -52,10 +52,11 @@
           <span class="field-label">Saved pilots</span>
           <div id="savedPilots" class="chips"></div>
           <p class="hint">Named pilots are remembered automatically with their channel and thresholds.</p>
+          <p id="profilesFull" class="hint warn" hidden>Saved pilots are full: forget one (×) to remember new pilots.</p>
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" data-needs-config>
         <h2>Race</h2>
         <div class="segmented" id="raceMode" role="radiogroup" aria-label="Race mode">
           <button data-value="0" class="active">Practice</button>
@@ -108,7 +109,7 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" data-needs-config>
         <h2>Announcer</h2>
         <label class="field">
           <span class="field-label">Announce</span>
@@ -144,7 +145,7 @@
         <button id="GenerateAudioButton" class="btn btn-ghost btn-block">Test voice</button>
       </div>
 
-      <div class="card">
+      <div class="card" data-needs-config>
         <h2>Alerts</h2>
         <label class="switch-row">
           <span>
@@ -203,7 +204,7 @@
       </div>
 
       <div class="save-bar">
-        <div class="save-status" data-save-state="saved" role="status">Saved to timer ✓</div>
+        <div class="save-status" data-save-state="loading" role="status">Loading settings…</div>
       </div>
     </section>
 
@@ -239,7 +240,7 @@
         <canvas id="rssiChart"></canvas>
         <p id="rssiPaused" class="hint" hidden>Live RSSI paused during the channel scan.</p>
       </div>
-      <div class="card">
+      <div class="card" data-needs-config>
         <div class="field">
           <label class="field-label" for="enter"><i class="dot dot-enter"></i>Enter RSSI</label>
           <div class="input-with-value">
@@ -263,7 +264,7 @@
           <span class="switch"><input type="checkbox" id="autoCal" /><span class="slider"></span></span>
         </label>
         <div id="autoCalResult" class="note" hidden></div>
-        <div class="save-status" data-save-state="saved" role="status">Saved to timer ✓</div>
+        <div class="save-status" data-save-state="loading" role="status">Loading settings…</div>
       </div>
       <div class="card">
         <h2>Channel scan</h2>
@@ -294,7 +295,7 @@
     <div id="rsPilots" class="rs-pilots"></div>
   </div>
 
-  <script src="script.js?v=013d5058"></script>
+  <script src="script.js?v=65b67261"></script>
 </body>
 
 </html>
