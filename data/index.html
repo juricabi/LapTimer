@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0f172a" />
   <title>LapTimer</title>
   <link rel="icon" type="image/png" href="favicon.ico" />
-  <link rel="stylesheet" type="text/css" href="style.css?v=6" />
+  <link rel="stylesheet" type="text/css" href="style.css?v=7" />
   <script src="smoothie.js"></script>
 </head>
 
@@ -48,6 +48,11 @@
         </div>
         <p class="hint" id="pilotHint"></p>
         <div id="pilotList"></div>
+        <div id="savedPilotsBlock" class="field" hidden>
+          <span class="field-label">Saved pilots</span>
+          <div id="savedPilots" class="chips"></div>
+          <p class="hint">Named pilots are remembered automatically with their channel and thresholds.</p>
+        </div>
       </div>
 
       <div class="card">
@@ -264,7 +269,7 @@
     <div id="rsPilots" class="rs-pilots"></div>
   </div>
 
-  <script src="script.js?v=6"></script>
+  <script src="script.js?v=7"></script>
 </body>
 
 </html>

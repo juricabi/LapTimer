@@ -169,15 +169,13 @@ function buildPilotRows() {
         <select class="p-band" aria-label="Band">${BANDS.map((b, n) => `<option value="${n}">Band ${b}</option>`).join("")}</select>
         <select class="p-channel" aria-label="Channel">${[1, 2, 3, 4, 5, 6, 7, 8].map((c) => `<option value="${c - 1}">Channel ${c}</option>`).join("")}</select>
       </div>
-      <div class="pilot-profile">
-        <select class="p-profile" aria-label="Load pilot profile"></select>
-        <button class="btn btn-ghost p-save-profile">Save profile</button>
-      </div>`;
+      <select class="p-profile" aria-label="Switch to a saved pilot"></select>`;
     const p = pilots[i];
     row.querySelector(".p-name").addEventListener("input", (e) => {
       p.name = e.target.value;
       renderCalibPilotButtons();
     });
+    row.querySelector(".p-name").addEventListener("change", () => rememberPilots());
     const onFreq = () => {
       const b = +row.querySelector(".p-band").value;
       const c = +row.querySelector(".p-channel").value;
@@ -197,7 +195,6 @@ function buildPilotRows() {
       renderCalibration();
       renderCalibPilotButtons();
     });
-    row.querySelector(".p-save-profile").addEventListener("click", (e) => saveProfile(i, e.target));
     ui.pilotList.appendChild(row);
   }
 }
@@ -215,13 +212,41 @@ function renderPilotRow(i) {
 }
 
 function renderProfileSelect(select) {
+  select.hidden = profiles.length === 0;
   select.innerHTML =
-    `<option value="">${profiles.length ? "Load profile…" : "No saved profiles"}</option>` +
+    `<option value="">Switch to a saved pilot…</option>` +
     profiles.map((pr, n) => `<option value="${n}">${escapeHtml(pr.name)} · ${channelName(pr.freq) || pr.freq}</option>`).join("");
+}
+
+// Saved pilots as chips; × forgets one
+function renderSavedPilots() {
+  const container = $("savedPilots");
+  container.innerHTML = "";
+  $("savedPilotsBlock").hidden = profiles.length === 0;
+  profiles.forEach((pr) => {
+    const chip = el("span", "chip-pilot");
+    chip.append(el("span", "", `${pr.name} · ${channelName(pr.freq) || pr.freq}`));
+    const remove = el("button", "chip-remove", "×");
+    remove.type = "button";
+    remove.setAttribute("aria-label", "Forget " + pr.name);
+    remove.addEventListener("click", async () => {
+      const updated = profiles.filter((x) => x !== pr);
+      try {
+        await postJson("/api/profiles", updated);
+        profiles = updated;
+        renderPilots();
+      } catch (e) {
+        /* keep the list as it is */
+      }
+    });
+    chip.appendChild(remove);
+    container.appendChild(chip);
+  });
 }
 
 function renderPilots() {
   for (let i = 0; i < MAX_PILOTS; i++) renderPilotRow(i);
+  renderSavedPilots();
   setSegmented($("pilotCount"), pilotCount);
   renderPilotHint();
 }
@@ -346,6 +371,7 @@ function scheduleSave() {
   saveTimer = setTimeout(async () => {
     const ok = await saveConfig();
     setSaveState(ok ? "saved" : "error");
+    if (ok) rememberPilots();
   }, 600);
 }
 
@@ -382,22 +408,26 @@ async function loadProfiles() {
   if (pilots.length) renderPilots();
 }
 
-async function saveProfile(index, button) {
-  const p = pilots[index];
-  const name = (p.name || "").trim();
-  if (!name) {
-    showButtonStatus(button, "Enter a name first");
-    return;
-  }
-  const updated = profiles.filter((pr) => pr.name.toLowerCase() !== name.toLowerCase());
-  updated.push({ name, freq: p.freq, enter: p.enter, exit: p.exit });
+// Pilots are remembered automatically: every named pilot (name, channel, thresholds)
+// is kept in the saved pilots list. Names still being typed are skipped.
+async function rememberPilots() {
+  const updated = profiles.map((pr) => ({ ...pr }));
+  pilots.slice(0, pilotCount).forEach((p, i) => {
+    const name = (p.name || "").trim();
+    const nameInput = ui.pilotList.children[i].querySelector(".p-name");
+    if (!name || !bandChannel(p.freq) || document.activeElement === nameInput) return;
+    const existing = updated.find((pr) => pr.name.toLowerCase() === name.toLowerCase());
+    if (existing) Object.assign(existing, { name, freq: p.freq, enter: p.enter, exit: p.exit });
+    else updated.push({ name, freq: p.freq, enter: p.enter, exit: p.exit });
+  });
+  updated.sort((a, b) => a.name.localeCompare(b.name));
+  if (JSON.stringify(updated) === JSON.stringify(profiles)) return;
   try {
     await postJson("/api/profiles", updated);
-    profiles = updated.sort((a, b) => a.name.localeCompare(b.name));
+    profiles = updated;
     renderPilots();
-    showButtonStatus(button, "Saved ✓", 2000);
   } catch (e) {
-    showButtonStatus(button, "Failed");
+    /* try again after the next change */
   }
 }
 

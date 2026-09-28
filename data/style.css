@@ -907,12 +907,6 @@ table tr.best-lap td:nth-child(2)::after {
   margin-left: 2px;
 }
 
-.pilot-profile {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--space-2);
-}
-
 /* ───────── Race: pilot cards ───────── */
 .race-pilot {
   border-top: 4px solid var(--pc);
@@ -1244,4 +1238,38 @@ a.chip {
 
 .rs-current {
   color: #e2e8f0;
+}
+
+/* Saved pilots */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.chip-pilot {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 2px 2px var(--space-3);
+  border-radius: 999px;
+  border: 1px solid var(--control-border);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chip-remove {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chip-remove:hover {
+  color: var(--stop-text);
 }
