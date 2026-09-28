@@ -32,7 +32,9 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 - **Saved pilots**: every named pilot is remembered with their channel and thresholds;
   one tap switches who is flying.
 - Band and channel picker.
-- **Calibration graph** with 25 ms resolution, and optional **auto-calibration** from a few passes.
+- **Calibration graph** with 25 ms resolution, and **auto-calibration**: fly 3+ passes and it
+  suggests Enter/Exit from the real passes (found by the minimum lap time) and the signal
+  level between them, or says what to change when the passes don't stand out.
 - **Channel scan** to see which channels are busy before choosing.
 
 **After the race**
@@ -98,15 +100,17 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
 **Your WiFi**
 1. **Setup → WiFi networks**: add your network (Scan helps), then **Restart timer**.
 2. Open `http://laptimer.local`, or the timer's IP from your router.
-3. If no saved network is in range at power-up, or joining fails within 60 s, the timer starts
-   its own hotspot. **Forget all** returns to hotspot mode.
+3. At power-up it joins the strongest saved network in range (60 s to connect). If none is
+   seen, it tries the newest one for 20 s (a hidden network, or a phone hotspot still starting),
+   then starts its own hotspot. **Forget all** returns to hotspot mode.
 
 ## Use
 
 1. **Setup**: enter the pilot's name and channel, or tap a saved pilot. Settings save automatically.
-2. **Calibrate**: with the quad powered at race distance, set **Enter** just below the peak
-   and **Exit** a bit lower, or switch on **Auto-calibrate** and fly 3+ passes. Run a
-   **channel scan** first if others are flying.
+2. **Calibrate** at the gate: switch on **Auto-calibrate** and fly 3+ passes, then **Apply**.
+   By hand: **Enter** below the peaks of your passes, **Exit** just above the level while the
+   drone is away (a pass ends when the signal drops below Exit). Run a **channel scan** first
+   if others are flying.
 3. **Race**: press **Start** (or say "start"). Open the **Race screen** for big numbers.
 4. **History**: every race is saved. Open one to see all laps, **Fix laps**, or export CSV.
 
@@ -128,7 +132,8 @@ RotorHazard.
 ## Development
 
 See [CLAUDE.md](CLAUDE.md) for how the project is built, tested and released, and
-[`tools/`](tools/) for the simulated timer, WiFi upload, device test and boot log scripts.
+[`tools/`](tools/) for the simulated timer, WiFi upload, device test, RSSI/pass logger and boot
+log scripts.
 
 ## License
 
