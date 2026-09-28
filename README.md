@@ -124,9 +124,9 @@ lock, so each pilot is read once per round:
 | Pilots | Each pilot read every |
 |---|---|
 | 1 | continuously |
-| 2 | 100 ms |
-| 3 | 150 ms |
-| 4 | 200 ms |
+| 2 | about 105 ms |
+| 3 | about 160 ms |
+| 4 | about 210 ms |
 
 The pass time is placed between those readings by fitting a curve through the peak and its
 neighbours, so it is much finer than the reading interval. It is still less precise than with

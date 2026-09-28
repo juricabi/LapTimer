@@ -15,9 +15,9 @@
 #define COUNTDOWN_MS 3000         // 3-2-1 beeps, then GO
 
 // After every frequency change the RX5808 shows nothing until its synthesizer has locked,
-// then the full RSSI at once. Measured with /api/debug/step: 36-40 ms whatever the jump
-// (5-155 MHz), so wait RX_LOCK_MS before trusting a reading.
-#define RX_LOCK_MS 45
+// then the full RSSI at once. Measured with /api/debug/step: the same for any jump (5-155 MHz);
+// over 150 switches 36 ms typically, 44.5 ms at most, ~1% not locked within 100 ms.
+#define RX_LOCK_MS 48
 // Several pilots (up to MAX_PILOTS) share one RX5808 by hopping between their frequencies:
 // tune, wait RX_LOCK_MS, then average the RSSI for HOP_DWELL_MS. One value per pilot every
 // (RX_LOCK_MS + HOP_DWELL_MS) x pilots; the pass time is refined with a 3-point peak fit.

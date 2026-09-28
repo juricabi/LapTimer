@@ -61,10 +61,12 @@ Every change goes through all steps; a step is done when its check passes.
 - **ESP32 async WiFi scan**: the library reports `WIFI_SCAN_FAILED` after 6 s (20 × 300 ms)
   while a full scan takes ~5.95 s, longer on the first boot after an update. Treat "failed"
   within 12 s as still running (`webserver.cpp`, `api.cpp`).
-- **RX5808 lock time**: after every frequency change it reads nothing for 36-40 ms (same for
-  a 5 or 155 MHz jump), then the full RSSI at once. Hopping and the channel scan wait
-  `RX_LOCK_MS` (45). Measure a module with `GET /api/debug/step?from=5880&to=5800` (VTX on
-  5800), then `GET /api/debug/step` for 2 ms samples. The PhobosLT_4ch fork's 8 ms is wrong.
+- **RX5808 lock time**: after every frequency change it reads nothing until locked, then the
+  full RSSI at once: 36 ms typically, up to 44.5 ms over 150 switches, the same for a 5 or
+  155 MHz jump, and ~1% don't lock within 100 ms. Hopping and the channel scan wait
+  `RX_LOCK_MS` (48); with several pilots two readings below exit end a pass. Measure a module
+  with `GET /api/debug/step?from=5740&to=5800` (VTX on 5800; add `&hops=150` for lock-time
+  statistics), then `GET /api/debug/step`. The PhobosLT_4ch fork's 8 ms is wrong.
 - **RX5808 reset**: after a reset (register 0xF) it ignores writes for 20-50 ms and stays deaf
   until the power register is written again. Reset only at start-up with `RX5808_RESET_MS`
   after it; wake from power down with `setupRxModule()` only. Check the RSSI after a restart.

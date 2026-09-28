@@ -16,7 +16,7 @@ const FREQ_TABLE = [
   [5362, 5399, 5436, 5473, 5510, 5547, 5584, 5621],
 ];
 const MAX_PILOTS = 4;
-const HOP_MS_PER_PILOT = 50; // firmware: RX_LOCK_MS 45 + HOP_DWELL_MS 5 per pilot
+const HOP_MS_PER_PILOT = 53; // firmware: RX_LOCK_MS 48 + HOP_DWELL_MS 5 per pilot
 
 // firmware race states and modes
 const STATE = { IDLE: 0, COUNTDOWN: 1, WAITING: 2, RUNNING: 3, FINISHED: 4 };
