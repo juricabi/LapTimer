@@ -19,8 +19,11 @@ void RX5808::init() {
     digitalWrite(rx5808SelPin, HIGH);
     digitalWrite(rx5808ClkPin, LOW);
     digitalWrite(rx5808DataPin, LOW);
+    // After a reset the RX5808 ignores writes for 20-50 ms (measured) and stays deaf until its
+    // power register is written, so wait before the next write
     resetRxModule();
-    setFrequency(POWER_DOWN_FREQ_MHZ);
+    delay(RX5808_RESET_MS);
+    setFrequency(POWER_DOWN_FREQ_MHZ);  // LapTimer::scan() powers it up and tunes it
 }
 
 // Set frequency on RX5808 module to given value
@@ -36,7 +39,9 @@ void RX5808::setFrequency(uint16_t vtxFreq, bool verbose) {
         return;
     }
     if (rxPoweredDown) {
-        resetRxModule();
+        // Power the blocks back on. Not resetRxModule(): after a reset the RX5808 ignores
+        // frequency writes for 20-50 ms (measured), so the receiver stayed deaf after boot.
+        setupRxModule();
         rxPoweredDown = false;
     }
 
@@ -122,7 +127,7 @@ void RX5808::rx5808SerialEnableHigh() {
     delayMicroseconds(RX5808_BIT_DELAY_US);
 }
 
-// Reset rx5808 module to wake up from power down
+// Reset the rx5808 module (at start-up only, see init())
 void RX5808::resetRxModule() {
     rx5808SerialEnableHigh();
     rx5808SerialEnableLow();
@@ -138,8 +143,6 @@ void RX5808::resetRxModule() {
         rx5808SerialSendBit0();
 
     rx5808SerialEnableHigh();  // Finished clocking data in
-
-    setupRxModule();
 }
 
 // Set power options on the rx5808 module

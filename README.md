@@ -117,18 +117,22 @@ opening the page; phones only allow speech after a tap.
 
 ## Timing precision
 
-With one pilot the receiver stays on one channel. More pilots share it by hopping between
-channels (8 ms to settle, 6 ms to measure per pilot), so each pass is timed a little less precisely:
+With one pilot the receiver stays on one channel and samples continuously. More pilots share
+it by hopping between channels. After every channel change the RX5808 needs about 40 ms to
+lock, so each pilot is read once per round:
 
-| Pilots | Precision |
+| Pilots | Each pilot read every |
 |---|---|
-| 1 | full (continuous sampling) |
-| 2 | about ±14 ms |
-| 3 | about ±21 ms |
-| 4 | about ±28 ms |
+| 1 | continuously |
+| 2 | 100 ms |
+| 3 | 150 ms |
+| 4 | 200 ms |
 
-A pass is timed at the middle of the RSSI peak. With several pilots, a pass only counts while
-that pilot's signal clearly beats the others, so a close drone can't trigger a lap on another channel.
+The pass time is placed between those readings by fitting a curve through the peak and its
+neighbours, so it is much finer than the reading interval. It is still less precise than with
+one pilot, so for close racing use as few pilots per timer as you can. With several pilots, a pass only counts
+while that pilot's signal is not far below another pilot's, so a close drone can't trigger a
+lap on another channel.
 
 ## Development
 

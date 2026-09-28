@@ -14,12 +14,14 @@
 #define PEAK_TOLERANCE 2          // RSSI units below the peak that still count as "at the peak"
 #define COUNTDOWN_MS 3000         // 3-2-1 beeps, then GO
 
+// After every frequency change the RX5808 shows nothing until its synthesizer has locked,
+// then the full RSSI at once. Measured with /api/debug/step: 36-40 ms whatever the jump
+// (5-155 MHz), so wait RX_LOCK_MS before trusting a reading.
+#define RX_LOCK_MS 45
 // Several pilots (up to MAX_PILOTS) share one RX5808 by hopping between their frequencies:
-// tune, wait for the RX5808 to settle, then sample for the dwell time.
-// Values follow PhobosLT_4ch, which tested settle times of 3-8 ms (3 ms gave false laps).
-#define HOP_SETTLE_MS 8
-#define HOP_DWELL_MS 6            // 14 ms per pilot per cycle: pass time resolution ~ +-7 ms x pilots
-#define SINGLE_SETTLE_MS 35       // after a frequency change with one pilot
+// tune, wait RX_LOCK_MS, then average the RSSI for HOP_DWELL_MS. One value per pilot every
+// (RX_LOCK_MS + HOP_DWELL_MS) x pilots; the pass time is refined with a 3-point peak fit.
+#define HOP_DWELL_MS 5
 // With several pilots, a pass only counts while this pilot's RSSI beats the others'
 // by this much (a close drone can bleed into the other channels)
 #define DOMINANCE_DELTA 10
@@ -29,9 +31,13 @@
 #define SPECTRUM_START_MHZ 5645
 #define SPECTRUM_STEP_MHZ 5
 #define SPECTRUM_POINTS 61        // 5645 - 5945 MHz (bands A, B, E, F, R)
-#define SPECTRUM_SWEEPS 3         // highest average of 3 sweeps (~3.5 s)
-#define SPECTRUM_SETTLE_MS 14     // a little longer than hopping: early samples after a big jump read high
-#define SPECTRUM_SAMPLE_MS 5      // readings in this window are averaged (single samples are noisy)
+#define SPECTRUM_SWEEPS 2         // highest average of 2 sweeps (~6 s)
+#define SPECTRUM_SAMPLE_MS 5      // average after RX_LOCK_MS
+
+// Receiver response test: 200 samples rise + 200 samples fall, 2 ms apart
+#define STEP_TEST_HALF 200
+#define STEP_TEST_SAMPLES (2 * STEP_TEST_HALF)
+#define STEP_TEST_INTERVAL_US 2000
 
 // Correcting laps after a race
 enum {
@@ -63,6 +69,13 @@ struct PilotState {
     uint8_t peak;
     uint32_t peakFirstMs;
     uint32_t peakLastMs;
+    // neighbours of a single-sample peak, for the 3-point peak fit when hopping
+    uint8_t lastV;               // previous value
+    uint32_t lastMs;
+    uint8_t peakPrev;            // value before the peak
+    uint32_t peakPrevMs;
+    uint8_t peakNext;            // value after the peak (valid if peakNextMs != 0)
+    uint32_t peakNextMs;
 
     // race data
     bool hasPassed;
@@ -125,6 +138,13 @@ class LapTimer {
     // measured steps so far (all sweeps); SPECTRUM_POINTS * SPECTRUM_SWEEPS when complete
     uint16_t getSpectrumProgress() { return spectrumActive ? spectrumSweep * SPECTRUM_POINTS + spectrumIndex : spectrumDone; }
 
+    // Receiver response test (diagnostics): tune to `fromMhz`, then switch to `toMhz` and
+    // record the raw RSSI every STEP_TEST_INTERVAL_US (rise), then switch back (fall).
+    bool requestStepTest(uint16_t fromMhz, uint16_t toMhz);
+    bool isStepTestDone() { return stepTestDone; }
+    uint16_t getStepTestCount() { return STEP_TEST_SAMPLES; }
+    uint8_t getStepTestSample(uint16_t i) { return stepTestData[i]; }
+
     // RSSI history for the calibration graph
     uint32_t getHistorySeq() { return historySeq; }
     uint8_t getHistory(uint8_t pilot, uint32_t seq) { return pilots[pilot].history[seq % RSSI_HISTORY]; }
@@ -159,6 +179,9 @@ class LapTimer {
     uint8_t activePilot = 0;
     uint32_t settleUntilMs = 0;
     uint32_t slotEndMs = 0;
+    uint16_t slotFreq = 0;       // frequency tuned for the current hop slot
+    uint32_t slotSum = 0;        // RSSI sum and count in the current hop slot
+    uint16_t slotSamples = 0;
     uint32_t historyStepMs = 0;
     volatile uint32_t historySeq = 0;
 
@@ -176,8 +199,17 @@ class LapTimer {
     uint32_t spectrumSampleUntilMs = 0;
     void spectrumStep(uint32_t nowMs);
 
+    // receiver response test
+    volatile bool stepTestRequested = false;
+    volatile bool stepTestDone = false;
+    uint16_t stepTestFrom = 0;
+    uint16_t stepTestTo = 0;
+    uint8_t stepTestData[STEP_TEST_SAMPLES];
+    void runStepTest();
+
     void scan(uint32_t nowMs);
-    void sample(uint8_t pilot, uint8_t raw, uint32_t nowMs);
+    void sample(uint8_t pilot, uint8_t v, uint32_t nowMs);  // v: filtered (one pilot) or slot average
+    uint32_t passTime(PilotState &p);
     void onPass(uint8_t pilot, uint32_t passMs);
     void updateRace(uint32_t nowMs);
     void recordHistory(uint32_t nowMs);

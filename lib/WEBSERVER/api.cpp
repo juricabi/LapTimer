@@ -138,6 +138,26 @@ void Webserver::registerApi()
         response->print("]}");
         request->send(response); });
 
+    // Diagnostics: receiver response when switching frequency.
+    // ?from=5880&to=5800 starts a test; without parameters returns {done, intervalUs, rise, fall}
+    server.on("/api/debug/step", HTTP_GET, [this](AsyncWebServerRequest *request)
+              {
+        if (request->hasParam("to"))
+        {
+            bool ok = timer->requestStepTest(paramU32(request, "from", 5880), paramU32(request, "to", 5800));
+            request->send(ok ? 200 : 409, "application/json", ok ? "{\"status\":\"OK\"}" : "{\"status\":\"busy\"}");
+            return;
+        }
+        AsyncResponseStream *response = request->beginResponseStream("application/json");
+        response->printf("{\"done\":%d,\"intervalUs\":%u,\"rise\":[", timer->isStepTestDone(), STEP_TEST_INTERVAL_US);
+        for (uint16_t i = 0; i < STEP_TEST_HALF; i++)
+            response->printf(i ? ",%u" : "%u", timer->getStepTestSample(i));
+        response->print("],\"fall\":[");
+        for (uint16_t i = 0; i < STEP_TEST_HALF; i++)
+            response->printf(i ? ",%u" : "%u", timer->getStepTestSample(STEP_TEST_HALF + i));
+        response->print("]}");
+        request->send(response); });
+
     server.on("/api/races/clear", HTTP_POST, [this](AsyncWebServerRequest *request)
               {
         history->clear();

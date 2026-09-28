@@ -16,7 +16,7 @@ const FREQ_TABLE = [
   [5362, 5399, 5436, 5473, 5510, 5547, 5584, 5621],
 ];
 const MAX_PILOTS = 4;
-const HOP_MS_PER_PILOT = 14; // firmware: 8 ms settle + 6 ms sampling per pilot
+const HOP_MS_PER_PILOT = 50; // firmware: RX_LOCK_MS 45 + HOP_DWELL_MS 5 per pilot
 
 // firmware race states and modes
 const STATE = { IDLE: 0, COUNTDOWN: 1, WAITING: 2, RUNNING: 3, FINISHED: 4 };
@@ -263,7 +263,7 @@ function renderPilotHint() {
   if (pilotCount === 1) {
     text = "One pilot: the receiver stays on one channel for full timing precision.";
   } else {
-    text = `${pilotCount} pilots share the receiver, which switches between their channels: timing precision about ±${(HOP_MS_PER_PILOT / 2) * pilotCount} ms.`;
+    text = `${pilotCount} pilots share the receiver, which switches between their channels: each pilot is read every ${HOP_MS_PER_PILOT * pilotCount} ms and the pass time is interpolated between readings.`;
   }
   const active = pilots.slice(0, pilotCount);
   const warnings = [];

@@ -260,6 +260,37 @@ bool LapTimer::editLaps(uint8_t pilot, uint8_t op, int index)
     return ok;
 }
 
+bool LapTimer::requestStepTest(uint16_t fromMhz, uint16_t toMhz)
+{
+    if (isRacing() || isSpectrumRunning() || stepTestRequested || pendingCommand == CMD_START)
+        return false;
+    stepTestFrom = fromMhz;
+    stepTestTo = toMhz;
+    stepTestDone = false;
+    stepTestRequested = true;
+    return true;
+}
+
+// Blocks the timing core for ~1.1 s (only on request, never during a race)
+void LapTimer::runStepTest()
+{
+    rx->setFrequency(stepTestFrom, false);
+    delay(300);
+    for (int half = 0; half < 2; half++)
+    {
+        rx->setFrequency(half == 0 ? stepTestTo : stepTestFrom, false);
+        uint32_t t0 = micros();
+        for (int i = 0; i < STEP_TEST_HALF; i++)
+        {
+            while ((int32_t)(micros() - (t0 + (uint32_t)i * STEP_TEST_INTERVAL_US)) < 0)
+            {
+            }
+            stepTestData[half * STEP_TEST_HALF + i] = rx->readRssiRaw();
+        }
+    }
+    stepTestDone = true; // scan() tunes back to the pilots' channels
+}
+
 bool LapTimer::requestSpectrum()
 {
     if (isRacing() || isSpectrumRunning() || pendingCommand == CMD_START)
@@ -275,7 +306,7 @@ void LapTimer::spectrumStep(uint32_t nowMs)
     {
         uint16_t freq = SPECTRUM_START_MHZ + spectrumIndex * SPECTRUM_STEP_MHZ;
         rx->setFrequency(freq, false);
-        spectrumSettleUntilMs = nowMs + SPECTRUM_SETTLE_MS;
+        spectrumSettleUntilMs = nowMs + RX_LOCK_MS;
         spectrumSampleUntilMs = spectrumSettleUntilMs + SPECTRUM_SAMPLE_MS;
         spectrumSum = 0;
         spectrumSamples = 0;
@@ -322,10 +353,19 @@ void LapTimer::update(uint32_t nowMs)
         spectrumTuned = false;
         spectrumDone = 0;
         memset(spectrumRssi, 0, sizeof(spectrumRssi)); // 0 = not measured yet (the page draws as it goes)
+        slotSamples = 0;                               // the hop slot in progress is lost
     }
     if (spectrumActive)
     {
         spectrumStep(nowMs);
+        return;
+    }
+    if (stepTestRequested)
+    {
+        stepTestRequested = false;
+        if (!isRacing())
+            runStepTest();
+        slotSamples = 0;
         return;
     }
     scan(nowMs);
@@ -333,7 +373,7 @@ void LapTimer::update(uint32_t nowMs)
     updateRace(nowMs);
 }
 
-// Chooses which pilot's frequency the RX5808 listens to and feeds it the samples
+// Chooses which pilot's frequency the RX5808 listens to and feeds it the readings
 void LapTimer::scan(uint32_t nowMs)
 {
     // During a race use the race's pilots and frequencies, otherwise the live settings
@@ -342,32 +382,50 @@ void LapTimer::scan(uint32_t nowMs)
 
     if (count == 1)
     {
+        // One pilot: stay on its channel and sample continuously through the Kalman filter
         activePilot = 0;
+        slotSamples = 0;
+        slotEndMs = nowMs;
         uint16_t freq = racing ? raceFreq[0] : conf->getFrequency(0);
         if (rx->getFrequency() != freq)
         {
             rx->setFrequency(freq);
-            settleUntilMs = nowMs + SINGLE_SETTLE_MS;
+            settleUntilMs = nowMs + RX_LOCK_MS;
         }
-    }
-    else if ((int32_t)(nowMs - slotEndMs) >= 0)
-    {
-        // next pilot's slot (pilots without a channel are skipped)
-        activePilot = nextActivePilot(activePilot, count, racing);
-        uint16_t freq = racing ? raceFreq[activePilot] : conf->getFrequency(activePilot);
-        if (rx->getFrequency() != freq)
-        {
-            rx->setFrequency(freq, false);
-        }
-        settleUntilMs = nowMs + HOP_SETTLE_MS;
-        slotEndMs = settleUntilMs + HOP_DWELL_MS;
+        if (freq == POWER_DOWN_FREQ_MHZ || (int32_t)(nowMs - settleUntilMs) < 0)
+            return; // receiver off or not locked yet
+        sample(0, round(pilots[0].filter.filter(rx->readRssiRaw(), 0)), nowMs);
+        return;
     }
 
-    if (rx->getFrequency() == POWER_DOWN_FREQ_MHZ || (int32_t)(nowMs - settleUntilMs) < 0)
+    // Several pilots: one averaged value per pilot per slot
+    if ((int32_t)(nowMs - slotEndMs) < 0)
     {
-        return; // receiver off or still settling
+        if ((int32_t)(nowMs - settleUntilMs) >= 0 && slotFreq != POWER_DOWN_FREQ_MHZ)
+        {
+            slotSum += rx->readRssiRaw();
+            slotSamples++;
+        }
+        return;
     }
-    sample(activePilot, rx->readRssiRaw(), nowMs);
+    // Slot over: hand it to the pilot if the pilot is still on that channel
+    if (slotSamples > 0 && activePilot < count &&
+        slotFreq == (racing ? raceFreq[activePilot] : conf->getFrequency(activePilot)))
+    {
+        sample(activePilot, slotSum / slotSamples, slotEndMs - HOP_DWELL_MS / 2);
+    }
+    // Next pilot's slot (pilots without a channel are skipped)
+    activePilot = nextActivePilot(activePilot, count, racing);
+    slotFreq = racing ? raceFreq[activePilot] : conf->getFrequency(activePilot);
+    settleUntilMs = nowMs;
+    if (rx->getFrequency() != slotFreq)
+    {
+        rx->setFrequency(slotFreq, false);
+        settleUntilMs = nowMs + RX_LOCK_MS;
+    }
+    slotEndMs = settleUntilMs + HOP_DWELL_MS;
+    slotSum = 0;
+    slotSamples = 0;
 }
 
 uint8_t LapTimer::nextActivePilot(uint8_t from, uint8_t count, bool racing)
@@ -382,10 +440,40 @@ uint8_t LapTimer::nextActivePilot(uint8_t from, uint8_t count, bool racing)
     return (from + 1) % count; // all off: scan() sees the power-down frequency and skips sampling
 }
 
-void LapTimer::sample(uint8_t pilot, uint8_t raw, uint32_t nowMs)
+// Pass time = middle of the time spent at the peak. When the peak is a single reading (several
+// pilots: one reading per pilot every ~50 ms x pilots), a parabola through the peak and its
+// neighbours places it between the readings.
+uint32_t LapTimer::passTime(PilotState &p)
+{
+    uint32_t t1 = p.peakFirstMs;
+    if (p.peakLastMs != t1)
+        return t1 + (p.peakLastMs - t1) / 2;
+    if (p.peakNextMs == 0 || p.peakPrevMs == 0)
+        return t1;
+    float a = (float)(t1 - p.peakPrevMs); // ms before the peak
+    float b = (float)(p.peakNextMs - t1); // ms after the peak
+    if (a <= 0 || b <= 0 || a > 500 || b > 500)
+        return t1; // neighbours missing or too far apart (scan interrupted)
+    float d0 = (float)p.peak - p.peakPrev; // > 0: the peak is higher than both neighbours
+    float d2 = (float)p.peak - p.peakNext;
+    float den = a * d2 + b * d0;
+    if (den <= 0)
+        return t1;
+    float offset = 0.5f * (b * b * d0 - a * a * d2) / den; // vertex of the parabola, ms from t1
+    if (offset < -a / 2)
+        offset = -a / 2;
+    if (offset > b / 2)
+        offset = b / 2;
+    return t1 + (int32_t)lroundf(offset);
+}
+
+void LapTimer::sample(uint8_t pilot, uint8_t v, uint32_t nowMs)
 {
     PilotState &p = pilots[pilot];
-    uint8_t v = round(p.filter.filter(raw, 0));
+    uint8_t prevV = p.lastV;
+    uint32_t prevMs = p.lastMs;
+    p.lastV = v;
+    p.lastMs = nowMs;
     p.rssi = v;
     if (!p.stepHasSample || v > p.stepMax)
     {
@@ -421,23 +509,27 @@ void LapTimer::sample(uint8_t pilot, uint8_t raw, uint32_t nowMs)
         }
     }
 
-    if (v >= enter && dominant)
+    if (v >= enter && dominant && (!p.inPass || v > p.peak))
     {
         if (!p.inPass)
         {
             p.inPass = true;
             p.passStartMs = nowMs;
-            p.peak = v;
-            p.peakFirstMs = p.peakLastMs = nowMs;
         }
-        else if (v > p.peak)
-        {
-            p.peak = v;
-            p.peakFirstMs = p.peakLastMs = nowMs;
-        }
-        else if (v + PEAK_TOLERANCE >= p.peak)
-        {
+        p.peak = v; // new peak
+        p.peakFirstMs = p.peakLastMs = nowMs;
+        p.peakPrev = prevV;
+        p.peakPrevMs = prevMs;
+        p.peakNextMs = 0;
+    }
+    else if (p.inPass)
+    {
+        if (v >= enter && dominant && v + PEAK_TOLERANCE >= p.peak)
             p.peakLastMs = nowMs; // still at the peak (plateau)
+        if (p.peakNextMs == 0)
+        {
+            p.peakNext = v; // the reading right after the peak
+            p.peakNextMs = nowMs;
         }
     }
 
@@ -450,11 +542,8 @@ void LapTimer::sample(uint8_t pilot, uint8_t raw, uint32_t nowMs)
 
     if (p.inPass && v < exit)
     {
-        // Pass time = middle of the time spent at the peak, which is more
-        // accurate than the first peak sample when the signal plateaus
         p.inPass = false;
-        uint32_t passMs = p.peakFirstMs + (p.peakLastMs - p.peakFirstMs) / 2;
-        onPass(pilot, passMs);
+        onPass(pilot, passTime(p));
     }
 }
 
