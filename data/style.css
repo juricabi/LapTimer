@@ -31,6 +31,11 @@
   --p2: #d97706;
   --p3: #059669;
   --p4: #db2777;
+  /* pilot colours as text (channel scan labels), on surface-2 */
+  --p1-text: #2563eb;         /* 4.9:1 */
+  --p2-text: #b45309;         /* 4.8:1 */
+  --p3-text: #047857;         /* 5.2:1 */
+  --p4-text: #be185d;         /* 5.8:1 */
 
   --topbar: #0f172a;
   --topbar-text: #f8fafc;
@@ -76,6 +81,10 @@
     --p2: #fbbf24;
     --p3: #34d399;
     --p4: #f472b6;
+    --p1-text: #60a5fa;         /* on surface-2 6.0:1 */
+    --p2-text: #fbbf24;         /* 9.2:1 */
+    --p3-text: #34d399;         /* 8.0:1 */
+    --p4-text: #f472b6;         /* 5.8:1 */
 
     --topbar: #070c18;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
@@ -737,7 +746,7 @@ table tr.best-lap td:nth-child(2)::after {
 
 .segmented button {
   flex: 1;
-  min-height: 40px;
+  min-height: var(--tap);
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -936,6 +945,19 @@ table tr.best-lap td:nth-child(2)::after {
   letter-spacing: 0.06em;
 }
 
+.race-pilot-head .lap-memory-full {
+  color: var(--warn-text);
+}
+
+/* Settings cards wait for the settings to load (the save badge says what is happening) */
+body:not(.config-ready) [data-needs-config] {
+  pointer-events: none;
+}
+
+body:not(.config-ready) [data-needs-config] > :not(.save-status) {
+  opacity: 0.45;
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1123,9 +1145,101 @@ table tr.best-lap td:nth-child(2)::after {
 .rs-delta-slower { color: #f87171; }
 .rs-best { color: #94a3b8; }
 
+/* the page behind the race screen doesn't scroll */
+html.race-screen-open {
+  overflow: hidden;
+}
+
+/* 3-4 pilots: compact tiles so every pilot fits on a phone (the screen scrolls if not) */
+.race-screen {
+  overflow-y: auto;
+}
+
+.rs-pilot {
+  min-width: 0;
+}
+
+.rs-count-3 .rs-pilot,
+.rs-count-4 .rs-pilot {
+  padding: var(--space-3);
+  gap: var(--space-1);
+}
+
+.rs-count-3 .rs-name,
+.rs-count-4 .rs-name {
+  flex-wrap: wrap;
+  font-size: clamp(15px, 3vw, 28px);
+}
+
+.rs-count-3 .rs-last,
+.rs-count-4 .rs-last {
+  font-size: clamp(36px, min(12vw, 8vh), 120px);
+}
+
+.rs-count-3 .rs-row,
+.rs-count-4 .rs-row {
+  font-size: clamp(14px, 2.8vw, 28px);
+}
+
+.rs-count-3 .rs-current-row,
+.rs-count-4 .rs-current-row {
+  font-size: clamp(13px, 2.5vw, 24px);
+}
+
+/* 4 pilots on a phone in portrait: 2 x 2 */
+@media (max-width: 559px) {
+  .rs-count-4 {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* phone in landscape: all pilots side by side, text sized by the (short) screen height */
+@media (orientation: landscape) and (max-height: 500px) {
+  .rs-count-3 {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .rs-count-4 {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .rs-clock {
+    font-size: clamp(32px, 14vh, 96px);
+  }
+
+  .rs-pilots .rs-pilot {
+    padding: var(--space-3);
+    gap: var(--space-1);
+  }
+
+  .rs-pilots .rs-name {
+    font-size: clamp(13px, 4.5vh, 28px);
+  }
+
+  .rs-pilots .rs-last {
+    font-size: clamp(28px, 16vh, 160px);
+  }
+
+  .rs-count-3 .rs-last,
+  .rs-count-4 .rs-last {
+    font-size: clamp(28px, 11vh, 120px);
+  }
+
+  .rs-pilots .rs-row {
+    font-size: clamp(12px, 4.5vh, 34px);
+  }
+
+  .rs-pilots .rs-current-row {
+    font-size: clamp(12px, 4vh, 28px);
+  }
+}
+
 /* Small secondary link, e.g. "Firmware update" */
 .link-small {
   align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap); /* small text, full-size tap target */
   color: var(--muted);
   font-size: 13px;
   text-decoration: underline;
@@ -1189,7 +1303,7 @@ a.chip {
 }
 
 .btn-small {
-  min-height: 36px;
+  min-height: var(--tap);
   padding: var(--space-1) var(--space-3);
   font-size: 13px;
 }
@@ -1220,6 +1334,11 @@ a.chip {
   color: var(--stop-text);
   border-color: var(--stop-text);
   cursor: pointer;
+}
+
+.save-status[data-save-state="offline"] {
+  color: var(--warn-text);
+  border-color: var(--warn-text);
 }
 
 /* Race screen additions */
@@ -1258,9 +1377,11 @@ a.chip {
   font-weight: 600;
 }
 
+/* 44 px to tap; the negative margin keeps the chip itself compact */
 .chip-remove {
-  width: 32px;
-  height: 32px;
+  width: var(--tap);
+  height: var(--tap);
+  margin: -6px -4px -6px -8px;
   border: 0;
   border-radius: 50%;
   background: transparent;
