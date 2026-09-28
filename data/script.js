@@ -15,8 +15,6 @@ const FREQ_TABLE = [
   [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917],
   [5362, 5399, 5436, 5473, 5510, 5547, 5584, 5621],
 ];
-const MAX_PILOTS = 4;
-const HOP_MS_PER_PILOT = 53; // firmware: RX_LOCK_MS 48 + HOP_DWELL_MS 5 per pilot
 
 // firmware race states and modes
 const STATE = { IDLE: 0, COUNTDOWN: 1, WAITING: 2, RUNNING: 3, FINISHED: 4 };
@@ -36,8 +34,10 @@ function channelName(freq) {
   return bc ? BANDS[bc.band] + (bc.channel + 1) : "";
 }
 
-function pilotLabel(name, index) {
-  return name && name.trim() ? name.trim() : "Pilot " + (index + 1);
+// count > 1 only for races saved by the multi-pilot firmware
+function pilotLabel(name, index = 0, count = 1) {
+  if (name && name.trim()) return name.trim();
+  return count > 1 ? "Pilot " + (index + 1) : "Pilot";
 }
 
 function secs(ms) {
@@ -152,20 +152,18 @@ function bindRange(input, format, onInput) {
 // ═══════════════════════════════════════════════════════════════════
 
 let configLoaded = false;
-let pilotCount = 1;
-let pilots = []; // [{name, freq, enter, exit}] for all MAX_PILOTS slots
+let pilot = { name: "", freq: 5800, enter: 120, exit: 100 }; // who is flying
 let raceMode = MODE.PRACTICE;
-let rankBy = 0; // 0 most laps, 1 fastest lap, 2 best 3 consecutive laps
 let announcerRate = 1.0;
 let profiles = [];
 
 const ui = {
-  pilotList: $("pilotList"),
-  pilotHint: $("pilotHint"),
+  pilotName: $("pilotName"),
+  pilotBand: $("pilotBand"),
+  pilotChannel: $("pilotChannel"),
   raceTime: $("raceTime"),
   raceLaps: $("raceLaps"),
   countdown: $("countdown"),
-  stagger: $("stagger"),
   minLap: $("minLap"),
   announcer: $("announcerSelect"),
   rate: $("rate"),
@@ -183,153 +181,73 @@ const updateMinLapLabel = bindRange(ui.minLap, (v) => v.toFixed(1) + "s");
 const updateRateLabel = bindRange(ui.rate, (v) => v.toFixed(1), (v) => (announcerRate = v));
 const updateAlarmLabel = bindRange(ui.alarm, (v) => (v == 0 ? "Off" : v.toFixed(1) + "v"));
 
-function buildPilotRows() {
-  ui.pilotList.innerHTML = "";
-  for (let i = 0; i < MAX_PILOTS; i++) {
-    const row = el("div", "pilot-row pilot-" + (i + 1));
-    row.dataset.index = i;
-    row.innerHTML = `
-      <div class="pilot-head">
-        <span class="dot-p"></span>
-        <input type="text" class="p-name" maxlength="20" placeholder="Pilot ${i + 1}" aria-label="Pilot ${i + 1} name" />
-        <span class="freq-pill"><span class="p-freq">----</span><small>MHz</small></span>
-      </div>
-      <div class="pilot-freq">
-        <select class="p-band" aria-label="Band">${BANDS.map((b, n) => `<option value="${n}">Band ${b}</option>`).join("")}</select>
-        <select class="p-channel" aria-label="Channel">${[1, 2, 3, 4, 5, 6, 7, 8].map((c) => `<option value="${c - 1}">Channel ${c}</option>`).join("")}</select>
-      </div>
-      <select class="p-profile" aria-label="Switch to a saved pilot"></select>`;
-    // Handlers look up pilots[i] each time: a settings reload replaces the pilot objects
-    row.querySelector(".p-name").addEventListener("input", (e) => {
-      const name = truncateUtf8(e.target.value, NAME_MAX_BYTES);
-      if (name !== e.target.value) e.target.value = name;
-      pilots[i].name = name;
-      renderCalibPilotButtons();
-    });
-    row.querySelector(".p-name").addEventListener("change", () => {
-      touchedPilots.add(i);
-      rememberPilots();
-    });
-    const onFreq = () => {
-      const b = +row.querySelector(".p-band").value;
-      const c = +row.querySelector(".p-channel").value;
-      pilots[i].freq = FREQ_TABLE[b][c];
-      touchedPilots.add(i);
-      renderPilotRow(i);
-      renderPilotHint();
-    };
-    row.querySelector(".p-band").addEventListener("change", onFreq);
-    row.querySelector(".p-channel").addEventListener("change", onFreq);
-    row.querySelector(".p-profile").addEventListener("change", (e) => {
-      const profile = profiles[+e.target.value];
-      e.target.value = "";
-      if (!profile) return;
-      Object.assign(pilots[i], { name: profile.name, freq: profile.freq, enter: profile.enter, exit: profile.exit });
-      renderPilotRow(i);
-      renderPilotHint();
-      renderCalibration();
-      renderCalibPilotButtons();
-    });
-    ui.pilotList.appendChild(row);
-  }
+ui.pilotBand.innerHTML = BANDS.map((b, n) => `<option value="${n}">Band ${b}</option>`).join("");
+ui.pilotChannel.innerHTML = [1, 2, 3, 4, 5, 6, 7, 8].map((c) => `<option value="${c - 1}">Channel ${c}</option>`).join("");
+
+ui.pilotName.addEventListener("input", () => {
+  const name = truncateUtf8(ui.pilotName.value, NAME_MAX_BYTES);
+  if (name !== ui.pilotName.value) ui.pilotName.value = name;
+  pilot.name = name;
+  pilotTouched = true;
+  renderCalibPilot();
+  renderSavedPilots();
+});
+ui.pilotName.addEventListener("change", rememberPilot);
+
+function onFreqChange() {
+  pilot.freq = FREQ_TABLE[+ui.pilotBand.value][+ui.pilotChannel.value];
+  pilotTouched = true;
+  renderPilot();
+}
+ui.pilotBand.addEventListener("change", onFreqChange);
+ui.pilotChannel.addEventListener("change", onFreqChange);
+
+// Who is flying: name, channel, the saved pilot it matches, and the calibration
+function renderPilot() {
+  ui.pilotName.value = pilot.name || "";
+  const bc = bandChannel(pilot.freq);
+  ui.pilotBand.value = bc ? bc.band : 4;
+  ui.pilotChannel.value = bc ? bc.channel : 0;
+  $("pilotFreq").textContent = bc ? pilot.freq : "Off";
+  $("pilotHint").hidden = !!bc;
+  renderSavedPilots();
+  renderCalibPilot();
+  renderCalibration();
 }
 
-function renderPilotRow(i) {
-  const row = ui.pilotList.children[i];
-  const p = pilots[i];
-  row.hidden = i >= pilotCount;
-  row.querySelector(".p-name").value = p.name || "";
-  const bc = bandChannel(p.freq) || { band: 4, channel: 0 };
-  row.querySelector(".p-band").value = bc.band;
-  row.querySelector(".p-channel").value = bc.channel;
-  row.querySelector(".p-freq").textContent = bandChannel(p.freq) ? p.freq : "Off";
-  renderProfileSelect(row.querySelector(".p-profile"));
-}
-
-function renderProfileSelect(select) {
-  select.hidden = profiles.length === 0;
-  select.innerHTML =
-    `<option value="">Switch to a saved pilot…</option>` +
-    profiles.map((pr, n) => `<option value="${n}">${escapeHtml(pr.name)} · ${channelName(pr.freq) || pr.freq}</option>`).join("");
-}
-
-// Saved pilots as chips; × forgets one
+// Saved pilots as chips: tap one to fly as them, × forgets one
 function renderSavedPilots() {
   const container = $("savedPilots");
   container.innerHTML = "";
   $("savedPilotsBlock").hidden = profiles.length === 0;
+  const current = (pilot.name || "").trim().toLowerCase();
   profiles.forEach((pr) => {
-    const chip = el("span", "chip-pilot");
-    chip.append(el("span", "", `${pr.name} · ${channelName(pr.freq) || pr.freq}`));
+    const chip = el("span", "chip-pilot" + (pr.name.toLowerCase() === current ? " active" : ""));
+    const use = el("button", "chip-name", `${pr.name} · ${channelName(pr.freq) || pr.freq}`);
+    use.type = "button";
+    use.setAttribute("aria-label", "Fly as " + pr.name);
+    use.addEventListener("click", () => {
+      if (!configLoaded) return;
+      Object.assign(pilot, { name: pr.name, freq: pr.freq, enter: pr.enter, exit: pr.exit });
+      renderPilot();
+      scheduleSave();
+    });
+    chip.appendChild(use);
     const remove = el("button", "chip-remove", "×");
     remove.type = "button";
     remove.setAttribute("aria-label", "Forget " + pr.name);
-    remove.addEventListener("click", async () => {
-      remove.disabled = true;
-      try {
-        await postJson("/api/profiles/remove", { name: pr.name });
-      } catch (e) {
-        /* the reload below shows what the timer has */
-      }
-      loadProfiles();
-    });
+    remove.addEventListener("click", () => queueProfileChange("/api/profiles/remove", { name: pr.name }));
     chip.appendChild(remove);
     container.appendChild(chip);
   });
 }
 
-function renderPilots() {
-  for (let i = 0; i < MAX_PILOTS; i++) renderPilotRow(i);
-  renderSavedPilots();
-  setSegmented($("pilotCount"), pilotCount);
-  renderPilotHint();
-}
-
-// Precision note and warnings for frequencies that are equal or too close
-function renderPilotHint() {
-  let text;
-  if (pilotCount === 1) {
-    text = "One pilot: the receiver stays on one channel for full timing precision.";
-  } else {
-    text = `${pilotCount} pilots share the receiver, which switches between their channels: each pilot is read every ${HOP_MS_PER_PILOT * pilotCount} ms and the pass time is interpolated between readings.`;
-  }
-  const active = pilots.slice(0, pilotCount);
-  const warnings = [];
-  active.forEach((p, i) => {
-    if (!bandChannel(p.freq)) warnings.push(`Pilot ${i + 1} has no channel yet: pick a band and channel.`);
-  });
-  for (let a = 0; a < active.length; a++) {
-    for (let b = a + 1; b < active.length; b++) {
-      if (!bandChannel(active[a].freq) || !bandChannel(active[b].freq)) continue;
-      const gap = Math.abs(active[a].freq - active[b].freq);
-      if (gap === 0) warnings.push(`Pilots ${a + 1} and ${b + 1} are on the same channel.`);
-      else if (gap < 30) warnings.push(`Pilots ${a + 1} and ${b + 1} are only ${gap} MHz apart; laps may be mixed up.`);
-    }
-  }
-  ui.pilotHint.innerHTML = escapeHtml(text) + warnings.map((w) => `<br><span class="warn">${escapeHtml(w)}</span>`).join("");
-}
-
 // Settings controls do nothing until the settings have loaded (they are dimmed until then)
-setupSegmented($("pilotCount"), (v) => {
-  if (!configLoaded) return;
-  pilotCount = +v;
-  renderPilots();
-  renderCalibPilotButtons();
-  scheduleSave();
-});
-
 setupSegmented($("raceMode"), (v) => {
   if (!configLoaded) return;
   raceMode = +v;
   renderRaceModeFields();
   scheduleSave();
-});
-
-setupSegmented($("rankBy"), (v) => {
-  if (!configLoaded) return;
-  rankBy = +v;
-  scheduleSave();
-  if (raceData) handleRace(raceData);
 });
 
 function renderRaceModeFields() {
@@ -338,28 +256,21 @@ function renderRaceModeFields() {
   $("raceLapsField").hidden = raceMode !== MODE.LAPS;
   $("raceModeHint").textContent = [
     "Unlimited laps until you press Stop.",
-    "Race for a set time; each pilot finishes on their first pass after the time is up.",
-    "Each pilot finishes after the set number of laps.",
+    "Race for a set time; you finish on your first pass after the time is up.",
+    "You finish after the set number of laps.",
   ][raceMode];
 }
 
 // Puts settings in the shape of GET /config into the page
 function applyConfig(config) {
-  pilots = (config.p || []).slice(0, MAX_PILOTS).map((p) => ({ name: p.name, freq: p.freq, enter: p.enter, exit: p.exit }));
-  while (pilots.length < MAX_PILOTS) pilots.push({ name: "", freq: 5658, enter: 120, exit: 100 });
-  pilotCount = Math.min(Math.max(config.pilots || 1, 1), MAX_PILOTS);
+  pilot = { name: config.name || "", freq: config.freq, enter: config.enterRssi, exit: config.exitRssi };
   raceMode = config.raceMode || 0;
-
-  if (!ui.pilotList.children.length) buildPilotRows();
-  renderPilots();
+  renderPilot();
   renderRaceModeFields();
 
   ui.raceTime.value = config.raceSec || 120;
   ui.raceLaps.value = config.raceLaps || 3;
   ui.countdown.checked = !!config.countdown;
-  ui.stagger.checked = !!config.stagger;
-  rankBy = config.rankBy || 0;
-  setSegmented($("rankBy"), rankBy);
   ui.minLap.value = (config.minLap / 10).toFixed(1);
   ui.announcer.selectedIndex = config.anType;
   ui.rate.value = (config.anRate / 10).toFixed(1);
@@ -367,16 +278,11 @@ function applyConfig(config) {
   ui.buzzer.checked = !!config.buzzerOn;
   ui.alarm.value = (config.alarm / 10).toFixed(1);
   [updateRaceTimeLabel, updateRaceLapsLabel, updateMinLapLabel, updateRateLabel, updateAlarmLabel].forEach((f) => f());
-
-  renderCalibPilotButtons();
-  renderCalibration();
 }
 
 // Settings with this page's unsaved changes (a changedSettings() diff) on top
 function withChanges(config, diff) {
-  const merged = { ...config, ...diff };
-  merged.p = (config.p || []).map((p, i) => ({ ...p, ...((diff.p && diff.p[i]) || {}) }));
-  return merged;
+  return { ...config, ...diff };
 }
 
 let configLoading = false;
@@ -419,19 +325,20 @@ async function loadConfigAtStart() {
     }
   }
   loadProfiles();
-  fetchRace(); // before a race the Race tab lists the configured pilots
+  fetchRace(); // before a race the Race tab shows the pilot
 }
 
+// The settings as this page shows them, in the keys of GET /config
 function configBody() {
   return {
-    pilots: pilotCount,
-    p: pilots.map((p) => ({ name: p.name, freq: p.freq, enter: p.enter, exit: p.exit })),
+    name: pilot.name,
+    freq: pilot.freq,
+    enterRssi: pilot.enter,
+    exitRssi: pilot.exit,
     raceMode: raceMode,
     raceSec: +ui.raceTime.value,
     raceLaps: +ui.raceLaps.value,
     countdown: ui.countdown.checked,
-    stagger: ui.stagger.checked,
-    rankBy: rankBy,
     minLap: Math.round(ui.minLap.value * 10),
     alarm: Math.round(ui.alarm.value * 10),
     anType: ui.announcer.selectedIndex,
@@ -445,24 +352,13 @@ let savedBody = null; // settings the timer has, as far as this page knows
 let knownRev = null; // the timer's settings revision that savedBody belongs to
 let savingNow = false;
 
-// Only the settings that changed since the last load/save. Pilots are positional,
-// so unchanged pilots before a changed one are sent as {} (the timer skips them).
+// Only the settings that changed since the last load/save
 function changedSettings() {
   const now = configBody();
   const diff = {};
   for (const key of Object.keys(now)) {
-    if (key === "p") continue;
-    if (JSON.stringify(now[key]) !== JSON.stringify(savedBody[key])) diff[key] = now[key];
+    if (now[key] !== savedBody[key]) diff[key] = now[key];
   }
-  const p = [];
-  now.p.forEach((pilot, i) => {
-    const before = savedBody.p[i] || {};
-    const changed = {};
-    for (const k of Object.keys(pilot)) if (pilot[k] !== before[k]) changed[k] = pilot[k];
-    p.push(changed);
-  });
-  while (p.length && !Object.keys(p[p.length - 1]).length) p.pop();
-  if (p.length) diff.p = p;
   return { diff, now };
 }
 
@@ -528,8 +424,8 @@ function scheduleSave() {
     if (saveTimer) return; // edited again meanwhile: that save reports
     setSaveState(ok ? "saved" : "error");
     if (ok) {
-      rememberPilots();
-      fetchRace(); // pilot names and channels on the Race tab come from the timer
+      rememberPilot();
+      fetchRace(); // the pilot's name and channel on the Race tab come from the timer
     } else {
       saveRetryTimer = setTimeout(scheduleSave, 5000);
     }
@@ -581,41 +477,72 @@ async function loadProfiles() {
     return; // keep showing the last list
   }
   if (!Array.isArray(list)) return;
-  profiles = list.sort((a, b) => a.name.localeCompare(b.name));
-  if (configLoaded) renderPilots();
+  profiles = withQueuedProfileChanges(list).sort((a, b) => a.name.localeCompare(b.name));
+  renderSavedPilots();
 }
 
-// Pilots are remembered automatically: every named pilot (name, channel, thresholds)
-// is kept in the saved pilots list. Names still being typed are skipped.
-const touchedPilots = new Set(); // pilot slots edited since the last save
+// The pilot is remembered automatically: a named pilot (name, channel, thresholds) is kept
+// in the saved pilots list. A name still being typed is remembered once it is done.
+let pilotTouched = false; // changed on this page since it was last remembered
 
-async function rememberPilots() {
-  if (!configLoaded) return;
-  const touched = [...touchedPilots];
-  touchedPilots.clear();
-  let changed = false;
-  for (const i of touched) {
-    if (i >= pilotCount) continue;
-    const p = pilots[i];
-    const name = (p.name || "").trim();
-    const nameInput = ui.pilotList.children[i].querySelector(".p-name");
-    if (!name || !bandChannel(p.freq)) continue;
-    if (document.activeElement === nameInput) {
-      touchedPilots.add(i); // still typing: remember it after the next change
-      continue;
-    }
-    const known = profiles.find((pr) => pr.name.toLowerCase() === name.toLowerCase());
-    if (known && known.name === name && known.freq === p.freq && known.enter === p.enter && known.exit === p.exit) continue;
-    try {
-      await postJson("/api/profiles/save", { name, freq: p.freq, enter: p.enter, exit: p.exit });
-      changed = true;
-      $("profilesFull").hidden = true;
-    } catch (e) {
-      if (e.status === 507) $("profilesFull").hidden = false;
-      else touchedPilots.add(i); // try again after the next change
-    }
+function rememberPilot() {
+  if (!configLoaded || !pilotTouched) return;
+  const name = (pilot.name || "").trim();
+  if (!name || !bandChannel(pilot.freq) || document.activeElement === ui.pilotName) return;
+  pilotTouched = false;
+  const known = profiles.find((pr) => pr.name.toLowerCase() === name.toLowerCase());
+  if (known && known.name === name && known.freq === pilot.freq && known.enter === pilot.enter && known.exit === pilot.exit) return;
+  queueProfileChange("/api/profiles/save", { name, freq: pilot.freq, enter: pilot.enter, exit: pilot.exit });
+}
+
+// Saved-pilot changes go out one at a time, and never during a race: writing them to the
+// timer's flash would stall its RSSI sampling. They wait here (and already show in the list)
+// until the race has ended or the timer can be reached again.
+const profileQueue = []; // [{url, body}]
+let profileSending = false;
+
+function isRacing() {
+  return !!status && status.state >= STATE.COUNTDOWN && status.state <= STATE.RUNNING;
+}
+
+function queueProfileChange(url, body) {
+  const key = body.name.toLowerCase();
+  const i = profileQueue.findIndex((c) => c.body.name.toLowerCase() === key);
+  if (i >= 0) profileQueue.splice(i, 1); // only the latest change to a pilot counts
+  profileQueue.push({ url, body });
+  profiles = withQueuedProfileChanges(profiles).sort((a, b) => a.name.localeCompare(b.name));
+  renderSavedPilots();
+  sendProfileChanges();
+}
+
+// The timer's list with this page's waiting changes on top
+function withQueuedProfileChanges(list) {
+  let out = [...list];
+  for (const { url, body } of profileQueue) {
+    out = out.filter((pr) => pr.name.toLowerCase() !== body.name.toLowerCase());
+    if (url.endsWith("/save")) out.push({ ...body });
   }
-  if (changed) loadProfiles();
+  return out;
+}
+
+async function sendProfileChanges() {
+  if (profileSending) return;
+  profileSending = true;
+  let sent = false;
+  while (profileQueue.length && !isRacing()) {
+    const { url, body } = profileQueue[0];
+    try {
+      await postJson(url, body);
+      if (url.endsWith("/save")) $("profilesFull").hidden = true;
+    } catch (e) {
+      if (e.status === 409 || !e.status) break; // a race started, or no answer: try again later
+      if (e.status === 507) $("profilesFull").hidden = false; // full: this pilot is not saved
+    }
+    profileQueue.shift();
+    sent = true;
+  }
+  profileSending = false;
+  if (sent) loadProfiles();
 }
 
 // ── Home WiFi ──
@@ -774,12 +701,11 @@ let status = null; // latest /api/status
 let statusAtMs = 0; // local time when it arrived
 let raceData = null; // latest /api/race
 let seenRaceId = null; // race whose laps have been announced
-let seenLaps = []; // lap entries per pilot already announced
+let seenLaps = 0; // lap entries already announced
 let seenTimeUp = false;
-let seenFinished = [];
+let seenFinished = false;
 let seenRaceFinished = false;
-let lastLapCalled = [];
-let seenEdits = 0; // lap corrections already taken over // staggered timed race: "last lap" announced per pilot
+let seenEdits = 0; // lap corrections already taken over
 let raceFetchPending = false;
 let raceFetchAgain = false; // laps changed while a fetch was running
 
@@ -820,7 +746,7 @@ function handleStatus(s) {
   statusAtMs = Date.now();
 
   $("bvolt").textContent = (s.vbat / 10).toFixed(1) + "V";
-  if (currentTab === "calib" && !rssiPaused && !s.spectrum && s.pilots[calibIndex]) $("rssiNow").textContent = s.pilots[calibIndex].rssi;
+  if (currentTab === "calib" && !rssiPaused && !s.spectrum) $("rssiNow").textContent = s.rssi;
 
   if (s.boot !== undefined && s.boot !== bootId) {
     const restarted = bootId !== null;
@@ -839,27 +765,19 @@ function handleStatus(s) {
     if (profilesRev !== null) loadProfiles();
     profilesRev = s.prof;
   }
+  if (profileQueue.length && !isRacing()) sendProfileChanges(); // waited for the race to end
   checkSettingsRevision(s.cfg);
-  const lapCountsChanged =
+  const lapsChanged =
     !previous ||
     previous.race !== s.race ||
     previous.state !== s.state ||
     previous.edits !== s.edits ||
-    s.pilots.some((p, i) => !previous.pilots[i] || previous.pilots[i].laps !== p.laps || previous.pilots[i].fin !== p.fin);
-  if (lapCountsChanged) fetchRace();
+    previous.laps !== s.laps ||
+    previous.fin !== s.fin;
+  if (lapsChanged) fetchRace();
 
   if (s.timeUp && !seenTimeUp && seenRaceId === s.race) {
     queueSpeak("Time's up");
-  }
-  if (s.state === STATE.RUNNING && s.mode === MODE.TIMED && s.stag && raceData && seenRaceId === s.race) {
-    const elapsed = raceElapsed();
-    raceData.pilots.forEach((p, i) => {
-      if (!p.laps.length || p.fin || lastLapCalled[i]) return;
-      if (pilotTimeLeft(p, elapsed) <= 0) {
-        lastLapCalled[i] = true;
-        queueSpeak(pilotLabel(p.name, i) + ", last lap");
-      }
-    });
   }
   seenTimeUp = s.timeUp;
   renderRaceControls();
@@ -878,21 +796,11 @@ function clockText() {
   if (!status) return formatClock(0);
   const elapsed = raceElapsed();
   if (status.state === STATE.COUNTDOWN) return String(Math.ceil(-elapsed / 1000) || "GO");
-  if (status.state === STATE.RUNNING && status.mode === MODE.TIMED && !status.timeUp && !status.stag) {
+  if (status.state === STATE.RUNNING && status.mode === MODE.TIMED && !status.timeUp) {
     return formatClock(status.raceMs - elapsed); // time left
   }
   if (status.state === STATE.RUNNING) return formatClock(elapsed);
-  return formatClock(raceData ? lastRaceDuration(raceData) : 0);
-}
-
-// Duration of a finished race: the longest total time of any pilot
-function lastRaceDuration(r) {
-  let longest = 0;
-  for (const p of r.pilots) {
-    const total = p.laps.reduce((a, b) => a + b, 0);
-    longest = Math.max(longest, total);
-  }
-  return longest;
+  return formatClock(raceData ? pilotTotal(racePilot(raceData)) : 0); // last race
 }
 
 function statusText() {
@@ -903,14 +811,13 @@ function statusText() {
     case STATE.WAITING:
       return ["Waiting for first gate pass…", "waiting"];
     case STATE.RUNNING:
-      if (status.mode === MODE.TIMED && status.stag) return ["Racing · own time each", "running"];
       if (status.mode === MODE.TIMED) return status.timeUp ? ["Time's up · finish your lap", "waiting"] : ["Time left", "running"];
       if (status.mode === MODE.LAPS) return [`Racing · ${status.raceLaps} laps`, "running"];
       return ["Racing", "running"];
     case STATE.FINISHED:
       return ["Finished", ""];
     default:
-      return [raceData && raceData.pilots.some((p) => p.laps.length) ? "Last race" : "Ready", ""];
+      return [raceData && racePilot(raceData).laps.length ? "Last race" : "Ready", ""];
   }
 }
 
@@ -931,7 +838,7 @@ function renderRaceControls() {
   $("clearLapsButton").disabled = racing;
   if (!spectrumScanning) $("spectrumButton").disabled = racing;
   // the finished race can be corrected once it has been saved
-  const saved = status && status.savedId > 0 && raceData && status.savedRace === raceData.race && raceData.pilots.some((p) => p.laps.length);
+  const saved = status && status.savedId > 0 && raceData && status.savedRace === raceData.race && racePilot(raceData).laps.length > 0;
   $("editLapsButton").disabled = racing || !saved;
   let [text, cls] = statusText();
   if (status && status.saveErr) {
@@ -972,39 +879,27 @@ function pilotStats(p) {
   return stats;
 }
 
-// A pilot's total time: from the race start, or with a staggered start from their own first pass
-function pilotTotal(p, stag) {
-  return p.laps.slice(stag ? 1 : 0).reduce((a, b) => a + b, 0);
+// Total time from the race start (entry 0 is the start pass)
+function pilotTotal(p) {
+  return p.laps.reduce((a, b) => a + b, 0);
 }
 
-// Race positions by the chosen ranking. "Most laps" is also "first to finish" in lap races
-// (most laps, then least total time).
-function positions(r) {
-  const order = r.pilots
-    .map((p, i) => {
-      const st = pilotStats(p);
-      return { i, laps: st.laps, total: pilotTotal(p, r.stag), best: st.best, best3: st.best3 };
-    })
-    .sort((a, b) => {
-      if (rankBy === 1) return (a.best ?? Infinity) - (b.best ?? Infinity) || b.laps - a.laps;
-      if (rankBy === 2) return (a.best3 ?? Infinity) - (b.best3 ?? Infinity) || b.laps - a.laps;
-      return b.laps - a.laps || a.total - b.total;
-    });
-  const pos = [];
-  order.forEach((o, rank) => (pos[o.i] = rank + 1));
-  return pos;
+// The race's one pilot (a race from the firmware always has exactly one)
+function racePilot(r) {
+  return r.pilots[0] || { name: pilot.name, freq: pilot.freq, laps: [], fin: false };
 }
 
 function handleRace(r) {
-  // Before any race, show the configured pilots
-  if (r.state === STATE.IDLE && !r.pilots.some((p) => p.laps.length)) {
-    r.pilots = pilots.slice(0, pilotCount).map((p) => ({ name: p.name, freq: p.freq, laps: [], fin: false }));
+  // Before any race, show the pilot from the settings
+  if (r.state === STATE.IDLE && !racePilot(r).laps.length) {
+    r.pilots = [{ name: pilot.name, freq: pilot.freq, laps: [], fin: false }];
   }
   raceData = r;
+  const p = racePilot(r);
   if (seenRaceId === r.race && r.edits !== seenEdits) {
     // laps were corrected (merge/split): take the new lap list without announcing it
     seenEdits = r.edits;
-    seenLaps = r.pilots.map((p) => p.laps.length);
+    seenLaps = p.laps.length;
   }
   if (seenRaceId !== r.race) {
     seenEdits = r.edits;
@@ -1012,57 +907,48 @@ function handleRace(r) {
     // from its first pass; otherwise just show it (don't replay old laps).
     seenRaceId = r.race;
     const fresh = r.state === STATE.COUNTDOWN || r.state === STATE.WAITING;
-    seenLaps = r.pilots.map((p) => (fresh ? 0 : p.laps.length));
-    seenFinished = r.pilots.map((p) => !fresh && p.fin);
+    seenLaps = fresh ? 0 : p.laps.length;
+    seenFinished = !fresh && p.fin;
     seenRaceFinished = !fresh && r.state === STATE.FINISHED;
-    lastLapCalled = r.pilots.map(() => !fresh);
   } else {
     announceNewLaps(r, configLoaded); // the announcer settings come with the settings
   }
-  renderRacePilots(r);
+  renderRacePilot(r);
   renderRaceScreen(r);
   renderRaceControls();
 }
 
 // speak false: only mark the laps as seen
 function announceNewLaps(r, speak = true) {
-  const multi = r.pilots.length > 1;
   const say = (text) => speak && queueSpeak(text);
-  r.pilots.forEach((p, i) => {
-    const name = pilotLabel(p.name, i);
-    for (let n = seenLaps[i] || 0; n < p.laps.length; n++) {
-      if (n === 0) {
-        if (!r.cd && r.pilots.every((q, j) => j === i || (seenLaps[j] || 0) === 0)) say("Race start");
-        else if (multi) say(name + " started");
-        continue;
-      }
-      if (speak) announceLap(p, i, n, r);
+  const p = racePilot(r);
+  for (let n = seenLaps; n < p.laps.length; n++) {
+    if (n === 0) {
+      if (!r.cd) say("Race start");
+      continue;
     }
-    seenLaps[i] = p.laps.length;
-    if (p.fin && !seenFinished[i]) {
-      if (p.full) say(multi ? name + ", lap memory full" : "Lap memory full");
-      else if (multi) say(name + " finished");
-      seenFinished[i] = true;
-    }
-  });
+    if (speak) announceLap(p, n);
+  }
+  seenLaps = p.laps.length;
+  if (p.fin && !seenFinished) {
+    if (p.full) say("Lap memory full");
+    seenFinished = true;
+  }
   if (r.state === STATE.FINISHED && !seenRaceFinished) {
     seenRaceFinished = true;
-    const pos = positions(r);
-    if (multi) say("Race over. Winner " + pilotLabel(r.pilots[pos.indexOf(1)].name, pos.indexOf(1)));
-    else say("Race over");
+    say("Race over");
   }
 }
 
-function announceLap(p, i, n, r) {
+function announceLap(p, n) {
   const lapMs = p.laps[n];
   const lapStr = secs(lapMs);
-  const name = pilotLabel(p.name, i);
-  const who = r.pilots.length > 1 || (p.name && p.name.trim()) ? name + " " : "";
+  const who = p.name && p.name.trim() ? p.name.trim() + " " : "";
   const previous = p.laps.slice(1, n);
   const type = ui.announcer.value;
 
   if (type === "beep") {
-    beep(100, 330 + i * 110, "square");
+    beep(100, 330, "square");
     return;
   }
   if (type === "1lap") {
@@ -1095,51 +981,48 @@ function deltaText(ms) {
   return [sign + (Math.abs(ms) / 1000).toFixed(2), ms < 0 ? "delta-faster" : "delta-slower"];
 }
 
-function renderRacePilots(r) {
-  const container = $("racePilots");
-  container.innerHTML = "";
-  const pos = positions(r);
-  const showPos = r.pilots.length > 1 && r.pilots.some((p) => p.laps.length > 1);
-  r.pilots.forEach((p, i) => {
-    const st = pilotStats(p);
-    const card = el("div", "card race-pilot pilot-" + (i + 1));
-    const [dText, dClass] = deltaText(st.delta);
-    const bestIndex = st.best === null ? -1 : p.laps.indexOf(st.best, 1);
-    const rows = [];
-    for (let n = p.laps.length - 1; n >= 1; n--) {
-      const d = st.best === null ? "" : n === bestIndex ? "best" : "+" + secs(p.laps[n] - st.best);
-      rows.push(`<tr${n === bestIndex ? ' class="best-lap"' : ""}><td>${n}</td><td>${secs(p.laps[n])}s</td><td>${d}</td></tr>`);
-    }
-    if (p.laps.length) rows.push(`<tr><td>0</td><td>${r.cd ? "Start " + secs(p.laps[0]) + "s" : "Start"}</td><td></td></tr>`);
-    card.innerHTML = `
-      <div class="race-pilot-head">
-        <span class="dot-p"></span>
-        <span>${showPos ? pos[i] + ". " : ""}${escapeHtml(pilotLabel(p.name, i))}</span>
-        <span class="muted">${channelName(p.freq)} ${p.freq}</span>
-        ${p.full ? '<span class="finished lap-memory-full">Lap memory full</span>' : p.fin ? '<span class="finished">Finished</span>' : ""}
-      </div>
-      <div class="stats">
-        ${statBox("Laps", st.laps)}
-        ${statBox("Last", st.last === null ? "–" : secs(st.last))}
-        ${statBox("Delta", dText, dClass)}
-        ${statBox("Best", st.best === null ? "–" : secs(st.best))}
-        ${statBox("Average", st.avg === null ? "–" : secs(st.avg))}
-        ${statBox("Best 3 laps", st.best3 === null ? "–" : secs(st.best3))}
-      </div>
-      <p class="hint">Consistency: ${st.consistency === null ? "–" : "±" + secs(st.consistency) + "s"} · Total ${secs(pilotTotal(p, r.stag))}s</p>
-      ${rows.length ? `<div class="lap-table-wrap"><table><tr><th>Lap</th><th>Time</th><th>vs best</th></tr>${rows.join("")}</table></div>` : ""}`;
-    container.appendChild(card);
-  });
+function renderRacePilot(r) {
+  const p = racePilot(r);
+  const st = pilotStats(p);
+  const [dText, dClass] = deltaText(st.delta);
+  const bestIndex = st.best === null ? -1 : p.laps.indexOf(st.best, 1);
+  const rows = [];
+  for (let n = p.laps.length - 1; n >= 1; n--) {
+    const d = st.best === null ? "" : n === bestIndex ? "best" : "+" + secs(p.laps[n] - st.best);
+    rows.push(`<tr${n === bestIndex ? ' class="best-lap"' : ""}><td>${n}</td><td>${secs(p.laps[n])}s</td><td>${d}</td></tr>`);
+  }
+  if (p.laps.length) rows.push(`<tr><td>0</td><td>${r.cd ? "Start " + secs(p.laps[0]) + "s" : "Start"}</td><td></td></tr>`);
+  const card = $("racePilot");
+  card.className = "card race-pilot";
+  card.innerHTML = `
+    <div class="race-pilot-head">
+      <span class="dot-p"></span>
+      <span>${escapeHtml(pilotLabel(p.name))}</span>
+      <span class="muted">${channelName(p.freq)} ${p.freq}</span>
+      ${p.full ? '<span class="finished lap-memory-full">Lap memory full</span>' : p.fin ? '<span class="finished">Finished</span>' : ""}
+    </div>
+    <div class="stats">
+      ${statBox("Laps", st.laps)}
+      ${statBox("Last", st.last === null ? "–" : secs(st.last))}
+      ${statBox("Delta", dText, dClass)}
+      ${statBox("Best", st.best === null ? "–" : secs(st.best))}
+      ${statBox("Average", st.avg === null ? "–" : secs(st.avg))}
+      ${statBox("Best 3 laps", st.best3 === null ? "–" : secs(st.best3))}
+    </div>
+    <p class="hint">Consistency: ${st.consistency === null ? "–" : "±" + secs(st.consistency) + "s"} · Total ${secs(pilotTotal(p))}s</p>
+    ${rows.length ? `<div class="lap-table-wrap"><table><tr><th>Lap</th><th>Time</th><th>vs best</th></tr>${rows.join("")}</table></div>` : ""}`;
 }
 
 // ── Race controls ──
-// The timer refuses a start while it is still saving the previous race, so retry briefly
+// The timer refuses a start while it is still saving the previous race, so retry briefly.
+// A refused or unanswered start may still have started the race (the reply got lost, or
+// another phone started it): the timer's state decides.
 async function startRace() {
   const button = $("startRaceButton");
   for (let attempt = 0; attempt < 8; attempt++) {
     const t = Math.floor(Date.now() / 1000);
     const r = await fetchTimeout("/timer/start?t=" + t, { method: "POST" }).catch(() => null);
-    if (r && r.ok) {
+    if ((r && r.ok) || (await raceIsOn())) {
       queueSpeak(ui.countdown.checked ? "Get ready" : "Start racing when ready");
       pollOnce();
       return;
@@ -1148,6 +1031,15 @@ async function startRace() {
   }
   showButtonStatus(button, "Timer busy, try again");
   pollOnce();
+}
+
+async function raceIsOn() {
+  try {
+    handleStatus(await fetchJson("/api/status"));
+  } catch (e) {
+    return false;
+  }
+  return isRacing();
 }
 
 function stopRace() {
@@ -1195,126 +1087,82 @@ $("rsClose").addEventListener("click", () => {
 
 function renderRaceScreen(r) {
   if ($("raceScreen").hidden) return;
-  const container = $("rsPilots");
-  container.innerHTML = "";
-  container.className = "rs-pilots rs-count-" + r.pilots.length; // 3-4 pilots get compact tiles
-  const pos = positions(r);
-  r.pilots.forEach((p, i) => {
-    const st = pilotStats(p);
-    const tile = el("div", "rs-pilot pilot-" + (i + 1));
-    let deltaHtml = "";
-    if (st.delta !== null) {
-      const [text, cls] = deltaText(st.delta);
-      deltaHtml = `<span class="${cls.replace("delta-", "rs-delta-")}">${text}</span>`;
-    }
-    const lapGoal = r.mode === MODE.LAPS ? "/" + r.raceLaps : "";
-    const lapText = p.full ? "Lap memory full" : p.fin ? "Finished ✓" : p.laps.length ? `Lap ${st.laps}${lapGoal}` : "Not started";
-    tile.innerHTML = `
-      <div class="rs-name"><span>${r.pilots.length > 1 ? pos[i] + ". " : ""}${escapeHtml(pilotLabel(p.name, i))}</span><span class="rs-lapno${p.fin ? " rs-finished" : ""}">${lapText}</span></div>
-      <div class="rs-last${st.last === null ? " rs-empty" : ""}">${st.last === null ? "--.--" : secs(st.last)}</div>
-      <div class="rs-row">${deltaHtml || "<span></span>"}<span class="rs-best">Best ${st.best === null ? "--.--" : secs(st.best)}</span></div>
-      <div class="rs-row rs-current-row"><span>This lap</span><span class="rs-current" data-pilot="${i}">--.--</span></div>
-      ${r.mode === MODE.TIMED && r.stag ? `<div class="rs-row rs-current-row"><span>Time left</span><span class="rs-left" data-pilot="${i}">--:--</span></div>` : ""}`;
-    container.appendChild(tile);
-  });
+  const p = racePilot(r);
+  const st = pilotStats(p);
+  let deltaHtml = "";
+  if (st.delta !== null) {
+    const [text, cls] = deltaText(st.delta);
+    deltaHtml = `<span class="${cls.replace("delta-", "rs-delta-")}">${text}</span>`;
+  }
+  const lapGoal = r.mode === MODE.LAPS ? "/" + r.raceLaps : "";
+  const lapText = p.full ? "Lap memory full" : p.fin ? "Finished ✓" : p.laps.length ? `Lap ${st.laps}${lapGoal}` : "Not started";
+  $("rsPilot").innerHTML = `
+    <div class="rs-name"><span>${escapeHtml(pilotLabel(p.name))}</span><span class="rs-lapno${p.fin ? " rs-finished" : ""}">${lapText}</span></div>
+    <div class="rs-last${st.last === null ? " rs-empty" : ""}">${st.last === null ? "--.--" : secs(st.last)}</div>
+    <div class="rs-row">${deltaHtml || "<span></span>"}<span class="rs-best">Best ${st.best === null ? "--.--" : secs(st.best)}</span></div>
+    <div class="rs-row rs-current-row"><span>This lap</span><span class="rs-current">--.--</span></div>`;
   updateCurrentLaps();
 }
 
-// Live "this lap" timer on the race screen: time since the pilot's last gate pass
+// Live "this lap" timer on the race screen: time since the last gate pass
 function updateCurrentLaps() {
   if ($("raceScreen").hidden || !raceData) return;
+  const current = document.querySelector(".rs-current");
+  if (!current) return;
+  const p = racePilot(raceData);
   const running = status && status.state === STATE.RUNNING;
-  const elapsed = raceElapsed();
-  for (const el of document.querySelectorAll(".rs-current")) {
-    const p = raceData.pilots[+el.dataset.pilot];
-    if (!p || !running || !p.laps.length || p.fin) {
-      el.textContent = "--.--";
-      continue;
-    }
-    const lastPassAt = p.laps.reduce((a, b) => a + b, 0); // ms after the race start
-    el.textContent = secs(Math.max(0, elapsed - lastPassAt));
+  if (!running || !p.laps.length || p.fin) {
+    current.textContent = "--.--";
+    return;
   }
-  for (const el of document.querySelectorAll(".rs-left")) {
-    el.textContent = pilotTimeLeftText(raceData.pilots[+el.dataset.pilot], elapsed, running);
-  }
-}
-
-// Staggered timed race: a pilot's time runs from their own first pass
-function pilotTimeLeft(p, elapsed) {
-  return raceData.raceMs - (elapsed - p.laps[0]);
-}
-
-function pilotTimeLeftText(p, elapsed, running) {
-  if (!p || p.fin) return p && p.fin ? "Finished" : "--:--";
-  if (!running || !p.laps.length) return formatClock(raceData.raceMs).slice(0, 5);
-  const left = pilotTimeLeft(p, elapsed);
-  return left > 0 ? formatClock(left) : "Last lap";
+  current.textContent = secs(Math.max(0, raceElapsed() - pilotTotal(p))); // last pass: ms after the race start
 }
 
 // ═══════════════════════════════════════════════════════════════════
 //  Calibration
 // ═══════════════════════════════════════════════════════════════════
 
-let calibIndex = 0;
 let rssiChart = null;
 let rssiSeries = new TimeSeries();
 let rssiSeq = 0;
 let lastPointMs = 0;
 let calibTimer = null;
-let autoCalSamples = []; // [value] of the selected pilot, 25 ms apart, last 60 s
+let autoCalSamples = []; // one value per 25 ms, last 60 s
+let calibFreq = null; // channel the auto-calibration samples come from
 
 const enterInput = $("enter");
 const exitInput = $("exit");
 
-function renderCalibPilotButtons() {
-  const container = $("calibPilot");
-  container.hidden = false; // shows the pilot name even with one pilot
-  container.innerHTML = "";
-  for (let i = 0; i < pilotCount; i++) {
-    const b = el("button", i === calibIndex ? "active" : "", pilotLabel(pilots[i] && pilots[i].name, i));
-    b.dataset.value = i;
-    container.appendChild(b);
+// The calibration belongs to the pilot flying: their name and channel head the graph
+function renderCalibPilot() {
+  $("calibPilotName").textContent = pilotLabel(pilot.name);
+  $("calibPilotFreq").textContent = bandChannel(pilot.freq) ? `${channelName(pilot.freq)} ${pilot.freq}` : "no channel";
+  if (pilot.freq !== calibFreq) {
+    calibFreq = pilot.freq; // another channel: start the auto-calibration afresh
+    autoCalSamples = [];
+    renderAutoCal();
   }
-  if (calibIndex >= pilotCount) selectCalibPilot(0);
-  renderCalibration();
-}
-
-setupSegmented($("calibPilot"), (v) => selectCalibPilot(+v));
-
-function selectCalibPilot(i) {
-  calibIndex = i;
-  setSegmented($("calibPilot"), i);
-  rssiSeries.clear();
-  autoCalSamples = [];
-  renderCalibration();
-  renderAutoCal();
 }
 
 function renderCalibration() {
-  const p = pilots[calibIndex];
-  if (!p) return;
-  enterInput.value = p.enter;
-  exitInput.value = p.exit;
-  $("enterSpan").textContent = p.enter;
-  $("exitSpan").textContent = p.exit;
+  enterInput.value = pilot.enter;
+  exitInput.value = pilot.exit;
+  $("enterSpan").textContent = pilot.enter;
+  $("exitSpan").textContent = pilot.exit;
 }
 
 enterInput.addEventListener("input", () => {
-  const p = pilots[calibIndex];
-  if (!p) return;
-  p.enter = +enterInput.value;
-  touchedPilots.add(calibIndex);
-  if (p.exit >= p.enter) p.exit = Math.max(0, p.enter - 1);
+  pilot.enter = +enterInput.value;
+  pilotTouched = true;
+  if (pilot.exit >= pilot.enter) pilot.exit = Math.max(0, pilot.enter - 1);
   renderCalibration();
   scheduleSave();
 });
 
 exitInput.addEventListener("input", () => {
-  const p = pilots[calibIndex];
-  if (!p) return;
-  p.exit = +exitInput.value;
-  touchedPilots.add(calibIndex);
-  if (p.exit >= p.enter) p.enter = Math.min(255, p.exit + 1);
+  pilot.exit = +exitInput.value;
+  pilotTouched = true;
+  if (pilot.exit >= pilot.enter) pilot.enter = Math.min(255, pilot.exit + 1);
   renderCalibration();
   scheduleSave();
 });
@@ -1334,21 +1182,20 @@ function createRssiChart() {
       borderVisible: false,
     },
     labels: { precision: 0, fillStyle: css.getPropertyValue("--muted").trim() || "#888" },
-    yRangeFunction: (range) => {
-      const p = pilots[calibIndex] || { enter: 120, exit: 100 };
-      return { min: Math.max(0, Math.min(range.min, p.exit) - 10), max: Math.max(range.max, p.enter) + 10 };
-    },
+    yRangeFunction: (range) => ({
+      min: Math.max(0, Math.min(range.min, pilot.exit) - 10),
+      max: Math.max(range.max, pilot.enter) + 10,
+    }),
   });
   rssiChart.addTimeSeries(rssiSeries, { lineWidth: 2, strokeStyle: "hsl(214, 70%, 60%)", fillStyle: "hsla(214, 70%, 60%, 0.2)" });
   rssiChart.streamTo($("rssiChart"), CHART_DELAY_MS + pausedMs);
 }
 
 function updateChartLines() {
-  const p = pilots[calibIndex];
-  if (!rssiChart || !p) return;
+  if (!rssiChart) return;
   rssiChart.options.horizontalLines = [
-    { color: "hsl(8.2, 86.5%, 53.7%)", lineWidth: 1.7, value: p.enter },
-    { color: "hsl(25, 85%, 55%)", lineWidth: 1.7, value: p.exit },
+    { color: "hsl(8.2, 86.5%, 53.7%)", lineWidth: 1.7, value: pilot.enter },
+    { color: "hsl(25, 85%, 55%)", lineWidth: 1.7, value: pilot.exit },
   ];
 }
 
@@ -1408,7 +1255,7 @@ function pollRssi(loop) {
   fetchJson("/api/rssi?since=" + rssiSeq)
     .then((r) => {
       if (loop !== rssiLoop) return;
-      const values = r.pilots[calibIndex] || [];
+      const values = r.rssi || [];
       const now = Date.now();
       values.forEach((v, k) => {
         const measuredAt = now - (values.length - 1 - k) * r.step;
@@ -1432,32 +1279,45 @@ function pollRssi(loop) {
     });
 }
 
-// Auto-calibration: background level from the quiet samples, peak level from passes
-function analyseAutoCal(samples) {
+// Auto-calibration from the recorded readings (one per 25 ms). Passes are the peaks that
+// stand out from the rest; Enter goes halfway between the highest level between passes
+// and the weakest pass. Checked on a real recording: 5 of 5 and 8 of 8 passes found.
+const AUTOCAL_STEP_MS = 25;
+
+function analyseAutoCal(samples, minLapMs) {
   if (samples.length < 80) return null;
-  const sorted = [...samples].sort((a, b) => a - b);
-  const floor = sorted[Math.floor(sorted.length * 0.2)];
-  const passLevel = floor + 20;
-  const peaks = [];
-  let peak = 0;
-  let inPass = false;
-  for (const v of samples) {
-    if (v > passLevel) {
-      inPass = true;
-      peak = Math.max(peak, v);
-    } else if (inPass) {
-      peaks.push(peak);
-      inPass = false;
-      peak = 0;
+  // Candidates: the highest reading within ±w, at most one per w (the first of a plateau)
+  const w = Math.round(Math.max(1000, minLapMs / 2) / AUTOCAL_STEP_MS);
+  const candidates = [];
+  for (let i = 0; i < samples.length; i++) {
+    if (candidates.length && i - candidates[candidates.length - 1] <= w) continue;
+    let highest = true;
+    for (let j = Math.max(0, i - w); j <= Math.min(samples.length - 1, i + w) && highest; j++) {
+      highest = samples[j] <= samples[i];
+    }
+    if (highest) candidates.push(i);
+  }
+  // Passes: the candidates above the biggest gap between neighbouring heights
+  const heights = candidates.map((i) => samples[i]).sort((a, b) => a - b);
+  let gap = 0;
+  let cut = Infinity;
+  for (let k = 1; k < heights.length; k++) {
+    if (heights[k] - heights[k - 1] > gap) {
+      gap = heights[k] - heights[k - 1];
+      cut = heights[k - 1];
     }
   }
-  if (peaks.length < 3) return { floor, passes: peaks.length };
-  peaks.sort((a, b) => a - b);
-  const peakRef = peaks[Math.floor(peaks.length * 0.25)]; // a weaker pass, to be safe
-  const span = peakRef - floor;
-  const enter = Math.round(floor + span * 0.65);
-  const exit = Math.min(enter - 3, Math.round(floor + span * 0.45));
-  return { floor, passes: peaks.length, peak: peakRef, enter, exit };
+  const passes = candidates.filter((i) => samples[i] > cut);
+  if (passes.length < 3 || gap < 6) return { passes: gap < 6 ? 0 : passes.length };
+  // The highest normal level between passes, and the weakest pass
+  const clear = 1500 / AUTOCAL_STEP_MS;
+  const between = samples.filter((v, i) => passes.every((p) => Math.abs(i - p) > clear)).sort((a, b) => a - b);
+  if (!between.length) return { passes: passes.length };
+  const high = between[Math.floor((between.length - 1) * 0.98)];
+  const ref = Math.min(...passes.map((i) => samples[i]));
+  if (ref - high < 10) return { passes: passes.length, high, ref };
+  const enter = Math.round(high + (ref - high) / 2);
+  return { passes: passes.length, high, ref, enter, exit: Math.min(high + 2, enter - 3) };
 }
 
 function renderAutoCal() {
@@ -1467,23 +1327,28 @@ function renderAutoCal() {
     return;
   }
   box.hidden = false;
-  const result = analyseAutoCal(autoCalSamples);
+  const result = analyseAutoCal(autoCalSamples, +ui.minLap.value * 1000);
   if (!result) {
     box.textContent = "Listening… keep the quad powered and fly through the gate.";
     return;
   }
-  if (!result.enter) {
-    box.textContent = `Background about ${result.floor}. Passes seen: ${result.passes} of 3.`;
+  if (result.high === undefined) {
+    box.textContent = `Passes don't stand out yet (${result.passes} found). Fly 3 or more passes through the gate.`;
     return;
   }
-  box.innerHTML = `Passes seen: <b>${result.passes}</b> · background ${result.floor} · peaks ${result.peak}<br>
+  if (result.enter === undefined) {
+    box.textContent =
+      `Found ${result.passes} passes, but they are only ${result.ref - result.high} above the level between passes. ` +
+      "Fly closer to the gate, lower the VTX power, or keep the drone farther away between passes.";
+    return;
+  }
+  box.innerHTML = `Passes found: <b>${result.passes}</b> · between passes ${result.high} · weakest pass ${result.ref}<br>
     Suggested: <b>Enter ${result.enter}</b>, <b>Exit ${result.exit}</b>
     <button class="btn btn-ghost btn-block" id="applyAutoCal" style="margin-top:8px">Apply</button>`;
   $("applyAutoCal").addEventListener("click", () => {
-    const p = pilots[calibIndex];
-    p.enter = result.enter;
-    p.exit = result.exit;
-    touchedPilots.add(calibIndex);
+    pilot.enter = result.enter;
+    pilot.exit = result.exit;
+    pilotTouched = true;
     renderCalibration();
     scheduleSave();
   });
@@ -1565,26 +1430,23 @@ function spectrumUpdate(data) {
   if (!spec.frame) spec.frame = requestAnimationFrame(spectrumFrame);
 }
 
-// Builds the chart elements for this scan: plot, pilot markers, labels
+// Builds the chart elements for this scan: plot, the pilot's channel, labels
 function spectrumBuild(data, firstMin) {
   const box = $("spectrum");
   const count = data.rssi.length;
   const width = count * SPEC_W;
   const freqX = (f) => ((f - data.start) / data.step) * SPEC_W + SPEC_W / 2;
   const pct = (f) => ((freqX(f) / width) * 100).toFixed(2) + "%";
-  const active = pilots.slice(0, pilotCount).map((p, i) => ({ p, i })).filter(({ p }) => bandChannel(p.freq));
 
-  let markers = "";
-  active.forEach(({ p, i }) => {
-    const x = freqX(p.freq);
-    markers += `<line x1="${x}" x2="${x}" y1="0" y2="${SPEC_H}" stroke="var(--p${i + 1})" stroke-width="2" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" />`;
-  });
+  let marker = "";
+  let names = "";
+  if (bandChannel(pilot.freq)) {
+    const x = freqX(pilot.freq);
+    marker = `<line x1="${x}" x2="${x}" y1="0" y2="${SPEC_H}" stroke="var(--pilot)" stroke-width="2" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" />`;
+    names = `<span style="left:${pct(pilot.freq)}">${escapeHtml(channelName(pilot.freq))}</span>`;
+  }
   let labels = "";
   for (let f = 5650; f <= data.start + (count - 1) * data.step; f += 25) labels += `<span style="left:${pct(f)}">${f}</span>`;
-  let names = "";
-  active.forEach(({ p, i }) => {
-    names += `<span style="left:${pct(p.freq)};color:var(--p${i + 1}-text)">${escapeHtml(channelName(p.freq))}</span>`;
-  });
 
   box.innerHTML = `
     <div class="spectrum-pilots">${names}</div>
@@ -1592,7 +1454,7 @@ function spectrumBuild(data, firstMin) {
       <svg viewBox="0 0 ${width} ${SPEC_H}" preserveAspectRatio="none" role="img" aria-label="Signal strength per frequency">
         <path class="spec-area" fill="hsla(214, 70%, 60%, 0.2)" />
         <path class="spec-line" fill="none" stroke="hsl(214, 70%, 60%)" stroke-width="2" vector-effect="non-scaling-stroke" />
-        ${markers}
+        ${marker}
       </svg>
       <span class="spectrum-scale spectrum-scale-max"></span><span class="spectrum-scale spectrum-scale-min"></span>
     </div>
@@ -1678,12 +1540,13 @@ function raceTitle(race) {
   return "Race #" + race.id;
 }
 
-// pilots: [{name, laps (count), best}]
+// pilots: [{name, laps (count), best}]; races saved by the multi-pilot firmware have several
 function historySummaryHtml(race, pilotsSummary) {
+  const count = pilotsSummary.length;
   return `
     <div class="history-top"><span class="history-title">${escapeHtml(raceTitle(race))}</span><span class="history-meta">${MODE_NAMES[race.mode] || ""}</span></div>
     <div class="history-pilots">${pilotsSummary
-      .map((p, i) => `<span class="pilot-${i + 1}"><i class="dot-p"></i>${escapeHtml(pilotLabel(p.name, i))} · ${p.laps} laps · best ${p.best ? secs(p.best) : "–"}</span>`)
+      .map((p, i) => `<span><i class="dot-p"></i>${escapeHtml(pilotLabel(p.name, i, count))} · ${p.laps} laps · best ${p.best ? secs(p.best) : "–"}</span>`)
       .join("")}</div>`;
 }
 
@@ -1734,9 +1597,9 @@ function renderHistoryDetail(container, race, editing, summary) {
   }
   race.pilots.forEach((p, i) => {
     const st = pilotStats(p);
-    const block = el("div", "pilot-" + (i + 1));
+    const block = el("div");
     block.innerHTML = `
-      <div class="race-pilot-head"><span class="dot-p"></span><span>${escapeHtml(pilotLabel(p.name, i))}</span><span class="muted">${channelName(p.freq)} ${p.freq}</span>${p.full ? '<span class="finished lap-memory-full">Lap memory full</span>' : ""}</div>
+      <div class="race-pilot-head"><span class="dot-p"></span><span>${escapeHtml(pilotLabel(p.name, i, race.pilots.length))}</span><span class="muted">${channelName(p.freq)} ${p.freq}</span>${p.full ? '<span class="finished lap-memory-full">Lap memory full</span>' : ""}</div>
       <p class="hint">Best ${st.best === null ? "–" : secs(st.best)} · average ${st.avg === null ? "–" : secs(st.avg)} · best 3 laps ${st.best3 === null ? "–" : secs(st.best3)}</p>`;
     if (p.laps.length) {
       const table = el("table");
@@ -1783,13 +1646,13 @@ function renderHistoryDetail(container, race, editing, summary) {
 // One fix at a time: the buttons stay off until the new laps are shown (a double tap would
 // otherwise merge or split a second, different lap). The timer also refuses a fix made on
 // laps that changed meanwhile (expect = the lap time this page shows).
-async function editLap(race, pilot, op, lap, container, summary) {
+async function editLap(race, pilotIndex, op, lap, container, summary) {
   if (container.dataset.busy) return;
   container.dataset.busy = "1";
   for (const b of container.querySelectorAll(".lap-actions button")) b.disabled = true;
   let note = null;
   try {
-    await postJson("/api/races/edit", { id: race.id, pilot, op, lap, expect: race.pilots[pilot].laps[lap] });
+    await postJson("/api/races/edit", { id: race.id, pilot: pilotIndex, op, lap, expect: race.pilots[pilotIndex].laps[lap] });
   } catch (e) {
     note = e.status === 409 ? "The laps changed meanwhile. Here they are now; check and try again." : "Could not change this lap. Is a race running?";
   }
@@ -1817,7 +1680,7 @@ function csvRows(race) {
   race.pilots.forEach((p, i) => {
     p.laps.forEach((t, n) => {
       if (n === 0) return;
-      rows.push([race.id, date, MODE_NAMES[race.mode] || "", pilotLabel(p.name, i), p.freq, n, secs(t)]);
+      rows.push([race.id, date, MODE_NAMES[race.mode] || "", pilotLabel(p.name, i, race.pilots.length), p.freq, n, secs(t)]);
     });
   });
   return rows;
@@ -1975,7 +1838,7 @@ $("GenerateAudioButton").addEventListener("click", (e) => {
   showButtonStatus(button, "Speaking…", 0);
   speakQueue = [];
   speechSynthesis.cancel();
-  doSpeak("testing sound for " + pilotLabel(pilots[0] && pilots[0].name, 0));
+  doSpeak(pilot.name.trim() ? "testing sound for " + pilot.name.trim() : "testing sound");
   for (let i = 1; i <= 3; i++) queueSpeak(String(i));
   // Some browsers silently ignore speech without any error event
   setTimeout(() => {
@@ -2011,15 +1874,9 @@ function setMicState(state) {
   mic.classList.toggle("error", state === "error");
 }
 
-function speakBestTimes() {
-  if (!raceData || !raceData.pilots.some((p) => p.laps.length > 1)) {
-    queueSpeak("No best lap recorded yet");
-    return;
-  }
-  raceData.pilots.forEach((p, i) => {
-    const st = pilotStats(p);
-    if (st.best !== null) queueSpeak(`${pilotLabel(p.name, i)}, best lap ${secs(st.best)} seconds`);
-  });
+function speakBestTime() {
+  const best = raceData ? pilotStats(racePilot(raceData)).best : null;
+  queueSpeak(best === null ? "No best lap recorded yet" : `Best lap ${secs(best)} seconds`);
 }
 
 function startVoiceRecognition() {
@@ -2042,7 +1899,7 @@ function startVoiceRecognition() {
       if (Date.now() - lastSpeechMs < 1500) break;
       const has = (word) => new RegExp("\\b" + word + "\\b").test(transcript);
       const racing = status && (status.state === STATE.COUNTDOWN || status.state === STATE.WAITING || status.state === STATE.RUNNING);
-      if (has("best time")) speakBestTimes();
+      if (has("best time")) speakBestTime();
       else if (has("clear time") || has("clear best")) {
         if (!racing) clearRace();
       } else if (has("start") || has("begin") || has("go")) {
