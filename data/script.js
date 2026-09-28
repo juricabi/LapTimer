@@ -396,8 +396,16 @@ async function saveConfig() {
   return true;
 }
 
-// Text being typed is not replaced by a reload: it waits until the field is left
+// Text being typed or a slider being dragged is not replaced by a reload: it waits until
+// the field is left or the slider let go
+let draggingSlider = false;
+document.addEventListener("pointerdown", (e) => {
+  if (e.target.matches && e.target.matches('input[type="range"]')) draggingSlider = true;
+});
+for (const type of ["pointerup", "pointercancel"]) document.addEventListener(type, () => (draggingSlider = false));
+
 function isTypingSettings() {
+  if (draggingSlider) return true;
   const el = document.activeElement;
   return !!el && !!el.closest("#config, #calib") && (el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && el.type === "text"));
 }
@@ -468,6 +476,7 @@ window.addEventListener("pagehide", () => {
 
 function onSettingsEdit(e) {
   if (e.target.closest("[data-local]")) return;
+  if (e.type === "input" && e.target.type === "range") return; // saved when let go ("change")
   scheduleSave();
 }
 $("config").addEventListener("input", onSettingsEdit);
@@ -1158,12 +1167,13 @@ function renderCalibration() {
   $("exitSpan").textContent = pilot.exit;
 }
 
+// While dragging, the values and the graph lines follow the finger; the timer gets the
+// result once, when the slider is let go
 enterInput.addEventListener("input", () => {
   pilot.enter = +enterInput.value;
   pilotTouched = true;
   if (pilot.exit >= pilot.enter) pilot.exit = Math.max(0, pilot.enter - 1);
   renderCalibration();
-  scheduleSave();
 });
 
 exitInput.addEventListener("input", () => {
@@ -1171,8 +1181,10 @@ exitInput.addEventListener("input", () => {
   pilotTouched = true;
   if (pilot.exit >= pilot.enter) pilot.enter = Math.min(255, pilot.exit + 1);
   renderCalibration();
-  scheduleSave();
 });
+
+enterInput.addEventListener("change", scheduleSave);
+exitInput.addEventListener("change", scheduleSave);
 
 function createRssiChart() {
   const css = getComputedStyle(document.documentElement);
