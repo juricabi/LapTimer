@@ -9,6 +9,7 @@
 #define FIRMWARE_VERSION "1.1.0-dev"
 
 #define WIFI_CONNECTION_TIMEOUT_MS 60000
+#define WIFI_UNSEEN_TIMEOUT_MS 20000  // joining a network the scan didn't see (hidden or starting up)
 #define WIFI_RECONNECT_TIMEOUT_MS 500
 
 class Webserver {
@@ -37,5 +38,6 @@ class Webserver {
     bool staScanning = false;
     uint32_t scanStartMs = 0;
     uint8_t scanAttempts = 0;
+    uint32_t connectTimeoutMs = WIFI_CONNECTION_TIMEOUT_MS;
 
 };

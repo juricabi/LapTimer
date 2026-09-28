@@ -54,20 +54,20 @@ try:
     check("settings revision increases, reply has base and rev",
           answer.get("base") == rev0 and answer.get("rev", 0) == rev0 + 1 and status()["cfg"] == answer["rev"],
           (rev0, answer))
-    check("status has boot id and saved-pilot revision", s0.get("boot", 0) > 0 and "prof" in s0 and status()["boot"] == s0["boot"])
+    check("status has boot id, saved-pilot revision, rssi and laps",
+          s0.get("boot", 0) > 0 and all(k in s0 for k in ("prof", "rssi", "laps", "fin")) and status()["boot"] == s0["boot"])
+    _, graph = req("/api/rssi?since=0")
+    check("RSSI history is one series", isinstance(graph.get("rssi"), list) and len(graph["rssi"]) > 0)
     raw = urllib.request.urlopen(BASE + "/config", timeout=5).read().decode()
     check("WiFi password never sent", '"pwd"' not in raw)
     req("/config", {"countdown": False, "raceMode": 0})
 
-    # settings checks: exit stays below enter, pilot count >= 1, names cut at whole characters
-    enter0 = original["p"][0]["enter"]
-    req("/config", {"p": [{"exit": enter0 + 5}]})
+    # settings checks: exit stays below enter, names cut at whole characters
+    req("/config", {"exitRssi": original["enterRssi"] + 5})
     _, c = req("/config")
-    check("exit kept below enter", c["p"][0]["exit"] < c["p"][0]["enter"], (c["p"][0]["enter"], c["p"][0]["exit"]))
-    req("/config", {"pilots": 0})
-    check("pilot count 0 refused", req("/config")[1]["pilots"] == 1)
-    req("/config", {"p": [{"name": "ŠĐČĆŽšđčćžŠĐČĆŽ"}]})
-    name = req("/config")[1]["p"][0]["name"]
+    check("exit kept below enter", c["exitRssi"] < c["enterRssi"], (c["enterRssi"], c["exitRssi"]))
+    req("/config", {"name": "ŠĐČĆŽšđčćžŠĐČĆŽ"})
+    name = req("/config")[1]["name"]
     check("long name cut at a whole character", name == "ŠĐČĆŽšđčćž", name)
     req("/config", {k: original[k] for k in original})
 
@@ -107,8 +107,8 @@ try:
 
     # race data and history
     _, race = req("/api/race")
-    check("race data has names, edits, staggered flag", all(k in race for k in ("edits", "stag")) and
-          all("name" in p for p in race["pilots"]))
+    check("race data has one pilot with name and laps", "edits" in race and len(race["pilots"]) == 1 and
+          all(k in race["pilots"][0] for k in ("name", "freq", "laps")))
     st, _ = req("/api/races/edit", {"id": 999999, "pilot": 0, "op": 0, "lap": 1})
     check("editing a missing race refused", st == 400, st)
     t0 = time.time()

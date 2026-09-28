@@ -30,10 +30,6 @@ float KalmanFilter::filter(uint16_t z, uint16_t u = 0) {
     return x;
 }
 
-float KalmanFilter::lastMeasurement() {
-    return x;
-}
-
 void KalmanFilter::setMeasurementNoise(float noise) {
     Q = noise;
 }

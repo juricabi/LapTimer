@@ -87,13 +87,23 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
             scanStartMs = currentTimeMs;
             return;
         }
+        connectTimeoutMs = WIFI_CONNECTION_TIMEOUT_MS;
         if (best < 0)
         {
             // Not seen by name: it may be hidden, or still starting up (a phone hotspot
-            // switched on with the timer). Try the newest one anyway; the connection
-            // timeout falls back to the hotspot.
+            // switched on with the timer). Try the newest one anyway, briefly, before the
+            // hotspot (away from home the hotspot shouldn't take long).
             DEBUG("No saved WiFi network seen, trying the newest one\n");
             best = 0;
+            connectTimeoutMs = WIFI_UNSEEN_TIMEOUT_MS;
+        }
+        if (wifiList->count() == 0)
+        {
+            // the list was emptied during the scan
+            changeMode = WIFI_AP;
+            changeTimeMs = currentTimeMs - WIFI_RECONNECT_TIMEOUT_MS - 1; // switch right away
+            wifiMode = WIFI_OFF;
+            return;
         }
         DEBUG("Joining WiFi %s\n", wifiList->ssid(best));
         WiFi.begin(wifiList->ssid(best), wifiList->password(best));
@@ -130,7 +140,7 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
         }
         lastStatus = status;
     }
-    if (status != WL_CONNECTED && wifiMode == WIFI_STA && (currentTimeMs - changeTimeMs) > WIFI_CONNECTION_TIMEOUT_MS)
+    if (status != WL_CONNECTED && wifiMode == WIFI_STA && (currentTimeMs - changeTimeMs) > (wifiConnected ? WIFI_CONNECTION_TIMEOUT_MS : connectTimeoutMs))
     {
         changeTimeMs = currentTimeMs;
         if (!wifiConnected)

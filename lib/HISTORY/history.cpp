@@ -55,10 +55,8 @@ bool RaceHistory::writeJson(const String &path, JsonDocument &doc)
     if (LittleFS.rename(tmp, path))
         return true;
     LittleFS.remove(path); // in case this LittleFS build refuses to replace
-    if (LittleFS.rename(tmp, path))
-        return true;
-    LittleFS.remove(tmp);
-    return false;
+    // if this fails too, the temp file is the only copy: recoverTempFiles() restores it
+    return LittleFS.rename(tmp, path);
 }
 
 // Reads a whole (small) file, so it is closed again before it is sent
@@ -74,7 +72,7 @@ bool RaceHistory::readFile(const String &path, String &out)
 }
 
 // A reset between writing "x.tmp" and the rename leaves the temp file: keep it only if
-// the file it was meant to replace is missing
+// the file it was meant to replace is missing and it is complete (valid JSON)
 void RaceHistory::recoverTempFiles(const char *dir)
 {
     String names[8];
@@ -90,10 +88,18 @@ void RaceHistory::recoverTempFiles(const char *dir)
     for (size_t i = 0; i < count; i++)
     {
         String target = names[i].substring(0, names[i].length() - 4);
-        if (LittleFS.exists(target))
-            LittleFS.remove(names[i]);
-        else
+        bool complete = false;
+        if (!LittleFS.exists(target))
+        {
+            File f = LittleFS.open(names[i], "r");
+            JsonDocument doc;
+            complete = f && !deserializeJson(doc, f);
+            f.close();
+        }
+        if (complete)
             LittleFS.rename(names[i], target);
+        else
+            LittleFS.remove(names[i]);
     }
 }
 
@@ -189,6 +195,8 @@ void RaceHistory::init()
     {
         LittleFS.mkdir(RACES_DIR);
     }
+    recoverTempFiles(RACES_DIR); // first, so a recovered race counts for the next id
+    recoverTempFiles("/");
     uint32_t ids[MAX_SAVED_RACES + 8];
     size_t count = listIds(ids, sizeof(ids) / sizeof(ids[0]));
     uint32_t maxId = 0;
@@ -198,8 +206,6 @@ void RaceHistory::init()
             maxId = ids[i];
     }
     nextId = maxId + 1;
-    recoverTempFiles(RACES_DIR);
-    recoverTempFiles("/");
     // rebuild the index on every start: cheap, and repairs anything a reset left behind
     indexDirty = true;
     JsonDocument index;
@@ -242,7 +248,6 @@ void RaceHistory::save(LapTimer &timer)
     doc.remove("state");
     doc.remove("edits");
     doc["id"] = id;
-    timer.savePending = false; // race data copied; the timer may start a new race
 
     // make room (count and free space), then write race + index
     JsonDocument index;
@@ -268,6 +273,8 @@ void RaceHistory::save(LapTimer &timer)
         DEBUG("Race %u could not be saved\n", id);
     }
     writeIndex(index);
+    // only now: a new race would run while these flash writes stall the timing core
+    timer.savePending = false;
 }
 
 int RaceHistory::editRace(uint32_t id, uint8_t pilot, uint8_t op, int lapIndex, int64_t expect)
@@ -300,6 +307,8 @@ int RaceHistory::editRace(uint32_t id, uint8_t pilot, uint8_t op, int lapIndex, 
     lapsJson.clear();
     for (int i = 0; i < count; i++)
         lapsJson.add(laps[i]);
+    if (count < MAX_LAPS)
+        pilots[pilot].remove("full");
     if (!writeJson(path, race))
         return EDIT_INVALID;
 

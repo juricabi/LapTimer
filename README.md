@@ -1,39 +1,37 @@
 # LapTimer
 
 A standalone FPV drone lap timer: an ESP32 and one RX5808 5.8 GHz receiver at the gate,
-and a phone as the display. Up to **4 pilots**, voice announcements, race modes, race history
+and a phone as the display. Voice announcements, race modes, race history, saved pilots
 and a race screen, all from a web page the timer serves itself. No app, no internet.
 
 Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 [PhobosLT_pooling](https://github.com/nikbg3/PhobosLT_pooling).
 
 <p align="center">
-  <img src="docs/images/setup.png" width="240" alt="Setup: pilots, channels and saved pilots" />
-  <img src="docs/images/race.png" width="240" alt="Race: clock and per-pilot stats" />
+  <img src="docs/images/setup.png" width="240" alt="Setup: pilot, channel and saved pilots" />
+  <img src="docs/images/race.png" width="240" alt="Race: clock and lap stats" />
   <img src="docs/images/race-screen.png" width="240" alt="Race screen: big numbers for the field" />
 </p>
 
 ## Features
 
 **Racing**
-- 1–4 pilots on a single RX5808. The receiver hops between the pilots' channels
-  (see [timing precision](#timing-precision)).
-- Race modes: **practice** (unlimited), **timed** (each pilot finishes on the first pass after
-  the time is up) and **lap race** (first to N laps).
+- One pilot per timer, sampled continuously for full precision (see [timing precision](#timing-precision)).
+- Race modes: **practice** (unlimited), **timed** (finish on the first pass after the time is
+  up) and **lap race** (finish after N laps).
 - **Countdown start** (3-2-1-go beeps) or the race starts on the first gate pass.
-- **Staggered start**: each pilot's race time starts at their own first pass.
-- **Ranking** by most laps, fastest lap, or best 3 consecutive laps.
-- Per pilot: last lap, delta to best, best, average, best 3 consecutive, consistency, position.
+- Last lap, delta to best, best, average, best 3 consecutive and consistency.
 - **Race screen**: big numbers for a phone or tablet at the field, with a live current-lap timer.
 
 **Voice and sound**
-- The phone announces lap times in English, with pilot names, deltas, best laps, finishes and the winner.
+- The phone announces lap times in English, with deltas, best laps and the finish.
 - Voice commands: "start", "stop", "best time", "clear time".
 - Buzzer and LED on the timer for laps, countdown, time up, race finished and low battery.
 
 **Setup and calibration**
-- Band/channel per pilot with warnings for equal or too-close channels.
-- **Saved pilots**: named pilots are remembered with their channel and thresholds.
+- **Saved pilots**: every named pilot is remembered with their channel and thresholds;
+  one tap switches who is flying.
+- Band and channel picker.
 - **Calibration graph** with 25 ms resolution, and optional **auto-calibration** from a few passes.
 - **Channel scan** to see which channels are busy before choosing.
 
@@ -48,7 +46,7 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 
 <p align="center">
   <img src="docs/images/calibrate.png" width="240" alt="Calibration graph with enter and exit thresholds" />
-  <img src="docs/images/channel-scan.png" width="240" alt="Channel scan with the pilots' channels marked" />
+  <img src="docs/images/channel-scan.png" width="240" alt="Channel scan with the pilot's channel marked" />
   <img src="docs/images/fix-laps.png" width="240" alt="Fixing laps in the race history" />
 </p>
 
@@ -105,7 +103,7 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
 
 ## Use
 
-1. **Setup**: choose the number of pilots, names and channels. Settings save automatically.
+1. **Setup**: enter the pilot's name and channel, or tap a saved pilot. Settings save automatically.
 2. **Calibrate**: with the quad powered at race distance, set **Enter** just below the peak
    and **Exit** a bit lower, or switch on **Auto-calibrate** and fly 3+ passes. Run a
    **channel scan** first if others are flying.
@@ -117,22 +115,15 @@ opening the page; phones only allow speech after a tap.
 
 ## Timing precision
 
-With one pilot the receiver stays on one channel and samples continuously. More pilots share
-it by hopping between channels. After every channel change the RX5808 needs about 40 ms to
-lock, so each pilot is read once per round:
+The receiver stays on the pilot's channel and reads the signal thousands of times per second.
+A pass is timed at the middle of the signal peak, so the timer itself adds about a
+millisecond. What remains is how sharp the peak is: put the timer right at the gate, keep
+the drone far away for the rest of the lap, and calibrate Enter/Exit from real passes.
 
-| Pilots | Each pilot read every |
-|---|---|
-| 1 | continuously |
-| 2 | about 105 ms |
-| 3 | about 160 ms |
-| 4 | about 210 ms |
-
-The pass time is placed between those readings by fitting a curve through the peak and its
-neighbours, so it is much finer than the reading interval. It is still less precise than with
-one pilot, so for close racing use as few pilots per timer as you can. With several pilots, a pass only counts
-while that pilot's signal is not far below another pilot's, so a close drone can't trigger a
-lap on another channel.
+Why one pilot: after every channel change the RX5808 needs 36-45 ms to lock (measured), so a
+receiver shared between pilots reads each of them only every 100-200 ms, and a fast whoop
+pass falls between the readings. Racing several pilots needs a receiver per pilot, as in
+RotorHazard.
 
 ## Development
 

@@ -51,31 +51,22 @@ void Webserver::registerApi()
     if (bootId == 0)
         bootId = (esp_random() & 0x7FFFFFFF) | 1;
 
-    // Polled by the page: race state and per-pilot RSSI / lap counts
+    // Polled by the page: race state, RSSI and lap count
     server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *request)
               {
-        char buf[640];
+        char buf[512];
         uint32_t now = millis();
-        int n = snprintf(buf, sizeof(buf),
-                         "{\"state\":%d,\"mode\":%d,\"cd\":%d,\"race\":%u,\"elapsed\":%d,\"raceMs\":%u,"
-                         "\"raceLaps\":%u,\"timeUp\":%d,\"stag\":%d,\"vbat\":%u,\"saveErr\":%d,"
-                         "\"savedId\":%u,\"savedRace\":%u,\"spectrum\":%d,\"edits\":%u,\"cfg\":%u,"
-                         "\"boot\":%u,\"prof\":%u,\"pilots\":[",
-                         timer->getState(), timer->getMode(), timer->getCountdown(), timer->getRaceId(),
-                         timer->getElapsedMs(now), timer->getRaceMs(), timer->getRaceLaps(), timer->isTimeUp(),
-                         timer->getStaggered(), monitor->getBatteryVoltage(), !history->lastSaveOk,
-                         history->lastSavedId, history->lastSavedRaceId, timer->isSpectrumRunning(),
-                         timer->getEditCount(), conf->getRevision(), bootId, history->profilesRevision);
-        // configured pilots (live RSSI) and the race's pilots (laps), whichever is more
-        uint8_t count = conf->getPilotCount();
-        if ((timer->isRacing() || timer->hasRaceData()) && timer->getPilotCount() > count)
-            count = timer->getPilotCount();
-        for (uint8_t i = 0; i < count && n < (int)sizeof(buf) - 64; i++)
-        {
-            n += snprintf(buf + n, sizeof(buf) - n, "%s{\"rssi\":%u,\"laps\":%d,\"fin\":%d}",
-                          i ? "," : "", timer->getRssi(i), timer->getLapCount(i), timer->isFinished(i));
-        }
-        snprintf(buf + n, sizeof(buf) - n, "]}");
+        snprintf(buf, sizeof(buf),
+                 "{\"state\":%d,\"mode\":%d,\"cd\":%d,\"race\":%u,\"elapsed\":%d,\"raceMs\":%u,"
+                 "\"raceLaps\":%u,\"timeUp\":%d,\"vbat\":%u,\"saveErr\":%d,"
+                 "\"savedId\":%u,\"savedRace\":%u,\"spectrum\":%d,\"edits\":%u,\"cfg\":%u,"
+                 "\"boot\":%u,\"prof\":%u,\"rssi\":%u,\"laps\":%d,\"fin\":%d}",
+                 timer->getState(), timer->getMode(), timer->getCountdown(), timer->getRaceId(),
+                 timer->getElapsedMs(now), timer->getRaceMs(), timer->getRaceLaps(), timer->isTimeUp(),
+                 monitor->getBatteryVoltage(), !history->lastSaveOk,
+                 history->lastSavedId, history->lastSavedRaceId, timer->isSpectrumRunning(),
+                 timer->getEditCount(), conf->getRevision(), bootId, history->profilesRevision,
+                 timer->getRssi(), timer->getLapCount(), timer->isFinished());
         request->send(200, "application/json", buf); });
 
     // Full lap data of the current (or last) race
@@ -92,21 +83,15 @@ void Webserver::registerApi()
         uint32_t since = paramU32(request, "since", 0);
         if (since > seq || seq - since > RSSI_HISTORY - 1)
             since = seq > RSSI_HISTORY - 1 ? seq - (RSSI_HISTORY - 1) : 0;
-        uint8_t count = timer->isRacing() ? timer->getPilotCount() : conf->getPilotCount();
         String body;
-        body.reserve(48 + count * ((seq - since) * 4 + 3));
+        body.reserve(48 + (seq - since) * 4);
         body += "{\"seq\":";
         body += seq;
         body += ",\"step\":";
         body += RSSI_HISTORY_STEP_MS;
-        body += ",\"pilots\":[";
-        for (uint8_t i = 0; i < count; i++)
-        {
-            if (i)
-                body += ',';
-            appendArray(body, seq - since, [&](uint16_t k) { return timer->getHistory(i, since + 1 + k); });
-        }
-        body += "]}";
+        body += ",\"rssi\":";
+        appendArray(body, seq - since, [&](uint16_t k) { return timer->getHistory(since + 1 + k); });
+        body += '}';
         request->send(200, "application/json", body); });
 
     // Race control; t = browser time (epoch seconds) for the race history
@@ -147,9 +132,9 @@ void Webserver::registerApi()
         int64_t expect = json["expect"].isNull() ? -1 : json["expect"].as<int64_t>();
         int result = history->editRace(id, pilot, op, lap, expect);
         // the race still shown on the Race tab gets the same correction, on the timing core
-        if (result == EDIT_OK && id == history->lastSavedId && timer->getRaceId() == history->lastSavedRaceId)
+        if (result == EDIT_OK && pilot == 0 && id == history->lastSavedId && timer->getRaceId() == history->lastSavedRaceId)
         {
-            for (int i = 0; i < 50 && !timer->requestEdit(pilot, op, lap); i++)
+            for (int i = 0; i < 50 && !timer->requestEdit(op, lap); i++)
                 delay(1); // the previous edit is applied within a loop pass
         }
         if (result == EDIT_OK)
@@ -207,8 +192,14 @@ void Webserver::registerApi()
               { history->sendProfiles(request); });
 
     // {name, freq, enter, exit, prev}: add or update (prev = old name after a rename)
+    // Not during a race: a flash write stalls RSSI sampling (the page sends it afterwards)
     server.addHandler(new AsyncCallbackJsonWebHandler("/api/profiles/save", [this](AsyncWebServerRequest *request, JsonVariant &json)
                                                       {
+        if (timer->isRacing())
+        {
+            request->send(409, "application/json", "{\"status\":\"racing\"}");
+            return;
+        }
         int code = history->saveProfile(json["name"] | "", json["prev"] | "", json["freq"] | 0,
                                         json["enter"] | 0, json["exit"] | 0);
         request->send(code, "application/json",
@@ -216,7 +207,18 @@ void Webserver::registerApi()
 
     server.addHandler(new AsyncCallbackJsonWebHandler("/api/profiles/remove", [this](AsyncWebServerRequest *request, JsonVariant &json)
                                                       {
-        bool ok = history->removeProfile(json["name"] | "");
+        const char *name = json["name"] | "";
+        if (timer->isRacing())
+        {
+            request->send(409, "application/json", "{\"status\":\"racing\"}");
+            return;
+        }
+        if (!name[0])
+        {
+            request->send(400, "application/json", "{\"status\":\"invalid\"}");
+            return;
+        }
+        bool ok = history->removeProfile(name);
         request->send(ok ? 200 : 507, "application/json", ok ? "{\"status\":\"OK\"}" : "{\"status\":\"full\"}"); }));
 
     // Saved WiFi networks (names only; passwords never leave the timer)
@@ -300,6 +302,5 @@ void Webserver::registerApi()
         doc["host"] = String(wifi_hostname) + ".local";
         if (!ap)
             doc["signal"] = WiFi.RSSI();
-        doc["maxPilots"] = MAX_PILOTS;
         sendJson(request, doc); });
 }

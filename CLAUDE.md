@@ -25,15 +25,17 @@ Every change goes through all steps; a step is done when its check passes.
 ## Rules
 
 - **Settings layout** (`laptimer_config_t`) is append-only: add fields at the end, bump
-  `CONFIG_VERSION`, add a `setVNDefaults()` and a step in `Config::load`, so users keep their
-  settings through updates. `fromJson` changes only keys that are present, and the page sends
+  `CONFIG_VERSION` and give the new fields defaults in the migration in `Config::load` (like
+  `setRaceDefaults()`), so users keep their settings through updates. Versions 1 and 2 were
+  multi-pilot development layouts; version 3 keeps their v0 fields only. `fromJson` changes only keys that are present, and the page sends
   only changed settings — two open phones rely on this.
 - **Race data** changes only on the timing core in `LapTimer::update`. The web server (core 0,
   pinned with `CONFIG_ASYNC_TCP_RUNNING_CORE=0`; unpinned it preempted RSSI sampling) queues
   commands with `requestStart/requestStop/requestClear/requestEdit`.
 - **Timing core stalls**: web replies are built in memory (`sendJson`, `String`), never with
   `AsyncResponseStream` (drained byte by byte, O(n^2)). Flash writes stall both cores, so
-  settings reach EEPROM only outside a race.
+  settings reach EEPROM only outside a race, saved pilots are refused during a race (409, the
+  page sends them afterwards) and a new race starts only after the last one is saved.
 - **Settings from the page** are applied to a copy, checked (pilot count, exit < enter, UTF-8
   names) and then published: the timing core reads them at any moment.
 - **Multi-device**: `POST /config` replies `{base, rev}`; a page adopts `rev` only if `base` is
@@ -63,10 +65,13 @@ Every change goes through all steps; a step is done when its check passes.
   within 12 s as still running (`webserver.cpp`, `api.cpp`).
 - **RX5808 lock time**: after every frequency change it reads nothing until locked, then the
   full RSSI at once: 36 ms typically, up to 44.5 ms over 150 switches, the same for a 5 or
-  155 MHz jump, and ~1% don't lock within 100 ms. Hopping and the channel scan wait
-  `RX_LOCK_MS` (48); with several pilots two readings below exit end a pass. Measure a module
-  with `GET /api/debug/step?from=5740&to=5800` (VTX on 5800; add `&hops=150` for lock-time
-  statistics), then `GET /api/debug/step`. The PhobosLT_4ch fork's 8 ms is wrong.
+  155 MHz jump, and ~1% don't lock within 100 ms. Channel changes and the channel scan wait
+  `RX_LOCK_MS` (50). Measure a module with `GET /api/debug/step?from=5740&to=5800` (VTX on
+  5800; add `&hops=60` for lock-time statistics), then `GET /api/debug/step`.
+- **Multi-pilot on one RX5808** was built (1-4 pilots hopping channels) and removed: with the
+  lock time each pilot is read only every ~105 ms (2 pilots) to ~210 ms (4), and a fast whoop
+  pass falls between the readings. The PhobosLT_4ch fork waits 8 ms, which reads an unlocked
+  receiver. Several pilots need a receiver each.
 - **RX5808 reset**: after a reset (register 0xF) it ignores writes for 20-50 ms and stays deaf
   until the power register is written again. Reset only at start-up with `RX5808_RESET_MS`
   after it; wake from power down with `setupRxModule()` only. Check the RSSI after a restart.
@@ -81,6 +86,6 @@ Every change goes through all steps; a step is done when its check passes.
 ## Owner preferences
 
 - Tests on Android with Brave; UI text and voice in English.
-- Likes things automatic and simple: settings auto-save, one buzzer beep per lap for every
-  pilot (voice tells pilots apart), no captive portal.
+- Likes things automatic and simple: settings auto-save, one buzzer beep per lap, no captive
+  portal, one pilot per timer (saved pilots to switch who flies).
 - Wants root causes found and reproduced, not retries that hide them.

@@ -33,12 +33,9 @@ void Config::load(void)
 
     if (version < CONFIG_VERSION)
     {
-        // older layout: keep all existing settings, add defaults for the new ones
+        // older layout: keep the v0 settings, add defaults for the race settings
         DEBUG("Migrating config v%u -> v%u\n", version, CONFIG_VERSION);
-        if (version < 1)
-            setV1Defaults();
-        if (version < 2)
-            setV2Defaults();
+        setRaceDefaults();
         conf.version = CONFIG_VERSION | CONFIG_MAGIC;
         modified = true;
         write();
@@ -77,23 +74,10 @@ void Config::toJsonDoc(JsonDocument &config)
     config["enterRssi"] = conf.enterRssi;
     config["exitRssi"] = conf.exitRssi;
     config["name"] = conf.pilotName;
-    config["pilots"] = conf.pilotCount;
-    // all pilots (index 0 = pilot 1, same values as the keys above)
-    JsonArray list = config["p"].to<JsonArray>();
-    for (uint8_t i = 0; i < MAX_PILOTS; i++)
-    {
-        JsonObject p = list.add<JsonObject>();
-        p["name"] = getPilotName(i);
-        p["freq"] = getFrequency(i);
-        p["enter"] = getEnterRssi(i);
-        p["exit"] = getExitRssi(i);
-    }
     config["raceMode"] = conf.raceMode;
     config["raceSec"] = conf.raceSeconds;
     config["raceLaps"] = conf.raceLaps;
     config["countdown"] = conf.countdown;
-    config["rankBy"] = conf.rankBy;
-    config["stagger"] = conf.staggered;
     // WiFi networks (with passwords) are managed by WifiList and never sent back to the page
 }
 
@@ -162,7 +146,7 @@ static void fixThresholds(uint8_t &enter, uint8_t &exit)
 }
 
 // Changes are made on a copy and checked before they are published: the timing core
-// reads the settings at any moment (a pilot count of 0 would divide by zero there)
+// reads the settings at any moment
 void Config::fromJson(JsonObject source)
 {
     laptimer_config_t next = this->conf;
@@ -178,44 +162,12 @@ void Config::fromJson(JsonObject source)
     changed |= updateField(source, "enterRssi", conf.enterRssi);
     changed |= updateField(source, "exitRssi", conf.exitRssi);
     changed |= updateString(source, "name", conf.pilotName, sizeof(conf.pilotName));
-    changed |= updateField(source, "pilots", conf.pilotCount);
-    JsonArray list = source["p"].as<JsonArray>();
-    uint8_t i = 0;
-    for (JsonObject p : list)
-    {
-        if (i >= MAX_PILOTS)
-            break;
-        if (i == 0)
-        {
-            changed |= updateString(p, "name", conf.pilotName, sizeof(conf.pilotName));
-            changed |= updateField(p, "freq", conf.frequency);
-            changed |= updateField(p, "enter", conf.enterRssi);
-            changed |= updateField(p, "exit", conf.exitRssi);
-        }
-        else
-        {
-            extra_pilot_t &e = conf.extraPilots[i - 1];
-            changed |= updateString(p, "name", e.name, sizeof(e.name));
-            changed |= updateField(p, "freq", e.frequency);
-            changed |= updateField(p, "enter", e.enterRssi);
-            changed |= updateField(p, "exit", e.exitRssi);
-        }
-        i++;
-    }
     changed |= updateField(source, "raceMode", conf.raceMode);
     changed |= updateField(source, "raceSec", conf.raceSeconds);
     changed |= updateField(source, "raceLaps", conf.raceLaps);
     changed |= updateField(source, "countdown", conf.countdown);
-    changed |= updateField(source, "rankBy", conf.rankBy);
-    changed |= updateField(source, "stagger", conf.staggered);
 
     // keep values in sane ranges
-    if (conf.pilotCount < 1)
-        conf.pilotCount = 1;
-    if (conf.pilotCount > MAX_PILOTS)
-        conf.pilotCount = MAX_PILOTS;
-    if (conf.rankBy > RANK_FASTEST_3)
-        conf.rankBy = RANK_MOST_LAPS;
     if (conf.raceMode > RACE_LAPS)
         conf.raceMode = RACE_PRACTICE;
     if (conf.raceSeconds < 10)
@@ -223,8 +175,6 @@ void Config::fromJson(JsonObject source)
     if (conf.raceLaps < 1)
         conf.raceLaps = 1;
     fixThresholds(conf.enterRssi, conf.exitRssi);
-    for (uint8_t i = 0; i < MAX_PILOTS - 1; i++)
-        fixThresholds(conf.extraPilots[i].enterRssi, conf.extraPilots[i].exitRssi);
 
     if (changed)
     {
@@ -234,29 +184,24 @@ void Config::fromJson(JsonObject source)
     }
 }
 
-uint8_t Config::getPilotCount()
+uint16_t Config::getFrequency()
 {
-    return conf.pilotCount;
+    return conf.frequency;
 }
 
-uint16_t Config::getFrequency(uint8_t pilot)
+uint8_t Config::getEnterRssi()
 {
-    return pilot == 0 ? conf.frequency : conf.extraPilots[pilot - 1].frequency;
+    return conf.enterRssi;
 }
 
-uint8_t Config::getEnterRssi(uint8_t pilot)
+uint8_t Config::getExitRssi()
 {
-    return pilot == 0 ? conf.enterRssi : conf.extraPilots[pilot - 1].enterRssi;
+    return conf.exitRssi;
 }
 
-uint8_t Config::getExitRssi(uint8_t pilot)
+const char *Config::getPilotName()
 {
-    return pilot == 0 ? conf.exitRssi : conf.extraPilots[pilot - 1].exitRssi;
-}
-
-const char *Config::getPilotName(uint8_t pilot)
-{
-    return pilot == 0 ? conf.pilotName : conf.extraPilots[pilot - 1].name;
+    return conf.pilotName;
 }
 
 // The network is moved into the saved WiFi list; forget it here
@@ -313,35 +258,8 @@ bool Config::getCountdown()
     return conf.countdown;
 }
 
-rank_by_e Config::getRankBy()
+void Config::setRaceDefaults(void)
 {
-    return (rank_by_e)conf.rankBy;
-}
-
-bool Config::getStaggered()
-{
-    return conf.staggered;
-}
-
-void Config::setV2Defaults(void)
-{
-    conf.rankBy = RANK_MOST_LAPS;
-    conf.staggered = false;
-}
-
-void Config::setV1Defaults(void)
-{
-    // Default channels for pilots 2-4: R2, R7, R8 (well separated for 4 pilots with R1)
-    static const uint16_t defaultFreqs[MAX_PILOTS - 1] = {5695, 5880, 5917};
-    conf.pilotCount = 1;
-    for (uint8_t i = 0; i < MAX_PILOTS - 1; i++)
-    {
-        extra_pilot_t &e = conf.extraPilots[i];
-        e.frequency = defaultFreqs[i];
-        e.enterRssi = conf.enterRssi ? conf.enterRssi : 120;
-        e.exitRssi = conf.exitRssi ? conf.exitRssi : 100;
-        strlcpy(e.name, "", sizeof(e.name));
-    }
     conf.raceMode = RACE_PRACTICE;
     conf.raceSeconds = 120;
     conf.raceLaps = 3;
@@ -366,8 +284,7 @@ void Config::setDefaults(void)
     strlcpy(conf.ssid, "", sizeof(conf.ssid));
     strlcpy(conf.password, "", sizeof(conf.password));
     strlcpy(conf.pilotName, "", sizeof(conf.pilotName));
-    setV1Defaults();
-    setV2Defaults();
+    setRaceDefaults();
     modified = true;
     write();
 }

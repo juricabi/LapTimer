@@ -65,32 +65,17 @@
 #define EEPROM_RESERVED_SIZE 256
 #define CONFIG_MAGIC_MASK (0b11U << 30)
 #define CONFIG_MAGIC (0b01U << 30)
-#define CONFIG_VERSION 2U  // v1: pilots 2-4 and race settings, v2: ranking and staggered start (older versions are migrated)
+// v0: v1.0.0. v3: race settings. (v1 and v2 were multi-pilot development builds with another
+// layout after the v0 fields.) Older versions keep the v0 fields and get default race settings.
+#define CONFIG_VERSION 3U
 
 #define EEPROM_CHECK_TIME_MS 1000
 
-#define MAX_PILOTS 4
-
 typedef enum {
     RACE_PRACTICE = 0,  // unlimited laps until stopped
-    RACE_TIMED = 1,     // race for raceSeconds, then each pilot finishes on the next pass
-    RACE_LAPS = 2       // each pilot finishes after raceLaps laps
+    RACE_TIMED = 1,     // race for raceSeconds, then the pilot finishes on the next pass
+    RACE_LAPS = 2       // the pilot finishes after raceLaps laps
 } race_mode_e;
-
-// Pilots 2-4 (pilot 1 uses the v0 fields)
-typedef enum {
-    RANK_MOST_LAPS = 0,     // most laps, then the lowest total time (first to finish wins)
-    RANK_FASTEST_LAP = 1,   // fastest single lap
-    RANK_FASTEST_3 = 2      // fastest 3 consecutive laps
-} rank_by_e;
-
-typedef struct
-{
-    uint16_t frequency;
-    uint8_t enterRssi;
-    uint8_t exitRssi;
-    char name[21];
-} extra_pilot_t;
 
 typedef struct
 {
@@ -107,17 +92,12 @@ typedef struct
     char ssid[33];
     char password[33];
     bool buzzerOn;
-    // --- v1 ---
-    uint8_t pilotCount;     // 1-4 pilots on the one RX5808
-    extra_pilot_t extraPilots[MAX_PILOTS - 1];
+    // --- v3 ---
     uint8_t raceMode;       // race_mode_e
     uint16_t raceSeconds;
     uint8_t raceLaps;
     bool countdown;         // 3-2-1-go start instead of starting on the first pass
     bool announceDelta;     // announce the difference to the best lap
-    // --- v2 ---
-    uint8_t rankBy;         // rank_by_e
-    bool staggered;         // each pilot's race time starts at their own first gate pass
 } laptimer_config_t;
 
 static_assert(sizeof(laptimer_config_t) <= EEPROM_RESERVED_SIZE, "config does not fit the reserved EEPROM size");
@@ -136,12 +116,10 @@ public:
     void fromJson(JsonObject source);
     void handleEeprom(uint32_t currentTimeMs, bool allowWrite);
 
-    // getters; pilot index 0 .. MAX_PILOTS - 1
-    uint8_t getPilotCount();
-    uint16_t getFrequency(uint8_t pilot = 0);
-    uint8_t getEnterRssi(uint8_t pilot = 0);
-    uint8_t getExitRssi(uint8_t pilot = 0);
-    const char *getPilotName(uint8_t pilot = 0);
+    uint16_t getFrequency();
+    uint8_t getEnterRssi();
+    uint8_t getExitRssi();
+    const char *getPilotName();
     uint32_t getMinLapMs();
     uint8_t getAlarmThreshold();
     char *getSsid();
@@ -152,8 +130,6 @@ public:
     uint32_t getRaceMs();
     uint8_t getRaceLaps();
     bool getCountdown();
-    rank_by_e getRankBy();
-    bool getStaggered();
     uint32_t getRevision() { return revision; }  // changes on every settings change, so pages can reload
 
 private:
@@ -162,7 +138,6 @@ private:
     volatile uint32_t revision = 1;
     volatile uint32_t checkTimeMs = 0;
     void setDefaults();
-    void setV1Defaults();
-    void setV2Defaults();
+    void setRaceDefaults();
     void toJsonDoc(JsonDocument &doc);
 };
