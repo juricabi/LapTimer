@@ -65,7 +65,7 @@
 #define EEPROM_RESERVED_SIZE 256
 #define CONFIG_MAGIC_MASK (0b11U << 30)
 #define CONFIG_MAGIC (0b01U << 30)
-#define CONFIG_VERSION 1U  // v1 adds pilots 2-4 and race settings (v0 is migrated)
+#define CONFIG_VERSION 2U  // v1: pilots 2-4 and race settings, v2: ranking and staggered start (older versions are migrated)
 
 #define EEPROM_CHECK_TIME_MS 1000
 
@@ -78,6 +78,12 @@ typedef enum {
 } race_mode_e;
 
 // Pilots 2-4 (pilot 1 uses the v0 fields)
+typedef enum {
+    RANK_MOST_LAPS = 0,     // most laps, then the lowest total time (first to finish wins)
+    RANK_FASTEST_LAP = 1,   // fastest single lap
+    RANK_FASTEST_3 = 2      // fastest 3 consecutive laps
+} rank_by_e;
+
 typedef struct
 {
     uint16_t frequency;
@@ -109,6 +115,9 @@ typedef struct
     uint8_t raceLaps;
     bool countdown;         // 3-2-1-go start instead of starting on the first pass
     bool announceDelta;     // announce the difference to the best lap
+    // --- v2 ---
+    uint8_t rankBy;         // rank_by_e
+    bool staggered;         // each pilot's race time starts at their own first gate pass
 } laptimer_config_t;
 
 static_assert(sizeof(laptimer_config_t) <= EEPROM_RESERVED_SIZE, "config does not fit the reserved EEPROM size");
@@ -140,6 +149,8 @@ public:
     uint32_t getRaceMs();
     uint8_t getRaceLaps();
     bool getCountdown();
+    rank_by_e getRankBy();
+    bool getStaggered();
 
 private:
     laptimer_config_t conf;
@@ -147,5 +158,6 @@ private:
     volatile uint32_t checkTimeMs = 0;
     void setDefaults();
     void setV1Defaults();
+    void setV2Defaults();
     void toJsonDoc(JsonDocument &doc);
 };

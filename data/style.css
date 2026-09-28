@@ -1273,3 +1273,37 @@ a.chip {
 .chip-remove:hover {
   color: var(--stop-text);
 }
+
+/* Channel scan */
+.spectrum {
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: var(--space-2);
+}
+
+.spectrum svg {
+  display: block;
+  width: 100%;
+  height: 180px;
+}
+
+.spectrum-axis {
+  font-size: 11px;
+  fill: var(--muted);
+}
+
+.spectrum-pilot {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* Lap fixing */
+.lap-actions {
+  display: flex;
+  gap: var(--space-1);
+  justify-content: flex-end;
+}
+
+.note.warn {
+  color: var(--warn-text);
+}

@@ -30,10 +30,12 @@ void Webserver::registerApi()
         uint32_t now = millis();
         int n = snprintf(buf, sizeof(buf),
                          "{\"state\":%d,\"mode\":%d,\"cd\":%d,\"race\":%u,\"elapsed\":%d,\"raceMs\":%u,"
-                         "\"raceLaps\":%u,\"timeUp\":%d,\"vbat\":%u,\"saveErr\":%d,\"pilots\":[",
+                         "\"raceLaps\":%u,\"timeUp\":%d,\"stag\":%d,\"vbat\":%u,\"saveErr\":%d,"
+                         "\"savedId\":%u,\"savedRace\":%u,\"spectrum\":%d,\"pilots\":[",
                          timer->getState(), timer->getMode(), timer->getCountdown(), timer->getRaceId(),
                          timer->getElapsedMs(now), timer->getRaceMs(), timer->getRaceLaps(), timer->isTimeUp(),
-                         monitor->getBatteryVoltage(), !history->lastSaveOk);
+                         timer->getStaggered(), monitor->getBatteryVoltage(), !history->lastSaveOk,
+                         history->lastSavedId, history->lastSavedRaceId, timer->isSpectrumRunning());
         // configured pilots (live RSSI) and the race's pilots (laps), whichever is more
         uint8_t count = conf->getPilotCount();
         if ((timer->isRacing() || timer->hasRaceData()) && timer->getPilotCount() > count)
@@ -54,6 +56,7 @@ void Webserver::registerApi()
         doc["state"] = timer->getState();
         doc["mode"] = timer->getMode();
         doc["cd"] = timer->getCountdown();
+        doc["stag"] = timer->getStaggered();
         doc["raceMs"] = timer->getRaceMs();
         doc["raceLaps"] = timer->getRaceLaps();
         doc["date"] = timer->getStartEpoch();
@@ -119,6 +122,38 @@ void Webserver::registerApi()
             history->sendRace(request, paramU32(request, "id", 0));
         else
             history->sendList(request); });
+
+    // Lap correction: {id, pilot, op: 0 merge with next / 1 split, lap}
+    server.addHandler(new AsyncCallbackJsonWebHandler("/api/races/edit", [this](AsyncWebServerRequest *request, JsonVariant &json)
+                                                      {
+        uint32_t id = json["id"] | 0;
+        uint8_t pilot = json["pilot"] | 0;
+        uint8_t op = json["op"] | 255;
+        int lap = json["lap"] | -1;
+        bool ok = history->editRace(id, pilot, op, lap);
+        // the race still shown on the Race tab gets the same correction
+        if (ok && id == history->lastSavedId && timer->getRaceId() == history->lastSavedRaceId)
+            timer->editLaps(pilot, op, lap);
+        request->send(ok ? 200 : 400, "application/json",
+                      ok ? "{\"status\":\"OK\"}" : "{\"status\":\"invalid\"}"); }));
+
+    // Spectrum scan: ?start=1 starts a scan (not during a race)
+    server.on("/api/spectrum", HTTP_GET, [this](AsyncWebServerRequest *request)
+              {
+        if (request->hasParam("start"))
+        {
+            bool ok = timer->requestSpectrum();
+            request->send(ok ? 200 : 409, "application/json",
+                          ok ? "{\"status\":\"OK\"}" : "{\"status\":\"busy\"}");
+            return;
+        }
+        AsyncResponseStream *response = request->beginResponseStream("application/json");
+        response->printf("{\"running\":%d,\"start\":%u,\"step\":%u,\"rssi\":[",
+                         timer->isSpectrumRunning(), SPECTRUM_START_MHZ, SPECTRUM_STEP_MHZ);
+        for (uint8_t i = 0; i < SPECTRUM_POINTS; i++)
+            response->printf(i ? ",%u" : "%u", timer->getSpectrumRssi(i));
+        response->print("]}");
+        request->send(response); });
 
     server.on("/api/races/clear", HTTP_POST, [this](AsyncWebServerRequest *request)
               {

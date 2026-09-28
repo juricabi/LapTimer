@@ -128,6 +128,7 @@ let configLoaded = false;
 let pilotCount = 1;
 let pilots = []; // [{name, freq, enter, exit}] for all MAX_PILOTS slots
 let raceMode = MODE.PRACTICE;
+let rankBy = 0; // 0 most laps, 1 fastest lap, 2 best 3 consecutive laps
 let announcerRate = 1.0;
 let profiles = [];
 
@@ -137,6 +138,7 @@ const ui = {
   raceTime: $("raceTime"),
   raceLaps: $("raceLaps"),
   countdown: $("countdown"),
+  stagger: $("stagger"),
   minLap: $("minLap"),
   announcer: $("announcerSelect"),
   rate: $("rate"),
@@ -288,6 +290,12 @@ setupSegmented($("raceMode"), (v) => {
   scheduleSave();
 });
 
+setupSegmented($("rankBy"), (v) => {
+  rankBy = +v;
+  scheduleSave();
+  if (raceData) handleRace(raceData);
+});
+
 function renderRaceModeFields() {
   setSegmented($("raceMode"), raceMode);
   $("raceTimeField").hidden = raceMode !== MODE.TIMED;
@@ -313,6 +321,9 @@ async function loadConfig() {
   ui.raceTime.value = config.raceSec || 120;
   ui.raceLaps.value = config.raceLaps || 3;
   ui.countdown.checked = !!config.countdown;
+  ui.stagger.checked = !!config.stagger;
+  rankBy = config.rankBy || 0;
+  setSegmented($("rankBy"), rankBy);
   ui.minLap.value = (config.minLap / 10).toFixed(1);
   ui.announcer.selectedIndex = config.anType;
   ui.rate.value = (config.anRate / 10).toFixed(1);
@@ -339,6 +350,8 @@ function configBody() {
     raceSec: +ui.raceTime.value,
     raceLaps: +ui.raceLaps.value,
     countdown: ui.countdown.checked,
+    stagger: ui.stagger.checked,
+    rankBy: rankBy,
     minLap: Math.round(ui.minLap.value * 10),
     alarm: Math.round(ui.alarm.value * 10),
     anType: ui.announcer.selectedIndex,
@@ -369,9 +382,13 @@ function scheduleSave() {
   setSaveState("saving");
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
+    saveTimer = null;
     const ok = await saveConfig();
     setSaveState(ok ? "saved" : "error");
-    if (ok) rememberPilots();
+    if (ok) {
+      rememberPilots();
+      fetchRace(); // pilot names and channels on the Race tab come from the timer
+    }
   }, 600);
 }
 
@@ -388,6 +405,13 @@ for (const el of document.querySelectorAll("[data-save-state]")) {
     if (el.dataset.saveState === "error") scheduleSave();
   });
 }
+
+// A change made just before leaving the page is sent right away
+window.addEventListener("pagehide", () => {
+  if (!saveTimer || !configLoaded) return;
+  clearTimeout(saveTimer);
+  navigator.sendBeacon("/config", new Blob([JSON.stringify(configBody())], { type: "application/json" }));
+});
 
 function onSettingsEdit(e) {
   if (e.target.closest("[data-local]")) return;
@@ -591,6 +615,7 @@ let seenLaps = []; // lap entries per pilot already announced
 let seenTimeUp = false;
 let seenFinished = [];
 let seenRaceFinished = false;
+let lastLapCalled = []; // staggered timed race: "last lap" announced per pilot
 let raceFetchPending = false;
 let raceFetchAgain = false; // laps changed while a fetch was running
 
@@ -640,6 +665,16 @@ function handleStatus(s) {
   if (s.timeUp && !seenTimeUp && seenRaceId === s.race) {
     queueSpeak("Time's up");
   }
+  if (s.state === STATE.RUNNING && s.mode === MODE.TIMED && s.stag && raceData && seenRaceId === s.race) {
+    const elapsed = raceElapsed();
+    raceData.pilots.forEach((p, i) => {
+      if (!p.laps.length || p.fin || lastLapCalled[i]) return;
+      if (pilotTimeLeft(p, elapsed) <= 0) {
+        lastLapCalled[i] = true;
+        queueSpeak(pilotLabel(p.name, i) + ", last lap");
+      }
+    });
+  }
   seenTimeUp = s.timeUp;
   renderRaceControls();
 }
@@ -657,7 +692,7 @@ function clockText() {
   if (!status) return formatClock(0);
   const elapsed = raceElapsed();
   if (status.state === STATE.COUNTDOWN) return String(Math.ceil(-elapsed / 1000) || "GO");
-  if (status.state === STATE.RUNNING && status.mode === MODE.TIMED && !status.timeUp) {
+  if (status.state === STATE.RUNNING && status.mode === MODE.TIMED && !status.timeUp && !status.stag) {
     return formatClock(status.raceMs - elapsed); // time left
   }
   if (status.state === STATE.RUNNING) return formatClock(elapsed);
@@ -682,6 +717,7 @@ function statusText() {
     case STATE.WAITING:
       return ["Waiting for first gate pass…", "waiting"];
     case STATE.RUNNING:
+      if (status.mode === MODE.TIMED && status.stag) return ["Racing · own time each", "running"];
       if (status.mode === MODE.TIMED) return status.timeUp ? ["Time's up · finish your lap", "waiting"] : ["Time left", "running"];
       if (status.mode === MODE.LAPS) return [`Racing · ${status.raceLaps} laps`, "running"];
       return ["Racing", "running"];
@@ -707,6 +743,9 @@ function renderRaceControls() {
   $("startRaceButton").disabled = racing;
   $("stopRaceButton").disabled = !racing;
   $("clearLapsButton").disabled = racing;
+  // the finished race can be corrected once it has been saved
+  const saved = status && status.savedId > 0 && raceData && status.savedRace === raceData.race && raceData.pilots.some((p) => p.laps.length);
+  $("editLapsButton").disabled = racing || !saved;
   let [text, cls] = statusText();
   if (status && status.saveErr) {
     text += " · last race not saved";
@@ -747,10 +786,20 @@ function pilotStats(p) {
 }
 
 // Positions: laps race = most laps then least total time; practice/timed = most laps then least total time
+// Race positions by the chosen ranking. "Most laps" is also "first to finish" in lap races.
+// With a staggered start each pilot's total time starts at their own first pass.
 function positions(r) {
   const order = r.pilots
-    .map((p, i) => ({ i, laps: Math.max(0, p.laps.length - 1), total: p.laps.reduce((a, b) => a + b, 0) }))
-    .sort((a, b) => b.laps - a.laps || a.total - b.total);
+    .map((p, i) => {
+      const st = pilotStats(p);
+      const total = p.laps.slice(r.stag ? 1 : 0).reduce((a, b) => a + b, 0);
+      return { i, laps: st.laps, total, best: st.best, best3: st.best3 };
+    })
+    .sort((a, b) => {
+      if (rankBy === 1) return (a.best ?? Infinity) - (b.best ?? Infinity) || b.laps - a.laps;
+      if (rankBy === 2) return (a.best3 ?? Infinity) - (b.best3 ?? Infinity) || b.laps - a.laps;
+      return b.laps - a.laps || a.total - b.total;
+    });
   const pos = [];
   order.forEach((o, rank) => (pos[o.i] = rank + 1));
   return pos;
@@ -770,6 +819,7 @@ function handleRace(r) {
     seenLaps = r.pilots.map((p) => (fresh ? 0 : p.laps.length));
     seenFinished = r.pilots.map((p) => !fresh && p.fin);
     seenRaceFinished = !fresh && r.state === STATE.FINISHED;
+    lastLapCalled = r.pilots.map(() => !fresh);
   } else {
     announceNewLaps(r);
   }
@@ -920,6 +970,10 @@ function pollOnce() {
 $("startRaceButton").addEventListener("click", startRace);
 $("stopRaceButton").addEventListener("click", stopRace);
 $("clearLapsButton").addEventListener("click", clearRace);
+$("editLapsButton").addEventListener("click", () => {
+  editRaceId = status.savedId;
+  openTab("history");
+});
 
 // ── Race screen ──
 $("raceScreenButton").addEventListener("click", () => {
@@ -953,7 +1007,8 @@ function renderRaceScreen(r) {
       <div class="rs-name"><span>${r.pilots.length > 1 ? pos[i] + ". " : ""}${escapeHtml(pilotLabel(p.name, i))}</span><span class="rs-lapno${p.fin ? " rs-finished" : ""}">${lapText}</span></div>
       <div class="rs-last${st.last === null ? " rs-empty" : ""}">${st.last === null ? "--.--" : secs(st.last)}</div>
       <div class="rs-row">${deltaHtml || "<span></span>"}<span class="rs-best">Best ${st.best === null ? "--.--" : secs(st.best)}</span></div>
-      <div class="rs-row rs-current-row"><span>This lap</span><span class="rs-current" data-pilot="${i}">--.--</span></div>`;
+      <div class="rs-row rs-current-row"><span>This lap</span><span class="rs-current" data-pilot="${i}">--.--</span></div>
+      ${r.mode === MODE.TIMED && r.stag ? `<div class="rs-row rs-current-row"><span>Time left</span><span class="rs-left" data-pilot="${i}">--:--</span></div>` : ""}`;
     container.appendChild(tile);
   });
   updateCurrentLaps();
@@ -973,6 +1028,21 @@ function updateCurrentLaps() {
     const lastPassAt = p.laps.reduce((a, b) => a + b, 0); // ms after the race start
     el.textContent = secs(Math.max(0, elapsed - lastPassAt));
   }
+  for (const el of document.querySelectorAll(".rs-left")) {
+    el.textContent = pilotTimeLeftText(raceData.pilots[+el.dataset.pilot], elapsed, running);
+  }
+}
+
+// Staggered timed race: a pilot's time runs from their own first pass
+function pilotTimeLeft(p, elapsed) {
+  return raceData.raceMs - (elapsed - p.laps[0]);
+}
+
+function pilotTimeLeftText(p, elapsed, running) {
+  if (!p || p.fin) return p && p.fin ? "Finished" : "--:--";
+  if (!running || !p.laps.length) return formatClock(raceData.raceMs).slice(0, 5);
+  const left = pilotTimeLeft(p, elapsed);
+  return left > 0 ? formatClock(left) : "Last lap";
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1172,11 +1242,72 @@ $("autoCal").addEventListener("change", () => {
   renderAutoCal();
 });
 
+// ── Channel scan (spectrum) ──
+$("spectrumButton").addEventListener("click", async (e) => {
+  const button = e.target;
+  button.disabled = true;
+  showButtonStatus(button, "Scanning… (about 3 s)", 0);
+  try {
+    const start = await fetch("/api/spectrum?start=1");
+    if (start.status === 409) {
+      showButtonStatus(button, "Not possible during a race");
+      button.disabled = false;
+      return;
+    }
+    let data = { running: true };
+    for (let i = 0; i < 20 && data.running; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      data = await fetchJson("/api/spectrum");
+    }
+    renderSpectrum(data);
+    button.dataset.label = "Scan again";
+    showButtonStatus(button, "Scan again", 1);
+  } catch (err) {
+    showButtonStatus(button, "Scan failed");
+  }
+  button.disabled = false;
+});
+
+// Bar chart of RSSI per frequency, with the active pilots' channels marked
+function renderSpectrum(data) {
+  const box = $("spectrum");
+  const values = data.rssi || [];
+  if (!values.length) return;
+  const barW = 10;
+  const width = values.length * barW;
+  const height = 170;
+  const bottom = height - 20; // room for the frequency labels
+  const top = 22; // room for the pilot labels
+  const min = Math.min(...values);
+  const max = Math.max(min + 20, ...values);
+  const freqX = (f) => ((f - data.start) / data.step) * barW + barW / 2;
+
+  let svg = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Signal strength per frequency">`;
+  values.forEach((v, i) => {
+    const h = Math.max(2, ((v - min) / (max - min)) * (bottom - top));
+    const strength = (v - min) / (max - min);
+    svg += `<rect x="${i * barW + 1}" y="${bottom - h}" width="${barW - 2}" height="${h}" rx="2" fill="var(--accent)" opacity="${(0.35 + 0.65 * strength).toFixed(2)}"><title>${data.start + i * data.step} MHz: ${v}</title></rect>`;
+  });
+  for (let f = 5650; f <= data.start + (values.length - 1) * data.step; f += 50) {
+    svg += `<text x="${freqX(f)}" y="${height - 5}" text-anchor="middle" class="spectrum-axis">${f}</text>`;
+  }
+  pilots.slice(0, pilotCount).forEach((p, i) => {
+    if (!bandChannel(p.freq)) return;
+    const x = freqX(p.freq);
+    svg += `<line x1="${x}" x2="${x}" y1="${top - 4}" y2="${bottom}" stroke="var(--p${i + 1})" stroke-width="2" stroke-dasharray="4 3" />`;
+    svg += `<text x="${x}" y="${top - 8}" text-anchor="middle" class="spectrum-pilot" fill="var(--p${i + 1})">${escapeHtml(channelName(p.freq))}</text>`;
+  });
+  svg += "</svg>";
+  box.innerHTML = svg;
+  box.hidden = false;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  History
 // ═══════════════════════════════════════════════════════════════════
 
 let historyList = [];
+let editRaceId = null; // set by "Fix laps" on the Race tab: open this race for editing
 
 async function loadHistory() {
   try {
@@ -1194,6 +1325,15 @@ function raceTitle(race) {
   return "Race #" + race.id;
 }
 
+// pilots: [{name, laps (count), best}]
+function historySummaryHtml(race, pilotsSummary) {
+  return `
+    <div class="history-top"><span class="history-title">${escapeHtml(raceTitle(race))}</span><span class="history-meta">${MODE_NAMES[race.mode] || ""}</span></div>
+    <div class="history-pilots">${pilotsSummary
+      .map((p, i) => `<span class="pilot-${i + 1}"><i class="dot-p"></i>${escapeHtml(pilotLabel(p.name, i))} · ${p.laps} laps · best ${p.best ? secs(p.best) : "–"}</span>`)
+      .join("")}</div>`;
+}
+
 function renderHistory() {
   const list = $("historyList");
   list.innerHTML = "";
@@ -1202,50 +1342,106 @@ function renderHistory() {
     const card = el("div", "card history-item");
     const summary = el("button", "history-summary");
     summary.type = "button";
-    summary.innerHTML = `
-      <div class="history-top"><span class="history-title">${escapeHtml(raceTitle(race))}</span><span class="history-meta">${MODE_NAMES[race.mode] || ""}</span></div>
-      <div class="history-pilots">${race.pilots
-        .map((p, i) => `<span class="pilot-${i + 1}"><i class="dot-p"></i>${escapeHtml(pilotLabel(p.name, i))} · ${p.laps} laps · best ${p.best ? secs(p.best) : "–"}</span>`)
-        .join("")}</div>`;
+    summary.innerHTML = historySummaryHtml(race, race.pilots);
     const detail = el("div", "history-detail");
     detail.hidden = true;
-    summary.addEventListener("click", async () => {
-      if (!detail.hidden) {
-        detail.hidden = true;
-        return;
-      }
-      detail.hidden = false;
-      detail.textContent = "Loading…";
-      try {
-        const full = await fetchJson("/api/races?id=" + race.id);
-        renderHistoryDetail(detail, full);
-      } catch (e) {
-        detail.textContent = "Could not load this race.";
-      }
+    summary.addEventListener("click", () => {
+      if (!detail.hidden) detail.hidden = true;
+      else openHistoryDetail(race.id, summary, detail, false);
     });
     card.append(summary, detail);
     list.appendChild(card);
+    if (race.id === editRaceId) {
+      editRaceId = null;
+      openHistoryDetail(race.id, summary, detail, true);
+      setTimeout(() => card.scrollIntoView({ block: "start" }), 50);
+    }
   }
 }
 
-function renderHistoryDetail(container, race) {
+async function openHistoryDetail(id, summary, detail, editing) {
+  detail.hidden = false;
+  detail.textContent = "Loading…";
+  try {
+    const full = await fetchJson("/api/races?id=" + id);
+    renderHistoryDetail(detail, full, editing, summary);
+  } catch (e) {
+    detail.textContent = "Could not load this race.";
+  }
+}
+
+// Laps of a saved race. In editing mode each lap can be merged with the next one
+// (a false pass split it) or split in two (a pass was missed).
+function renderHistoryDetail(container, race, editing, summary) {
   container.innerHTML = "";
+  if (editing) {
+    container.appendChild(
+      el("p", "note", "Two short laps from a false pass? Merge the first with the next. A double-length lap from a missed pass? Split it.")
+    );
+  }
   race.pilots.forEach((p, i) => {
     const st = pilotStats(p);
-    const rows = p.laps
-      .slice(1)
-      .map((t, n) => `<tr${t === st.best ? ' class="best-lap"' : ""}><td>${n + 1}</td><td>${secs(t)}s</td></tr>`)
-      .join("");
     const block = el("div", "pilot-" + (i + 1));
     block.innerHTML = `
       <div class="race-pilot-head"><span class="dot-p"></span><span>${escapeHtml(pilotLabel(p.name, i))}</span><span class="muted">${channelName(p.freq)} ${p.freq}</span></div>
-      <p class="hint">Best ${st.best === null ? "–" : secs(st.best)} · average ${st.avg === null ? "–" : secs(st.avg)} · best 3 laps ${st.best3 === null ? "–" : secs(st.best3)}</p>
-      ${rows ? `<div class="lap-table-wrap"><table><tr><th>Lap</th><th>Time</th></tr>${rows}</table></div>` : ""}`;
+      <p class="hint">Best ${st.best === null ? "–" : secs(st.best)} · average ${st.avg === null ? "–" : secs(st.avg)} · best 3 laps ${st.best3 === null ? "–" : secs(st.best3)}</p>`;
+    if (p.laps.length) {
+      const table = el("table");
+      table.innerHTML = `<tr><th>Lap</th><th>Time</th>${editing ? "<th>Fix</th>" : ""}</tr>`;
+      p.laps.forEach((t, n) => {
+        if (n === 0 && !editing) return; // start pass shown only when fixing
+        const row = el("tr");
+        if (n > 0 && t === st.best) row.className = "best-lap";
+        row.innerHTML = `<td>${n === 0 ? "Start" : n}</td><td>${secs(t)}s</td>`;
+        if (editing) {
+          const actions = el("td", "lap-actions");
+          const last = n === p.laps.length - 1;
+          if (p.laps.length > 1 || n > 0) {
+            const merge = el("button", "btn btn-ghost btn-small", last ? "Delete" : n === 0 ? "False start" : "Merge ↓");
+            merge.title = last ? "False last pass: remove it" : "False pass at the end of this lap: join with the next lap";
+            merge.addEventListener("click", () => editLap(race, i, 0, n, container, summary));
+            actions.appendChild(merge);
+          }
+          if (n > 0) {
+            const split = el("button", "btn btn-ghost btn-small", "Split");
+            split.title = "Missed pass: split into two laps";
+            split.addEventListener("click", () => editLap(race, i, 1, n, container, summary));
+            actions.appendChild(split);
+          }
+          row.appendChild(actions);
+        }
+        table.appendChild(row);
+      });
+      const wrap = el("div", "lap-table-wrap");
+      wrap.appendChild(table);
+      block.appendChild(wrap);
+    }
     container.appendChild(block);
   });
-  const exportButton = el("button", "btn btn-ghost btn-block", "Export this race (CSV)");
+  const buttons = el("div", "button-row");
+  const editButton = el("button", "btn btn-ghost", editing ? "Done" : "Fix laps");
+  editButton.addEventListener("click", () => renderHistoryDetail(container, race, !editing, summary));
+  const exportButton = el("button", "btn btn-ghost", "Export CSV");
   exportButton.addEventListener("click", () => downloadCsv([race], "laptimer-race-" + race.id + ".csv"));
-  container.appendChild(exportButton);
+  buttons.append(editButton, exportButton);
+  container.appendChild(buttons);
+}
+
+async function editLap(race, pilot, op, lap, container, summary) {
+  try {
+    await postJson("/api/races/edit", { id: race.id, pilot, op, lap });
+    const full = await fetchJson("/api/races?id=" + race.id);
+    renderHistoryDetail(container, full, true, summary);
+    if (summary) {
+      summary.innerHTML = historySummaryHtml(full, full.pilots.map((p) => {
+        const st = pilotStats(p);
+        return { name: p.name, laps: st.laps, best: st.best };
+      }));
+    }
+    fetchRace(); // the Race tab shows the same race if it was the last one
+  } catch (e) {
+    container.prepend(el("p", "note warn", "Could not change this lap. Is a race running?"));
+  }
 }
 
 function csvRows(race) {

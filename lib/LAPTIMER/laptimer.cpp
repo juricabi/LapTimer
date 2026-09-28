@@ -2,6 +2,38 @@
 
 #include "debug.h"
 
+bool applyLapEdit(uint32_t *laps, int &count, int maxCount, uint8_t op, int index)
+{
+    if (index < 0 || index >= count)
+        return false;
+    if (op == LAP_EDIT_MERGE)
+    {
+        if (index == count - 1)
+        {
+            count--; // false last pass: drop it
+            return true;
+        }
+        laps[index] += laps[index + 1]; // join with the next lap
+        for (int i = index + 1; i + 1 < count; i++)
+            laps[i] = laps[i + 1];
+        count--;
+        return true;
+    }
+    if (op == LAP_EDIT_SPLIT)
+    {
+        if (index == 0 || count >= maxCount)
+            return false; // the start pass is not a lap
+        uint32_t first = laps[index] / 2;
+        for (int i = count; i > index + 1; i--)
+            laps[i] = laps[i - 1];
+        laps[index + 1] = laps[index] - first;
+        laps[index] = first;
+        count++;
+        return true;
+    }
+    return false;
+}
+
 const uint16_t rssi_filter_q = 2000; //  0.01 - 655.36
 const uint16_t rssi_filter_r = 40;   // 0.0001 - 65.536
 
@@ -30,6 +62,7 @@ void LapTimer::resetPilot(PilotState &p)
     p.hoverBlocked = false;
     p.peak = 0;
     p.hasPassed = false;
+    p.timeUpBeeped = false;
     p.lastPassMs = 0;
     p.lapCount = 0;
     p.finished = false;
@@ -61,6 +94,7 @@ void LapTimer::start(uint32_t epochSec)
     pilotCount = conf->getPilotCount();
     mode = conf->getRaceMode();
     countdown = conf->getCountdown();
+    staggered = conf->getStaggered();
     raceMs = conf->getRaceMs();
     raceLaps = conf->getRaceLaps();
     startEpochSec = epochSec;
@@ -180,9 +214,76 @@ void LapTimer::runPendingCommand()
     }
 }
 
+bool LapTimer::editLaps(uint8_t pilot, uint8_t op, int index)
+{
+    if (isRacing() || savePending || pilot >= pilotCount)
+        return false;
+    PilotState &p = pilots[pilot];
+    int count = p.lapCount;
+    bool ok = applyLapEdit(p.laps, count, MAX_LAPS, op, index);
+    p.lapCount = count;
+    return ok;
+}
+
+bool LapTimer::requestSpectrum()
+{
+    if (isRacing() || isSpectrumRunning())
+        return false;
+    spectrumRequested = true;
+    return true;
+}
+
+// Sweeps the band one frequency at a time: tune, settle, keep the highest RSSI
+void LapTimer::spectrumStep(uint32_t nowMs)
+{
+    if (!spectrumTuned)
+    {
+        uint16_t freq = SPECTRUM_START_MHZ + spectrumIndex * SPECTRUM_STEP_MHZ;
+        rx->setFrequency(freq, false);
+        spectrumSettleUntilMs = nowMs + SPECTRUM_SETTLE_MS;
+        spectrumSampleUntilMs = spectrumSettleUntilMs + SPECTRUM_SAMPLE_MS;
+        spectrumMax = 0;
+        spectrumTuned = true;
+        return;
+    }
+    if ((int32_t)(nowMs - spectrumSettleUntilMs) < 0)
+        return;
+    if ((int32_t)(nowMs - spectrumSampleUntilMs) < 0)
+    {
+        uint8_t v = rx->readRssiRaw();
+        if (v > spectrumMax)
+            spectrumMax = v;
+        return;
+    }
+    if (spectrumSweep == 0 || spectrumMax > spectrumRssi[spectrumIndex])
+        spectrumRssi[spectrumIndex] = spectrumMax;
+    spectrumTuned = false;
+    if (++spectrumIndex >= SPECTRUM_POINTS)
+    {
+        spectrumIndex = 0;
+        if (++spectrumSweep >= SPECTRUM_SWEEPS)
+        {
+            spectrumActive = false; // scan() tunes back to the pilots' channels
+        }
+    }
+}
+
 void LapTimer::update(uint32_t nowMs)
 {
     runPendingCommand();
+    if (spectrumRequested && !isRacing())
+    {
+        spectrumRequested = false;
+        spectrumActive = true;
+        spectrumIndex = 0;
+        spectrumSweep = 0;
+        spectrumTuned = false;
+    }
+    if (spectrumActive)
+    {
+        spectrumStep(nowMs);
+        return;
+    }
     scan(nowMs);
     recordHistory(nowMs);
     updateRace(nowMs);
@@ -347,6 +448,7 @@ void LapTimer::onPass(uint8_t pilot, uint32_t passMs)
     int index = p.lapCount;
     if (!p.hasPassed)
     {
+        p.firstPassMs = passMs;
         // Start pass, relative to the race start. It can be slightly before the start
         // (drone on the gate during the countdown, or two pilots passing together), so clamp at 0.
         int32_t sinceStart = (int32_t)(passMs - raceStartMs);
@@ -362,8 +464,10 @@ void LapTimer::onPass(uint8_t pilot, uint32_t passMs)
     DEBUG("Pilot %u pass %d: %u ms\n", pilot + 1, index, p.laps[index]);
 
     int completedLaps = p.lapCount - 1;
+    // Staggered: each pilot's race time runs from their own first pass
+    bool pilotTimeUp = staggered ? (passMs - p.firstPassMs) >= raceMs : timeUp;
     if ((mode == RACE_LAPS && completedLaps >= raceLaps) ||
-        (mode == RACE_TIMED && timeUp && completedLaps >= 1))
+        (mode == RACE_TIMED && pilotTimeUp && completedLaps >= 1))
     {
         p.finished = true;
         buz->beep(700);
@@ -402,7 +506,22 @@ void LapTimer::updateRace(uint32_t nowMs)
         return;
     }
 
-    if (mode == RACE_TIMED && !timeUp && (nowMs - raceStartMs) >= raceMs)
+    // Staggered timed race: beep when each pilot's own time is up
+    if (mode == RACE_TIMED && staggered)
+    {
+        for (uint8_t i = 0; i < pilotCount; i++)
+        {
+            PilotState &p = pilots[i];
+            if (p.hasPassed && !p.finished && !p.timeUpBeeped && (nowMs - p.firstPassMs) >= raceMs)
+            {
+                p.timeUpBeeped = true;
+                buz->beep(800);
+                led->on(800);
+            }
+        }
+    }
+
+    if (mode == RACE_TIMED && !staggered && !timeUp && (nowMs - raceStartMs) >= raceMs)
     {
         timeUp = true; // each pilot finishes on their next pass
         buz->beep(800);

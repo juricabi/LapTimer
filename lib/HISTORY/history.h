@@ -21,6 +21,11 @@ class RaceHistory {
     // Saves the timer's current race (call from one task only)
     void save(LapTimer &timer, Config &config);
     bool lastSaveOk = true;
+    uint32_t lastSavedId = 0;      // history id of the newest saved race
+    uint32_t lastSavedRaceId = 0;  // the timer's race id it came from
+
+    // Corrects laps of a saved race (see LAP_EDIT_*); updates the history list too
+    bool editRace(uint32_t id, uint8_t pilot, uint8_t op, int lapIndex);
 
     void sendList(AsyncWebServerRequest *request);  // newest-first sorting is done by the page
     void sendRace(AsyncWebServerRequest *request, uint32_t id);

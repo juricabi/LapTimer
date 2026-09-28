@@ -23,6 +23,23 @@
 #define DOMINANCE_DELTA 10
 #define MAX_PASS_MS 3000          // above the enter threshold longer than this = hovering, ignore
 
+// Spectrum scan: RSSI across the 5.8 GHz band to spot channels already in use
+#define SPECTRUM_START_MHZ 5645
+#define SPECTRUM_STEP_MHZ 5
+#define SPECTRUM_POINTS 61        // 5645 - 5945 MHz (bands A, B, E, F, R)
+#define SPECTRUM_SWEEPS 3         // highest value of 3 sweeps (~2.6 s)
+#define SPECTRUM_SETTLE_MS 10
+#define SPECTRUM_SAMPLE_MS 4
+
+// Correcting laps after a race
+enum {
+    LAP_EDIT_MERGE = 0,  // false pass at the end of this lap: join it with the next lap
+    LAP_EDIT_SPLIT = 1   // missed pass inside this lap: split it into two laps
+};
+
+// Applies a lap edit to a lap list ([0] = start pass). Returns false if not possible.
+bool applyLapEdit(uint32_t *laps, int &count, int maxCount, uint8_t op, int index);
+
 typedef enum {
     RACE_IDLE = 0,       // no race; shows the last race's laps
     RACE_COUNTDOWN = 1,  // 3-2-1-go running
@@ -47,6 +64,8 @@ struct PilotState {
 
     // race data
     bool hasPassed;
+    uint32_t firstPassMs;        // this pilot's own start (staggered races)
+    bool timeUpBeeped;           // staggered timed race: this pilot's time-up beep done
     uint32_t lastPassMs;
     uint32_t laps[MAX_LAPS];     // [0] = start pass (ms after race start), [n] = lap n time
     volatile int lapCount;       // number of entries in laps[]
@@ -73,6 +92,7 @@ class LapTimer {
     race_state_e getState() { return state; }
     race_mode_e getMode() { return mode; }
     bool getCountdown() { return countdown; }
+    bool getStaggered() { return staggered; }
     uint32_t getRaceId() { return raceId; }
     uint32_t getStartEpoch() { return startEpochSec; }
     int32_t getElapsedMs(uint32_t nowMs);  // < 0 during countdown, 0 before the race starts
@@ -87,6 +107,14 @@ class LapTimer {
     uint32_t getLap(uint8_t pilot, int index) { return pilots[pilot].laps[index]; }
     bool isFinished(uint8_t pilot) { return pilots[pilot].finished; }
     uint16_t getRaceFrequency(uint8_t pilot) { return raceFreq[pilot]; }
+
+    // Lap correction on the current/last race (only while no race is running)
+    bool editLaps(uint8_t pilot, uint8_t op, int index);
+
+    // Spectrum scan (not during a race)
+    bool requestSpectrum();
+    bool isSpectrumRunning() { return spectrumActive || spectrumRequested; }
+    uint8_t getSpectrumRssi(uint8_t point) { return spectrumRssi[point]; }
 
     // RSSI history for the calibration graph
     uint32_t getHistorySeq() { return historySeq; }
@@ -105,6 +133,7 @@ class LapTimer {
     volatile race_state_e state = RACE_IDLE;
     race_mode_e mode = RACE_PRACTICE;
     bool countdown = false;
+    bool staggered = false;
     uint32_t raceMs = 0;
     uint8_t raceLaps = 0;
     uint8_t pilotCount = 1;
@@ -121,6 +150,18 @@ class LapTimer {
     uint32_t slotEndMs = 0;
     uint32_t historyStepMs = 0;
     volatile uint32_t historySeq = 0;
+
+    // spectrum scan state
+    volatile bool spectrumRequested = false;
+    volatile bool spectrumActive = false;
+    uint8_t spectrumRssi[SPECTRUM_POINTS];
+    uint8_t spectrumIndex = 0;
+    uint8_t spectrumSweep = 0;
+    bool spectrumTuned = false;
+    uint8_t spectrumMax = 0;
+    uint32_t spectrumSettleUntilMs = 0;
+    uint32_t spectrumSampleUntilMs = 0;
+    void spectrumStep(uint32_t nowMs);
 
     void scan(uint32_t nowMs);
     void sample(uint8_t pilot, uint8_t raw, uint32_t nowMs);

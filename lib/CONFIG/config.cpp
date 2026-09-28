@@ -31,11 +31,14 @@ void Config::load(void)
         version = conf.version & ~CONFIG_MAGIC_MASK;
     }
 
-    if (version == 0)
+    if (version < CONFIG_VERSION)
     {
-        // v0 -> v1: keep all existing settings, add defaults for the new ones
-        DEBUG("Migrating config v0 -> v1\n");
-        setV1Defaults();
+        // older layout: keep all existing settings, add defaults for the new ones
+        DEBUG("Migrating config v%u -> v%u\n", version, CONFIG_VERSION);
+        if (version < 1)
+            setV1Defaults();
+        if (version < 2)
+            setV2Defaults();
         conf.version = CONFIG_VERSION | CONFIG_MAGIC;
         modified = true;
         write();
@@ -88,6 +91,8 @@ void Config::toJsonDoc(JsonDocument &config)
     config["raceSec"] = conf.raceSeconds;
     config["raceLaps"] = conf.raceLaps;
     config["countdown"] = conf.countdown;
+    config["rankBy"] = conf.rankBy;
+    config["stagger"] = conf.staggered;
     // WiFi networks (with passwords) are managed by WifiList and never sent back to the page
 }
 
@@ -174,12 +179,16 @@ void Config::fromJson(JsonObject source)
     changed |= updateField(source, "raceSec", conf.raceSeconds);
     changed |= updateField(source, "raceLaps", conf.raceLaps);
     changed |= updateField(source, "countdown", conf.countdown);
+    changed |= updateField(source, "rankBy", conf.rankBy);
+    changed |= updateField(source, "stagger", conf.staggered);
 
     // keep values in sane ranges
     if (conf.pilotCount < 1)
         conf.pilotCount = 1;
     if (conf.pilotCount > MAX_PILOTS)
         conf.pilotCount = MAX_PILOTS;
+    if (conf.rankBy > RANK_FASTEST_3)
+        conf.rankBy = RANK_MOST_LAPS;
     if (conf.raceMode > RACE_LAPS)
         conf.raceMode = RACE_PRACTICE;
     if (conf.raceSeconds < 10)
@@ -270,6 +279,22 @@ bool Config::getCountdown()
     return conf.countdown;
 }
 
+rank_by_e Config::getRankBy()
+{
+    return (rank_by_e)conf.rankBy;
+}
+
+bool Config::getStaggered()
+{
+    return conf.staggered;
+}
+
+void Config::setV2Defaults(void)
+{
+    conf.rankBy = RANK_MOST_LAPS;
+    conf.staggered = false;
+}
+
 void Config::setV1Defaults(void)
 {
     // Default channels for pilots 2-4: R2, R7, R8 (well separated for 4 pilots with R1)
@@ -308,6 +333,7 @@ void Config::setDefaults(void)
     strlcpy(conf.password, "", sizeof(conf.password));
     strlcpy(conf.pilotName, "", sizeof(conf.pilotName));
     setV1Defaults();
+    setV2Defaults();
     modified = true;
     write();
 }

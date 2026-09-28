@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0f172a" />
   <title>LapTimer</title>
   <link rel="icon" type="image/png" href="favicon.ico" />
-  <link rel="stylesheet" type="text/css" href="style.css?v=7" />
+  <link rel="stylesheet" type="text/css" href="style.css?v=8" />
   <script src="smoothie.js"></script>
 </head>
 
@@ -84,6 +84,21 @@
           </span>
           <span class="switch"><input type="checkbox" id="countdown" /><span class="slider"></span></span>
         </label>
+        <label class="switch-row">
+          <span>
+            <span class="switch-title">Staggered start</span><br />
+            <span class="hint">Each pilot's race time starts at their own first gate pass</span>
+          </span>
+          <span class="switch"><input type="checkbox" id="stagger" /><span class="slider"></span></span>
+        </label>
+        <div class="field">
+          <span class="field-label">Rank pilots by</span>
+          <div class="segmented" id="rankBy" role="radiogroup" aria-label="Rank pilots by">
+            <button data-value="0" class="active">Most laps</button>
+            <button data-value="1">Fastest lap</button>
+            <button data-value="2">Best 3 laps</button>
+          </div>
+        </div>
         <div class="field">
           <label class="field-label" for="minLap">Minimum lap time</label>
           <div class="input-with-value">
@@ -206,7 +221,10 @@
         <button id="stopRaceButton" class="btn btn-stop" disabled>Stop</button>
         <button id="clearLapsButton" class="btn btn-ghost">Clear</button>
       </div>
-      <button id="raceScreenButton" class="btn btn-ghost btn-block">Race screen</button>
+      <div class="button-row">
+        <button id="raceScreenButton" class="btn btn-ghost">Race screen</button>
+        <button id="editLapsButton" class="btn btn-ghost" disabled>Fix laps</button>
+      </div>
       <div id="racePilots"></div>
     </section>
 
@@ -246,6 +264,12 @@
         <div id="autoCalResult" class="note" hidden></div>
         <div class="save-status" data-save-state="saved" role="status">Saved to timer ✓</div>
       </div>
+      <div class="card">
+        <h2>Channel scan</h2>
+        <p class="hint">Shows which channels are busy. Turn on all video transmitters nearby, then scan. Pick channels away from other peaks.</p>
+        <div id="spectrum" class="spectrum" hidden></div>
+        <button id="spectrumButton" class="btn btn-ghost btn-block">Scan channels</button>
+      </div>
     </section>
 
     <!-- ───────────── History ───────────── -->
@@ -269,7 +293,7 @@
     <div id="rsPilots" class="rs-pilots"></div>
   </div>
 
-  <script src="script.js?v=7"></script>
+  <script src="script.js?v=8"></script>
 </body>
 
 </html>
