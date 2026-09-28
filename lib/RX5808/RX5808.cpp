@@ -94,8 +94,8 @@ bool RX5808::verifyFrequency() {
 }
 
 // Set frequency on RX5808 module to given value
-void RX5808::setFrequency(uint16_t vtxFreq) {
-    DEBUG("Setting frequency to %u\n", vtxFreq);
+void RX5808::setFrequency(uint16_t vtxFreq, bool verbose) {
+    if (verbose) DEBUG("Setting frequency to %u\n", vtxFreq);
 
     currentFrequency = vtxFreq;
 
@@ -140,7 +140,7 @@ void RX5808::setFrequency(uint16_t vtxFreq) {
         rx5808SerialSendBit0();
 
     rx5808SerialEnableHigh();  // Finished clocking data in
-    delay(2);
+    delayMicroseconds(100);
 
     digitalWrite(rx5808ClkPin, LOW);
     digitalWrite(rx5808DataPin, LOW);
@@ -150,9 +150,12 @@ void RX5808::setFrequency(uint16_t vtxFreq) {
 
 // Read the RSSI value
 uint8_t RX5808::readRssi() {
-    volatile uint16_t rssi = 0;
+    if (recentSetFreqFlag) return 0;  // RSSI is unstable
+    return readRssiRaw();
+}
 
-    if (recentSetFreqFlag) return rssi;  // RSSI is unstable
+uint8_t RX5808::readRssiRaw() {
+    volatile uint16_t rssi = 0;
 
     // for (uint8_t i = 0; i < RSSI_READS; i++) {
     //   rssi += map(analogRead(rssiInputPin), 0, analogRead(vbatPin), 0, 4095);
@@ -170,30 +173,30 @@ uint8_t RX5808::readRssi() {
 
 void RX5808::rx5808SerialSendBit1() {
     digitalWrite(rx5808DataPin, HIGH);
-    delayMicroseconds(300);
+    delayMicroseconds(RX5808_BIT_DELAY_US);
     digitalWrite(rx5808ClkPin, HIGH);
-    delayMicroseconds(300);
+    delayMicroseconds(RX5808_BIT_DELAY_US);
     digitalWrite(rx5808ClkPin, LOW);
-    delayMicroseconds(300);
+    delayMicroseconds(RX5808_BIT_DELAY_US);
 }
 
 void RX5808::rx5808SerialSendBit0() {
     digitalWrite(rx5808DataPin, LOW);
-    delayMicroseconds(300);
+    delayMicroseconds(RX5808_BIT_DELAY_US);
     digitalWrite(rx5808ClkPin, HIGH);
-    delayMicroseconds(300);
+    delayMicroseconds(RX5808_BIT_DELAY_US);
     digitalWrite(rx5808ClkPin, LOW);
-    delayMicroseconds(300);
+    delayMicroseconds(RX5808_BIT_DELAY_US);
 }
 
 void RX5808::rx5808SerialEnableLow() {
     digitalWrite(rx5808SelPin, LOW);
-    delayMicroseconds(200);
+    delayMicroseconds(RX5808_BIT_DELAY_US);
 }
 
 void RX5808::rx5808SerialEnableHigh() {
     digitalWrite(rx5808SelPin, HIGH);
-    delayMicroseconds(200);
+    delayMicroseconds(RX5808_BIT_DELAY_US);
 }
 
 // Reset rx5808 module to wake up from power down

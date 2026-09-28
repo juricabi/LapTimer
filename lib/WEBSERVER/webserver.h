@@ -2,7 +2,10 @@
 #include <ESPAsyncWebServer.h>
 
 #include "battery.h"
+#include "history.h"
 #include "laptimer.h"
+
+#define FIRMWARE_VERSION "1.1.0-dev"
 
 #define WIFI_CONNECTION_TIMEOUT_MS 60000
 #define WIFI_RECONNECT_TIMEOUT_MS 500
@@ -10,14 +13,16 @@
 
 class Webserver {
    public:
-    void init(Config *config, LapTimer *lapTimer, BatteryMonitor *batMonitor, Buzzer *buzzer, Led *l);
+    void init(Config *config, LapTimer *lapTimer, RaceHistory *raceHistory, BatteryMonitor *batMonitor, Buzzer *buzzer, Led *l);
     void handleWebUpdate(uint32_t currentTimeMs);
 
    private:
     void startServices();
+    void registerApi();
 
     Config *conf;
     LapTimer *timer;
+    RaceHistory *history;
     BatteryMonitor *monitor;
     Buzzer *buz;
     Led *led;
@@ -29,6 +34,4 @@ class Webserver {
     bool servicesStarted = false;
     bool wifiConnected = false;
 
-    bool sendRssi = false;
-    uint32_t rssiSentMs = 0;
 };

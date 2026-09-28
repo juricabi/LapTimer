@@ -4,13 +4,17 @@
 #define RX5808_MIN_BUSTIME 30     // after set freq need to wait this long before setting again
 #define POWER_DOWN_FREQ_MHZ 1111  // signal to power down the module
 #define RSSI_READS 5              // number of analog RSSI reads per tick
+#define RX5808_BIT_DELAY_US 10    // SPI bit-bang half period; the RTC6715 is fine with much less than the original 300 us
 
 class RX5808 {
    public:
     RX5808(uint8_t _rssiInputPin, uint8_t _rx5808DataPin, uint8_t _rx5808SelPin, uint8_t _rx5808ClkPin);
     void init();
-    void setFrequency(uint16_t frequency);
+    void setFrequency(uint16_t frequency, bool verbose = true);
     uint8_t readRssi();
+    // RSSI without the "recently tuned" check; the caller handles settling
+    uint8_t readRssiRaw();
+    uint16_t getFrequency() { return currentFrequency; }
     void handleFrequencyChange(uint32_t currentTimeMs, uint16_t potentiallyNewFreq);
 
    private:

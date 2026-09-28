@@ -65,12 +65,30 @@
 #define EEPROM_RESERVED_SIZE 256
 #define CONFIG_MAGIC_MASK (0b11U << 30)
 #define CONFIG_MAGIC (0b01U << 30)
-#define CONFIG_VERSION 0U
+#define CONFIG_VERSION 1U  // v1 adds pilots 2-4 and race settings (v0 is migrated)
 
 #define EEPROM_CHECK_TIME_MS 1000
 
+#define MAX_PILOTS 4
+
+typedef enum {
+    RACE_PRACTICE = 0,  // unlimited laps until stopped
+    RACE_TIMED = 1,     // race for raceSeconds, then each pilot finishes on the next pass
+    RACE_LAPS = 2       // each pilot finishes after raceLaps laps
+} race_mode_e;
+
+// Pilots 2-4 (pilot 1 uses the v0 fields)
 typedef struct
 {
+    uint16_t frequency;
+    uint8_t enterRssi;
+    uint8_t exitRssi;
+    char name[21];
+} extra_pilot_t;
+
+typedef struct
+{
+    // --- v0 (layout must not change) ---
     uint32_t version;
     uint16_t frequency;
     uint8_t minLap;
@@ -83,6 +101,14 @@ typedef struct
     char ssid[33];
     char password[33];
     bool buzzerOn;
+    // --- v1 ---
+    uint8_t pilotCount;     // 1-4 pilots on the one RX5808
+    extra_pilot_t extraPilots[MAX_PILOTS - 1];
+    uint8_t raceMode;       // race_mode_e
+    uint16_t raceSeconds;
+    uint8_t raceLaps;
+    bool countdown;         // 3-2-1-go start instead of starting on the first pass
+    bool announceDelta;     // announce the difference to the best lap
 } laptimer_config_t;
 
 class Config
@@ -92,23 +118,31 @@ public:
     void load();
     void write();
     void toJson(AsyncResponseStream &destination);
-    void toJsonString(char *buf);
+    void toJsonString(char *buf, size_t size);
     void fromJson(JsonObject source);
     void handleEeprom(uint32_t currentTimeMs);
 
-    // getters and setters
-    uint16_t getFrequency();
+    // getters; pilot index 0 .. MAX_PILOTS - 1
+    uint8_t getPilotCount();
+    uint16_t getFrequency(uint8_t pilot = 0);
+    uint8_t getEnterRssi(uint8_t pilot = 0);
+    uint8_t getExitRssi(uint8_t pilot = 0);
+    const char *getPilotName(uint8_t pilot = 0);
     uint32_t getMinLapMs();
     uint8_t getAlarmThreshold();
-    uint8_t getEnterRssi();
-    uint8_t getExitRssi();
     char *getSsid();
     char *getPassword();
     bool getBuzzerOn();
+    race_mode_e getRaceMode();
+    uint32_t getRaceMs();
+    uint8_t getRaceLaps();
+    bool getCountdown();
 
 private:
     laptimer_config_t conf;
-    bool modified;
+    volatile bool modified;
     volatile uint32_t checkTimeMs = 0;
     void setDefaults();
+    void setV1Defaults();
+    void toJsonDoc(JsonDocument &doc);
 };

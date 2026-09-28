@@ -1,4 +1,5 @@
 #include "debug.h"
+#include "history.h"
 #include "led.h"
 #include "webserver.h"
 #include <ElegantOTA.h>
@@ -9,10 +10,12 @@ static Webserver ws;
 static Buzzer buzzer;
 static Led led;
 static LapTimer timer;
+static RaceHistory history;
 static BatteryMonitor monitor;
 
 static TaskHandle_t xTimerTask = NULL;
 
+// Core 0: everything except RSSI sampling
 static void parallelTask(void *pvArgs) {
     for (;;) {
         uint32_t currentTimeMs = millis();
@@ -20,8 +23,10 @@ static void parallelTask(void *pvArgs) {
         led.handleLed(currentTimeMs);
         ws.handleWebUpdate(currentTimeMs);
         config.handleEeprom(currentTimeMs);
-        rx.handleFrequencyChange(currentTimeMs, config.getFrequency());
         monitor.checkBatteryState(currentTimeMs, config.getAlarmThreshold());
+        if (timer.savePending) {
+            history.save(timer, config);
+        }
         buzzer.handleBuzzer(currentTimeMs);
         led.handleLed(currentTimeMs);
     }
@@ -40,14 +45,14 @@ void setup() {
     led.init(PIN_LED, false);
     timer.init(&config, &rx, &buzzer, &led);
     monitor.init(PIN_VBAT, VBAT_SCALE, VBAT_ADD, &buzzer, &led);
-    ws.init(&config, &timer, &monitor, &buzzer, &led);
+    ws.init(&config, &timer, &history, &monitor, &buzzer, &led);
     led.on(400);
     buzzer.beep(200);
     initParallelTask();
 }
 
+// Core 1: RSSI sampling, receiver hopping and lap detection
 void loop() {
-    uint32_t currentTimeMs = millis();
-    timer.handleLapTimerUpdate(currentTimeMs);
+    timer.update(millis());
     ElegantOTA.loop();
 }

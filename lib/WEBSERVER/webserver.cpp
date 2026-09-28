@@ -9,17 +9,18 @@
 
 static IPAddress netMsk(255, 255, 255, 0);
 static IPAddress ipAddress;
-static AsyncWebServer server(80);
+AsyncWebServer server(80);  // shared with api.cpp
 
-static const char *wifi_hostname = "laptimer";
+const char *wifi_hostname = "laptimer";
 static const char *wifi_ap_ssid_prefix = "LapTimer";
 static const char *wifi_ap_password = "laptimer";
 // Private address, shown in the hotspot name (e.g. "LapTimer_BD58 192.168.4.1")
 static const char *wifi_ap_address = "192.168.4.1";
 String wifi_ap_ssid;
 
-void Webserver::init(Config *config, LapTimer *lapTimer, BatteryMonitor *batMonitor, Buzzer *buzzer, Led *l)
+void Webserver::init(Config *config, LapTimer *lapTimer, RaceHistory *raceHistory, BatteryMonitor *batMonitor, Buzzer *buzzer, Led *l)
 {
+    history = raceHistory;
 
     ipAddress.fromString(wifi_ap_address);
 
@@ -54,11 +55,6 @@ void Webserver::init(Config *config, LapTimer *lapTimer, BatteryMonitor *batMoni
 
 void Webserver::handleWebUpdate(uint32_t currentTimeMs)
 {
-    if (sendRssi && ((currentTimeMs - rssiSentMs) > WEB_RSSI_SEND_TIMEOUT_MS))
-    {
-        rssiSentMs = currentTimeMs;
-    }
-
     wl_status_t status = WiFi.status();
 
     if (status != lastStatus && wifiMode == WIFI_STA)
@@ -214,15 +210,16 @@ void Webserver::startServices()
     }
 
     startLittleFS();
+    history->init();
 
     server.on("/", handleRoot);
 
 
     server.on("/status", [this](AsyncWebServerRequest *request)
               {
-        char buf[1024];
-        char configBuf[256];
-        conf->toJsonString(configBuf);
+        static char buf[2048];
+        static char configBuf[1024];
+        conf->toJsonString(configBuf, sizeof(configBuf));
         float voltage = (float)monitor->getBatteryVoltage() / 10;
         const char *format =
             "\
@@ -251,28 +248,6 @@ Battery Voltage:\t%0.1fv";
                  ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(), ESP.getSdkVersion(), ESP.getFlashChipSize(), ESP.getFlashChipSpeed() / 1000000, getCpuFrequencyMhz(),
                  WiFi.localIP().toString().c_str(), WiFi.macAddress().c_str(), configBuf, voltage);
         request->send(200, "text/plain", buf);
-        led->on(200); });
-
-    server.on("/timer/start", HTTP_POST, [this](AsyncWebServerRequest *request)
-              {
-        timer->start();
-        request->send(200, "application/json", "{\"status\": \"OK\"}"); });
-
-    server.on("/timer/stop", HTTP_POST, [this](AsyncWebServerRequest *request)
-              {
-        timer->stop();
-        request->send(200, "application/json", "{\"status\": \"OK\"}"); });
-
-    server.on("/timer/rssiStart", HTTP_POST, [this](AsyncWebServerRequest *request)
-              {
-        sendRssi = true;
-        request->send(200, "application/json", "{\"status\": \"OK\"}");
-        led->on(200); });
-
-    server.on("/timer/rssiStop", HTTP_POST, [this](AsyncWebServerRequest *request)
-              {
-        sendRssi = false;
-        request->send(200, "application/json", "{\"status\": \"OK\"}");
         led->on(200); });
 
     server.on("/restart", HTTP_POST, [this](AsyncWebServerRequest *request)
@@ -307,6 +282,8 @@ Battery Voltage:\t%0.1fv";
         led->on(200); });
 
 
+    registerApi();
+
     server.serveStatic("/", LittleFS, "/").setCacheControl("max-age=600");
 
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
@@ -330,18 +307,4 @@ Battery Voltage:\t%0.1fv";
     servicesStarted = true;
 
 
-    server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *request) {
-        char buf[96];
-        int lapNumber;
-        uint32_t lapTime;
-        timer->getLatestLap(&lapNumber, &lapTime);
-        snprintf(
-            buf, sizeof(buf),
-            "{\"rssi\":%u,\"laptime\":%u,\"lapnumber\":%d,\"vbat\":%u}",
-            timer->getRssi(),
-            lapTime,
-            lapNumber,
-            monitor->getBatteryVoltage());
-        request->send(200, "application/json", buf);
-    });
 }

@@ -31,8 +31,16 @@ void Config::load(void)
         version = conf.version & ~CONFIG_MAGIC_MASK;
     }
 
-    // If version is not current, reset to defaults
-    if (version != CONFIG_VERSION)
+    if (version == 0)
+    {
+        // v0 -> v1: keep all existing settings, add defaults for the new ones
+        DEBUG("Migrating config v0 -> v1\n");
+        setV1Defaults();
+        conf.version = CONFIG_VERSION | CONFIG_MAGIC;
+        modified = true;
+        write();
+    }
+    else if (version != CONFIG_VERSION)
     {
         setDefaults();
     }
@@ -53,103 +61,162 @@ void Config::write(void)
     modified = false;
 }
 
-void Config::toJson(AsyncResponseStream &destination)
+void Config::toJsonDoc(JsonDocument &config)
 {
-    // Use https://arduinojson.org/v6/assistant to estimate memory
-    DynamicJsonDocument config(256);
     config["freq"] = conf.frequency;
     config["minLap"] = conf.minLap;
     config["alarm"] = conf.alarm;
     config["anType"] = conf.announcerType;
     config["anRate"] = conf.announcerRate;
+    config["anDelta"] = conf.announceDelta;
     config["buzzerOn"] = conf.buzzerOn;
     config["enterRssi"] = conf.enterRssi;
     config["exitRssi"] = conf.exitRssi;
     config["name"] = conf.pilotName;
+    config["pilots"] = conf.pilotCount;
+    // all pilots (index 0 = pilot 1, same values as the keys above)
+    JsonArray list = config["p"].to<JsonArray>();
+    for (uint8_t i = 0; i < MAX_PILOTS; i++)
+    {
+        JsonObject p = list.add<JsonObject>();
+        p["name"] = getPilotName(i);
+        p["freq"] = getFrequency(i);
+        p["enter"] = getEnterRssi(i);
+        p["exit"] = getExitRssi(i);
+    }
+    config["raceMode"] = conf.raceMode;
+    config["raceSec"] = conf.raceSeconds;
+    config["raceLaps"] = conf.raceLaps;
+    config["countdown"] = conf.countdown;
     config["ssid"] = conf.ssid;
     config["pwd"] = conf.password;
+}
+
+void Config::toJson(AsyncResponseStream &destination)
+{
+    JsonDocument config;
+    toJsonDoc(config);
     serializeJson(config, destination);
 }
 
-void Config::toJsonString(char *buf)
+void Config::toJsonString(char *buf, size_t size)
 {
-    DynamicJsonDocument config(256);
-    config["freq"] = conf.frequency;
-    config["minLap"] = conf.minLap;
-    config["alarm"] = conf.alarm;
-    config["anType"] = conf.announcerType;
-    config["buzzerOn"] = conf.buzzerOn;
-    config["anRate"] = conf.announcerRate;
-    config["enterRssi"] = conf.enterRssi;
-    config["exitRssi"] = conf.exitRssi;
-    config["name"] = conf.pilotName;
-    config["ssid"] = conf.ssid;
-    config["pwd"] = conf.password;
-    serializeJsonPretty(config, buf, 256);
+    JsonDocument config;
+    toJsonDoc(config);
+    serializeJsonPretty(config, buf, size);
+}
+
+// Only fields present in the request are changed, so partial updates are safe
+template <typename T>
+static bool updateField(JsonObject source, const char *key, T &field)
+{
+    JsonVariant value = source[key];
+    if (value.isNull())
+        return false;
+    T newValue = value.as<T>();
+    if (newValue == field)
+        return false;
+    field = newValue;
+    return true;
+}
+
+static bool updateString(JsonObject source, const char *key, char *field, size_t size)
+{
+    JsonVariant value = source[key];
+    if (value.isNull())
+        return false;
+    const char *newValue = value.as<const char *>();
+    if (newValue == nullptr)
+        newValue = "";
+    if (strncmp(newValue, field, size) == 0)
+        return false;
+    strlcpy(field, newValue, size);
+    return true;
 }
 
 void Config::fromJson(JsonObject source)
 {
-    if (source["freq"] != conf.frequency)
+    bool changed = false;
+    changed |= updateField(source, "freq", conf.frequency);
+    changed |= updateField(source, "minLap", conf.minLap);
+    changed |= updateField(source, "alarm", conf.alarm);
+    changed |= updateField(source, "anType", conf.announcerType);
+    changed |= updateField(source, "anRate", conf.announcerRate);
+    changed |= updateField(source, "anDelta", conf.announceDelta);
+    changed |= updateField(source, "buzzerOn", conf.buzzerOn);
+    changed |= updateField(source, "enterRssi", conf.enterRssi);
+    changed |= updateField(source, "exitRssi", conf.exitRssi);
+    changed |= updateString(source, "name", conf.pilotName, sizeof(conf.pilotName));
+    changed |= updateField(source, "pilots", conf.pilotCount);
+    JsonArray list = source["p"].as<JsonArray>();
+    uint8_t i = 0;
+    for (JsonObject p : list)
     {
-        conf.frequency = source["freq"];
-        modified = true;
+        if (i >= MAX_PILOTS)
+            break;
+        if (i == 0)
+        {
+            changed |= updateString(p, "name", conf.pilotName, sizeof(conf.pilotName));
+            changed |= updateField(p, "freq", conf.frequency);
+            changed |= updateField(p, "enter", conf.enterRssi);
+            changed |= updateField(p, "exit", conf.exitRssi);
+        }
+        else
+        {
+            extra_pilot_t &e = conf.extraPilots[i - 1];
+            changed |= updateString(p, "name", e.name, sizeof(e.name));
+            changed |= updateField(p, "freq", e.frequency);
+            changed |= updateField(p, "enter", e.enterRssi);
+            changed |= updateField(p, "exit", e.exitRssi);
+        }
+        i++;
     }
-    if (source["minLap"] != conf.minLap)
-    {
-        conf.minLap = source["minLap"];
+    changed |= updateField(source, "raceMode", conf.raceMode);
+    changed |= updateField(source, "raceSec", conf.raceSeconds);
+    changed |= updateField(source, "raceLaps", conf.raceLaps);
+    changed |= updateField(source, "countdown", conf.countdown);
+    changed |= updateString(source, "ssid", conf.ssid, sizeof(conf.ssid));
+    changed |= updateString(source, "pwd", conf.password, sizeof(conf.password));
+
+    // keep values in sane ranges
+    if (conf.pilotCount < 1)
+        conf.pilotCount = 1;
+    if (conf.pilotCount > MAX_PILOTS)
+        conf.pilotCount = MAX_PILOTS;
+    if (conf.raceMode > RACE_LAPS)
+        conf.raceMode = RACE_PRACTICE;
+    if (conf.raceSeconds < 10)
+        conf.raceSeconds = 10;
+    if (conf.raceLaps < 1)
+        conf.raceLaps = 1;
+
+    if (changed)
         modified = true;
-    }
-    if (source["alarm"] != conf.alarm)
-    {
-        conf.alarm = source["alarm"];
-        modified = true;
-    }
-    if (source["anType"] != conf.announcerType)
-    {
-        conf.announcerType = source["anType"];
-        modified = true;
-    }
-    if (source["buzzerOn"] != conf.buzzerOn)
-    {
-        conf.buzzerOn = source["buzzerOn"];
-        modified = true;
-    }
-    if (source["anRate"] != conf.announcerRate)
-    {
-        conf.announcerRate = source["anRate"];
-        modified = true;
-    }
-    if (source["enterRssi"] != conf.enterRssi)
-    {
-        conf.enterRssi = source["enterRssi"];
-        modified = true;
-    }
-    if (source["exitRssi"] != conf.exitRssi)
-    {
-        conf.exitRssi = source["exitRssi"];
-        modified = true;
-    }
-    if (source["name"] != conf.pilotName)
-    {
-        strlcpy(conf.pilotName, source["name"] | "", sizeof(conf.pilotName));
-        modified = true;
-    }
-    if (source["ssid"] != conf.ssid)
-    {
-        strlcpy(conf.ssid, source["ssid"] | "", sizeof(conf.ssid));
-        modified = true;
-    }
-    if (source["pwd"] != conf.password)
-    {
-        strlcpy(conf.password, source["pwd"] | "", sizeof(conf.password));
-        modified = true;
-    }
 }
 
-uint16_t Config::getFrequency()
+uint8_t Config::getPilotCount()
 {
-    return conf.frequency;
+    return conf.pilotCount;
+}
+
+uint16_t Config::getFrequency(uint8_t pilot)
+{
+    return pilot == 0 ? conf.frequency : conf.extraPilots[pilot - 1].frequency;
+}
+
+uint8_t Config::getEnterRssi(uint8_t pilot)
+{
+    return pilot == 0 ? conf.enterRssi : conf.extraPilots[pilot - 1].enterRssi;
+}
+
+uint8_t Config::getExitRssi(uint8_t pilot)
+{
+    return pilot == 0 ? conf.exitRssi : conf.extraPilots[pilot - 1].exitRssi;
+}
+
+const char *Config::getPilotName(uint8_t pilot)
+{
+    return pilot == 0 ? conf.pilotName : conf.extraPilots[pilot - 1].name;
 }
 
 uint32_t Config::getMinLapMs()
@@ -162,16 +229,6 @@ uint8_t Config::getAlarmThreshold()
     return conf.alarm;
 }
 
-uint8_t Config::getEnterRssi()
-{
-    return conf.enterRssi;
-}
-
-uint8_t Config::getExitRssi()
-{
-    return conf.exitRssi;
-}
-
 char *Config::getSsid()
 {
     return conf.ssid;
@@ -182,9 +239,49 @@ char *Config::getPassword()
     return conf.password;
 }
 
-bool Config::getBuzzerOn() 
+bool Config::getBuzzerOn()
 {
     return conf.buzzerOn;
+}
+
+race_mode_e Config::getRaceMode()
+{
+    return (race_mode_e)conf.raceMode;
+}
+
+uint32_t Config::getRaceMs()
+{
+    return (uint32_t)conf.raceSeconds * 1000;
+}
+
+uint8_t Config::getRaceLaps()
+{
+    return conf.raceLaps;
+}
+
+bool Config::getCountdown()
+{
+    return conf.countdown;
+}
+
+void Config::setV1Defaults(void)
+{
+    // Default channels for pilots 2-4: R2, R7, R8 (well separated for 4 pilots with R1)
+    static const uint16_t defaultFreqs[MAX_PILOTS - 1] = {5695, 5880, 5917};
+    conf.pilotCount = 1;
+    for (uint8_t i = 0; i < MAX_PILOTS - 1; i++)
+    {
+        extra_pilot_t &e = conf.extraPilots[i];
+        e.frequency = defaultFreqs[i];
+        e.enterRssi = conf.enterRssi ? conf.enterRssi : 120;
+        e.exitRssi = conf.exitRssi ? conf.exitRssi : 100;
+        strlcpy(e.name, "", sizeof(e.name));
+    }
+    conf.raceMode = RACE_PRACTICE;
+    conf.raceSeconds = 120;
+    conf.raceLaps = 3;
+    conf.countdown = false;
+    conf.announceDelta = false;
 }
 
 void Config::setDefaults(void)
@@ -204,6 +301,7 @@ void Config::setDefaults(void)
     strlcpy(conf.ssid, "", sizeof(conf.ssid));
     strlcpy(conf.password, "", sizeof(conf.password));
     strlcpy(conf.pilotName, "", sizeof(conf.pilotName));
+    setV1Defaults();
     modified = true;
     write();
 }
