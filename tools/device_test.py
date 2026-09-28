@@ -117,11 +117,12 @@ try:
     if races:
         newest = max(races, key=lambda r: r["id"])
         _, saved = req(f"/api/races?id={newest['id']}")
-        laps = saved["pilots"][0]["laps"]
-        if len(laps) > 1:
-            st, _ = req("/api/races/edit", {"id": newest["id"], "pilot": 0, "op": 0, "lap": 1, "expect": laps[1] + 1})
+        pilot = next((i for i, p in enumerate(saved["pilots"]) if len(p["laps"]) > 1), None)
+        if pilot is not None:
+            laps = saved["pilots"][pilot]["laps"]
+            st, _ = req("/api/races/edit", {"id": newest["id"], "pilot": pilot, "op": 0, "lap": 1, "expect": laps[1] + 1})
             _, after = req(f"/api/races?id={newest['id']}")
-            check("stale lap fix refused, race unchanged", st == 409 and after["pilots"][0]["laps"] == laps, st)
+            check("stale lap fix refused, race unchanged", st == 409 and after["pilots"][pilot]["laps"] == laps, st)
 
     # saved pilots: one at a time, names match without case, rename replaces
     prof0 = status()["prof"]

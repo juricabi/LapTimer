@@ -281,20 +281,63 @@ void LapTimer::runPendingEdit()
     editPending = false;
 }
 
-bool LapTimer::requestStepTest(uint16_t fromMhz, uint16_t toMhz)
+bool LapTimer::requestStepTest(uint16_t fromMhz, uint16_t toMhz, uint16_t hops)
 {
     if (isRacing() || isSpectrumRunning() || stepTestRequested || pendingCommand == CMD_START)
         return false;
     stepTestFrom = fromMhz;
     stepTestTo = toMhz;
+    stepTestHops = hops < STEP_TEST_SAMPLES ? hops : STEP_TEST_SAMPLES;
     stepTestDone = false;
     stepTestRequested = true;
     return true;
 }
 
+// Lock time of many switches: 50 ms on `from`, then `to` sampled every 0.5 ms for 100 ms.
+// Locked = the first of 4 readings in a row above the middle between start and final level.
+void LapTimer::runLockTest()
+{
+    static uint8_t trace[200];
+    for (uint16_t k = 0; k < stepTestHops; k++)
+    {
+        rx->setFrequency(stepTestFrom, false);
+        delay(50);
+        rx->setFrequency(stepTestTo, false);
+        uint32_t t0 = micros();
+        for (int i = 0; i < 200; i++)
+        {
+            while ((int32_t)(micros() - (t0 + (uint32_t)i * 500)) < 0)
+            {
+            }
+            trace[i] = rx->readRssiRaw();
+        }
+        uint16_t final = 0;
+        for (int i = 180; i < 200; i++)
+            final += trace[i];
+        final /= 20;
+        uint8_t mid = (trace[0] + final) / 2;
+        uint8_t lock = 255;
+        for (int i = 0; i + 3 < 200 && final > trace[0] + 20; i++)
+        {
+            if (trace[i] > mid && trace[i + 1] > mid && trace[i + 2] > mid && trace[i + 3] > mid)
+            {
+                lock = i;
+                break;
+            }
+        }
+        stepTestData[k] = lock;
+    }
+    stepTestDone = true;
+}
+
 // Blocks the timing core for ~1.1 s (only on request, never during a race)
 void LapTimer::runStepTest()
 {
+    if (stepTestHops > 0)
+    {
+        runLockTest();
+        return;
+    }
     rx->setFrequency(stepTestFrom, false);
     delay(300);
     for (int half = 0; half < 2; half++)

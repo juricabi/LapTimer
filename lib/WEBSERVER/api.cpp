@@ -184,7 +184,8 @@ void Webserver::registerApi()
               {
         if (request->hasParam("to"))
         {
-            bool ok = timer->requestStepTest(paramU32(request, "from", 5880), paramU32(request, "to", 5800));
+            bool ok = timer->requestStepTest(paramU32(request, "from", 5880), paramU32(request, "to", 5800),
+                                             paramU32(request, "hops", 0));
             request->send(ok ? 200 : 409, "application/json", ok ? "{\"status\":\"OK\"}" : "{\"status\":\"busy\"}");
             return;
         }

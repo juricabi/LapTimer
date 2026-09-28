@@ -145,7 +145,9 @@ class LapTimer {
 
     // Receiver response test (diagnostics): tune to `fromMhz`, then switch to `toMhz` and
     // record the raw RSSI every STEP_TEST_INTERVAL_US (rise), then switch back (fall).
-    bool requestStepTest(uint16_t fromMhz, uint16_t toMhz);
+    // hops > 0: instead switch from -> to `hops` times (50 ms on `from` like a hop slot) and
+    // store each lock time in 0.5 ms units (255 = no lock within 100 ms; needs a VTX on `to`).
+    bool requestStepTest(uint16_t fromMhz, uint16_t toMhz, uint16_t hops = 0);
     bool isStepTestDone() { return stepTestDone; }
     uint16_t getStepTestCount() { return STEP_TEST_SAMPLES; }
     uint8_t getStepTestSample(uint16_t i) { return stepTestData[i]; }
@@ -213,7 +215,9 @@ class LapTimer {
     volatile bool stepTestDone = false;
     uint16_t stepTestFrom = 0;
     uint16_t stepTestTo = 0;
+    uint16_t stepTestHops = 0;
     uint8_t stepTestData[STEP_TEST_SAMPLES];
+    void runLockTest();
     void runStepTest();
 
     void scan(uint32_t nowMs);
