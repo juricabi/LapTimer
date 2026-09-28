@@ -31,7 +31,8 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 **Setup and calibration**
 - **Saved pilots**: every named pilot is remembered with their channel and thresholds;
   one tap switches who is flying.
-- Band and channel picker.
+- Band and channel picker: A, B, E, F, R and L. L band (5362-5621 MHz) is below the RX5808's
+  specified range, so reception there isn't guaranteed.
 - **Calibration graph** with 25 ms resolution, and **auto-calibration**: fly 3+ passes and it
   suggests Enter/Exit from the real passes (found by the minimum lap time) and the signal
   level between them, or says what to change when the passes don't stand out.
