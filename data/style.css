@@ -26,6 +26,11 @@
   --stop-text: #b91c1c;       /* on surface 6.5:1 */
   --warn-text: #b45309;       /* 5.0:1 */
   --best: rgba(22, 163, 74, 0.12);
+  /* pilot colours: dots, borders and graph lines only (>= 3:1 on surface) */
+  --p1: #2563eb;
+  --p2: #d97706;
+  --p3: #059669;
+  --p4: #db2777;
 
   --topbar: #0f172a;
   --topbar-text: #f8fafc;
@@ -67,6 +72,10 @@
     --stop-text: #f87171;       /* on surface 6.2:1 */
     --warn-text: #fbbf24;
     --best: rgba(34, 197, 94, 0.14);
+    --p1: #60a5fa;
+    --p2: #fbbf24;
+    --p3: #34d399;
+    --p4: #f472b6;
 
     --topbar: #070c18;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
@@ -77,6 +86,11 @@
 }
 
 /* ───────── Base ───────── */
+/* the hidden attribute must win over the display rules below */
+[hidden] {
+  display: none !important;
+}
+
 *,
 *::before,
 *::after {
@@ -709,4 +723,426 @@ table tr.best-lap td:nth-child(2)::after {
   #rssiChart {
     height: 320px;
   }
+}
+
+/* ───────── Shared controls ───────── */
+.segmented {
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.segmented button {
+  flex: 1;
+  min-height: 40px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.segmented button.active {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.input-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.input-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.scan-results {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.scan-results button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--tap);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.scan-results button:last-child {
+  border-bottom: 0;
+}
+
+.scan-results .signal {
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-2) var(--space-4);
+  font-size: 14px;
+}
+
+.info-grid dt {
+  color: var(--muted);
+}
+
+.info-grid dd {
+  font-weight: 600;
+  text-align: right;
+  word-break: break-all;
+}
+
+.file-input {
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.progress {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+
+.pilot-1 { --pc: var(--p1); }
+.pilot-2 { --pc: var(--p2); }
+.pilot-3 { --pc: var(--p3); }
+.pilot-4 { --pc: var(--p4); }
+
+.dot-p {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--pc);
+}
+
+.warn {
+  color: var(--warn-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ───────── Setup: pilot rows ───────── */
+.pilot-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--pc);
+  border-radius: var(--radius);
+}
+
+.pilot-row + .pilot-row {
+  margin-top: var(--space-3);
+}
+
+.pilot-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pilot-head input {
+  flex: 1;
+  min-width: 0;
+}
+
+.pilot-freq {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.freq-pill {
+  flex-shrink: 0;
+  min-width: 96px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 800;
+  font-size: 17px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.freq-pill small {
+  font-size: 12px;
+  font-weight: 700;
+  margin-left: 2px;
+}
+
+.pilot-profile {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-2);
+}
+
+/* ───────── Race: pilot cards ───────── */
+.race-pilot {
+  border-top: 4px solid var(--pc);
+  gap: var(--space-3);
+}
+
+.race-pilot-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 700;
+  font-size: 17px;
+}
+
+.race-pilot-head .muted {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.race-pilot-head .finished {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--go-text);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2);
+}
+
+.stat {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.stat-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.stat-value {
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.delta-faster { color: var(--go-text); }
+.delta-slower { color: var(--stop-text); }
+
+.lap-table-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+/* ───────── History ───────── */
+.history-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+
+.history-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.history-title {
+  font-weight: 700;
+}
+
+.history-meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.history-pilots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  font-size: 14px;
+}
+
+.history-pilots span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.history-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* ───────── Race screen (full screen, always dark) ───────── */
+.race-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: #070c18;
+  color: #f8fafc;
+  padding: max(var(--space-3), env(safe-area-inset-top)) var(--space-3) var(--space-3);
+  --p1: #60a5fa;
+  --p2: #fbbf24;
+  --p3: #34d399;
+  --p4: #f472b6;
+}
+
+.rs-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.rs-clock {
+  font-size: clamp(40px, 11vw, 96px);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.rs-status {
+  flex: 1;
+  color: #94a3b8;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: clamp(12px, 2.5vw, 18px);
+}
+
+.rs-close {
+  width: var(--tap);
+  height: var(--tap);
+  flex-shrink: 0;
+  border: 1px solid #334155;
+  border-radius: 50%;
+  background: transparent;
+  color: #f8fafc;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.rs-pilots {
+  flex: 1;
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-auto-rows: 1fr;
+}
+
+.rs-pilot {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: #131c2e;
+  border-top: 6px solid var(--pc);
+}
+
+.rs-name {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: clamp(18px, 3.5vw, 32px);
+  font-weight: 700;
+}
+
+.rs-lapno {
+  color: #94a3b8;
+}
+
+.rs-last {
+  font-size: clamp(56px, 15vw, 160px);
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.rs-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: clamp(18px, 3.5vw, 34px);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.rs-delta-faster { color: #4ade80; }
+.rs-delta-slower { color: #f87171; }
+.rs-best { color: #94a3b8; }
+
+/* Small secondary link, e.g. "Firmware update" */
+.link-small {
+  align-self: flex-start;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.link-small:hover {
+  color: var(--text);
+}
+
+a.chip {
+  color: var(--topbar-text);
+  text-decoration: none;
 }

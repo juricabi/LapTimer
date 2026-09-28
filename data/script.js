@@ -1,20 +1,13 @@
-const bcf = document.getElementById("bandChannelFreq");
-const bandSelect = document.getElementById("bandSelect");
-const channelSelect = document.getElementById("channelSelect");
-const freqOutput = document.getElementById("freqOutput");
-const announcerSelect = document.getElementById("announcerSelect");
-const announcerRateInput = document.getElementById("rate");
-const enterRssiInput = document.getElementById("enter");
-const exitRssiInput = document.getElementById("exit");
-const enterRssiSpan = document.getElementById("enterSpan");
-const exitRssiSpan = document.getElementById("exitSpan");
-const pilotNameInput = document.getElementById("pname");
-const ssidInput = document.getElementById("ssid");
-const pwdInput = document.getElementById("pwd");
-const minLapInput = document.getElementById("minLap");
-const alarmThreshold = document.getElementById("alarmThreshold");
+"use strict";
 
-const freqLookup = [
+// ═══════════════════════════════════════════════════════════════════
+//  Helpers and constants
+// ═══════════════════════════════════════════════════════════════════
+
+const $ = (id) => document.getElementById(id);
+
+const BANDS = ["A", "B", "E", "F", "R", "L"];
+const FREQ_TABLE = [
   [5865, 5845, 5825, 5805, 5785, 5765, 5745, 5725],
   [5733, 5752, 5771, 5790, 5809, 5828, 5847, 5866],
   [5705, 5685, 5665, 5645, 5885, 5905, 5925, 5945],
@@ -22,306 +15,84 @@ const freqLookup = [
   [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917],
   [5362, 5399, 5436, 5473, 5510, 5547, 5584, 5621],
 ];
+const MAX_PILOTS = 4;
+const HOP_MS_PER_PILOT = 14; // firmware: 8 ms settle + 6 ms sampling per pilot
 
-const config = document.getElementById("config");
-const race = document.getElementById("race");
-const calib = document.getElementById("calib");
+// firmware race states and modes
+const STATE = { IDLE: 0, COUNTDOWN: 1, WAITING: 2, RUNNING: 3, FINISHED: 4 };
+const MODE = { PRACTICE: 0, TIMED: 1, LAPS: 2 };
+const MODE_NAMES = ["Practice", "Timed race", "Lap race"];
 
-var enterRssi = 120,
-  exitRssi = 100;
-var frequency = 0;
-var announcerRate = 1.0;
-
-var lapNo = -1;
-var lapTimes = []; // completed lap times (s), excluding the race start pass
-var lastLapNumber = null; // last lap number reported by the timer (null = not synced yet)
-var raceActive = false;
-var raceStartMs = 0;
-// Track the top 3 best lap times (lower is better)
-var bestLapTime = Infinity;
-var secondBestLapTime = Infinity;
-var thirdBestLapTime = Infinity;
-var waitingToStart = false;
-
-var timerInterval;
-const timer = document.getElementById("timer");
-const startRaceButton = document.getElementById("startRaceButton");
-const stopRaceButton = document.getElementById("stopRaceButton");
-const batteryVoltageDisplay = document.getElementById("bvolt");
-const rssiNowDisplay = document.getElementById("rssiNow");
-
-const rssiBuffer = [];
-var rssiValue = 0;
-var rssiSending = false;
-var rssiChart;
-var crossing = false;
-var rssiSeries = new TimeSeries();
-var rssiCrossingSeries = new TimeSeries();
-var maxRssiValue = enterRssi + 10;
-var minRssiValue = exitRssi - 10;
-
-var audioEnabled = false;
-var speakObjsQueue = [];
-var configLoaded = false;
-
-// Voice command support (Web Speech API)
-// NOTE: This starts automatically on page load and has no UI toggle. Microphone permission will be requested by the browser.
-var recognition = null;
-
-// Colors the mic chip in the top bar: 'listening' (green), 'error' (red) or '' (grey)
-function setMicState(state) {
-  const mic = document.getElementById('micIndicator');
-  if (!mic) return;
-  mic.classList.toggle('listening', state === 'listening');
-  mic.classList.toggle('error', state === 'error');
+function bandChannel(freq) {
+  for (let b = 0; b < FREQ_TABLE.length; b++) {
+    const c = FREQ_TABLE[b].indexOf(freq);
+    if (c >= 0) return { band: b, channel: c };
+  }
+  return null;
 }
 
-function startVoiceRecognition() {
-  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-    console.warn('Web Speech API not supported in this browser. Voice commands disabled.');
-    return;
-  }
-
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  recognition = new SpeechRecognition();
-  recognition.lang = 'en-US';
-  recognition.continuous = true;
-  recognition.interimResults = false;
-
-  recognition.onresult = function(event) {
-    for (let i = event.resultIndex; i < event.results.length; ++i) {
-      if (event.results[i].isFinal) {
-        const transcript = event.results[i][0].transcript.trim().toLowerCase();
-        console.log('Voice recognized:', transcript);
-        // New voice commands:
-        // - "best time" -> announce current best lap time
-        // - "clear time" / "clear best time" -> reset best/second/third lap times
-        // Ignore what the mic hears while (or just after) the announcer speaks,
-        // otherwise "Race stopped" / "Start racing" would trigger commands.
-        if (Date.now() - lastSpeechMs < 1500) {
-          console.log('Ignoring voice command heard during announcement');
-          break;
-        }
-        const has = (word) => new RegExp('\\b' + word + '\\b').test(transcript);
-        if (has('best time')) {
-          speakBestTime();
-          break;
-        } else if (has('clear time') || has('clear best')) {
-          clearBestTimes();
-          break;
-        } else if (has('start') || has('begin') || has('go')) {
-          if (!raceActive) startRace();
-          break;
-        } else if (has('stop')) {
-          if (raceActive) stopRace();
-          break;
-        }
-      }
-    }
-  };
-
-  recognition.onerror = function(event) {
-    console.warn('Speech recognition error', event);
-    setMicState('error');
-  };
-
-  recognition.onend = function() {
-    // automatically restart recognition
-    try {
-      recognition.start();
-    } catch (e) {
-      console.warn('Failed to restart recognition', e);
-    }
-  };
-
-  try {
-    recognition.start();
-    setMicState('listening');
-  } catch (e) {
-    console.warn('Speech recognition start failed', e);
-  }
+function channelName(freq) {
+  const bc = bandChannel(freq);
+  return bc ? BANDS[bc.band] + (bc.channel + 1) : "";
 }
 
-onload = function (e) {
-  config.style.display = "block";
-  race.style.display = "none";
-  calib.style.display = "none";
-  fetch("/config")
-    .then((response) => response.json())
-    .then((config) => {
-      console.log(config);
-      setBandChannelIndex(config.freq);
-      minLapInput.value = (parseFloat(config.minLap) / 10).toFixed(1);
-      updateMinLap(minLapInput, minLapInput.value);
-      alarmThreshold.value = (parseFloat(config.alarm) / 10).toFixed(1);
-      updateAlarmThreshold(alarmThreshold, alarmThreshold.value);
-      announcerSelect.selectedIndex = config.anType;
-      announcerRateInput.value = (parseFloat(config.anRate) / 10).toFixed(1);
-      updateAnnouncerRate(announcerRateInput, announcerRateInput.value);
-      enterRssiInput.value = config.enterRssi;
-      updateEnterRssi(enterRssiInput, enterRssiInput.value);
-      exitRssiInput.value = config.exitRssi;
-      updateExitRssi(exitRssiInput, exitRssiInput.value);
-      pilotNameInput.value = config.name;
-      ssidInput.value = config.ssid;
-      document.getElementById("buzzerToggle").checked = !!config.buzzerOn;
-      pwdInput.value = config.pwd;
-      populateFreqOutput();
-      // Status polling may already have detected a running race; keep that state
-      setRaceButtons(raceActive);
-      if (!raceActive) timer.innerHTML = formatClock(0);
-      clearLaps();
-      createRssiChart();
-      enableAudioLoop();
-      configLoaded = true; // <-- Set flag here
-      // start voice recognition automatically (no UI toggle)
-      startVoiceRecognition();
-    });
-};
-
-
-function addRssiPoint() {
-  if (calib.style.display != "none" && rssiChart) {
-    rssiChart.start();
-    if (rssiBuffer.length > 0) {
-      rssiValue = parseInt(rssiBuffer.shift());
-      if (crossing && rssiValue < exitRssi) {
-        crossing = false;
-      } else if (!crossing && rssiValue > enterRssi) {
-        crossing = true;
-      }
-      maxRssiValue = Math.max(maxRssiValue, rssiValue);
-      minRssiValue = Math.min(minRssiValue, rssiValue);
-    }
-
-    // update horizontal lines and min max values
-    rssiChart.options.horizontalLines = [
-      { color: "hsl(8.2, 86.5%, 53.7%)", lineWidth: 1.7, value: enterRssi }, // red
-      { color: "hsl(25, 85%, 55%)", lineWidth: 1.7, value: exitRssi }, // orange
-    ];
-
-    rssiChart.options.maxValue = Math.max(maxRssiValue, enterRssi + 10);
-
-    rssiChart.options.minValue = Math.max(0, Math.min(minRssiValue, exitRssi - 10));
-
-    var now = Date.now();
-    rssiSeries.append(now, rssiValue);
-    if (crossing) {
-      rssiCrossingSeries.append(now, 256);
-    } else {
-      rssiCrossingSeries.append(now, -10);
-    }
-  } else if (rssiChart) {
-    rssiChart.stop();
-    maxRssiValue = enterRssi + 10;
-    minRssiValue = exitRssi - 10;
-  }
+function pilotLabel(name, index) {
+  return name && name.trim() ? name.trim() : "Pilot " + (index + 1);
 }
 
-setInterval(addRssiPoint, 200);
+function secs(ms) {
+  return (ms / 1000).toFixed(2);
+}
 
-function createRssiChart() {
-  // Match the page theme (light/dark); the canvas background comes from CSS
-  const css = getComputedStyle(document.documentElement);
-  rssiChart = new SmoothieChart({
-    responsive: true,
-    millisPerPixel: 50,
-    grid: {
-      fillStyle: "transparent",
-      strokeStyle: css.getPropertyValue("--border").trim() || "rgba(128,128,128,0.25)",
-      millisPerLine: 5000,
-      sharpLines: true,
-      verticalSections: 0,
-      borderVisible: false,
-    },
-    labels: {
-      precision: 0,
-      fillStyle: css.getPropertyValue("--muted").trim() || "#888",
-    },
-    maxValue: 1,
-    minValue: 0,
+function formatClock(ms) {
+  const totalCs = Math.floor(Math.max(0, ms) / 10);
+  const cs = totalCs % 100;
+  const s = Math.floor(totalCs / 100) % 60;
+  const m = Math.floor(totalCs / 6000);
+  const pad = (n) => (n < 10 ? "0" + n : "" + n);
+  return `${pad(m)}:${pad(s)}.${pad(cs)}`;
+}
+
+function formatMinSec(totalSec) {
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return m + ":" + (s < 10 ? "0" : "") + s;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function el(tag, className, text) {
+  const e = document.createElement(tag);
+  if (className) e.className = className;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  if (!response.ok) throw new Error(url + ": HTTP " + response.status);
+  return response.json();
+}
+
+function postJson(url, body) {
+  return fetchJson(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
-  rssiChart.addTimeSeries(rssiSeries, {
-    lineWidth: 1.7,
-    strokeStyle: "hsl(214, 53%, 60%)",
-    fillStyle: "hsla(214, 53%, 60%, 0.4)",
-  });
-  rssiChart.addTimeSeries(rssiCrossingSeries, {
-    lineWidth: 1.7,
-    strokeStyle: "none",
-    fillStyle: "hsla(136, 71%, 70%, 0.3)",
-  });
-  rssiChart.streamTo(document.getElementById("rssiChart"), 200);
 }
 
-function openTab(evt, tabName) {
-  // Declare all variables
-  var i, tabcontent, tablinks;
-
-  // Get all elements with class="tabcontent" and hide them
-  tabcontent = document.getElementsByClassName("tabcontent");
-  for (i = 0; i < tabcontent.length; i++) {
-    tabcontent[i].style.display = "none";
-  }
-
-  // Get all elements with class="tablinks" and remove the class "active"
-  tablinks = document.getElementsByClassName("tablinks");
-  for (i = 0; i < tablinks.length; i++) {
-    tablinks[i].className = tablinks[i].className.replace(" active", "");
-  }
-
-  // Show the current tab, and add an "active" class to the button that opened the tab
-  document.getElementById(tabName).style.display = "block";
-  evt.currentTarget.className += " active";
-
-  // if event comes from calibration tab, signal to start sending RSSI events
-  if (tabName === "calib" && !rssiSending) {
-    fetch("/timer/rssiStart", {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-    })
-      .then((response) => {
-        if (response.ok) rssiSending = true;
-        return response.json();
-      })
-      .then((response) => console.log("/timer/rssiStart:" + JSON.stringify(response)));
-  } else if (rssiSending) {
-    fetch("/timer/rssiStop", {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-    })
-      .then((response) => {
-        if (response.ok) rssiSending = false;
-        return response.json();
-      })
-      .then((response) => console.log("/timer/rssiStop:" + JSON.stringify(response)));
-  }
-}
-
-function updateEnterRssi(obj, value) {
-  enterRssi = parseInt(value);
-  enterRssiSpan.textContent = enterRssi;
-  if (enterRssi <= exitRssi) {
-    exitRssi = Math.max(0, enterRssi - 1);
-    exitRssiInput.value = exitRssi;
-    exitRssiSpan.textContent = exitRssi;
-  }
-}
-
-function updateExitRssi(obj, value) {
-  exitRssi = parseInt(value);
-  exitRssiSpan.textContent = exitRssi;
-  if (exitRssi >= enterRssi) {
-    enterRssi = Math.min(255, exitRssi + 1);
-    enterRssiInput.value = enterRssi;
-    enterRssiSpan.textContent = enterRssi;
-  }
+// Temporarily replaces a button's label; holdMs 0 keeps it until the next call
+function showButtonStatus(button, text, holdMs = 4000) {
+  if (!button) return;
+  if (!button.dataset.label) button.dataset.label = button.textContent;
+  clearTimeout(button.statusTimer);
+  button.textContent = text;
+  if (holdMs) button.statusTimer = setTimeout(() => (button.textContent = button.dataset.label), holdMs);
 }
 
 // Briefly show the save result on the button that was pressed.
@@ -339,39 +110,236 @@ function showSaveResult(button, ok) {
   }, 2000);
 }
 
+function setupSegmented(container, onChange) {
+  container.addEventListener("click", (e) => {
+    const button = e.target.closest("button");
+    if (!button) return;
+    setSegmented(container, button.dataset.value);
+    onChange(button.dataset.value);
+  });
+}
+
+function setSegmented(container, value) {
+  for (const b of container.querySelectorAll("button")) {
+    b.classList.toggle("active", b.dataset.value == value);
+  }
+}
+
+function bindRange(input, format, onInput) {
+  const label = input.parentElement.querySelector(".val");
+  const update = () => {
+    if (label) label.textContent = format(parseFloat(input.value));
+    if (onInput) onInput(parseFloat(input.value));
+  };
+  input.addEventListener("input", update);
+  return update;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Settings (Setup tab)
+// ═══════════════════════════════════════════════════════════════════
+
+let configLoaded = false;
+let pilotCount = 1;
+let pilots = []; // [{name, freq, enter, exit}] for all MAX_PILOTS slots
+let raceMode = MODE.PRACTICE;
+let announcerRate = 1.0;
+let profiles = [];
+
+const ui = {
+  pilotList: $("pilotList"),
+  pilotHint: $("pilotHint"),
+  raceTime: $("raceTime"),
+  raceLaps: $("raceLaps"),
+  countdown: $("countdown"),
+  minLap: $("minLap"),
+  announcer: $("announcerSelect"),
+  rate: $("rate"),
+  anDelta: $("anDelta"),
+  voiceToggle: $("voiceToggle"),
+  buzzer: $("buzzerToggle"),
+  alarm: $("alarmThreshold"),
+  ssid: $("ssid"),
+  pwd: $("pwd"),
+};
+
+const updateRaceTimeLabel = bindRange(ui.raceTime, (v) => formatMinSec(v));
+const updateRaceLapsLabel = bindRange(ui.raceLaps, (v) => String(v));
+const updateMinLapLabel = bindRange(ui.minLap, (v) => v.toFixed(1) + "s");
+const updateRateLabel = bindRange(ui.rate, (v) => v.toFixed(1), (v) => (announcerRate = v));
+const updateAlarmLabel = bindRange(ui.alarm, (v) => (v == 0 ? "Off" : v.toFixed(1) + "v"));
+
+function buildPilotRows() {
+  ui.pilotList.innerHTML = "";
+  for (let i = 0; i < MAX_PILOTS; i++) {
+    const row = el("div", "pilot-row pilot-" + (i + 1));
+    row.dataset.index = i;
+    row.innerHTML = `
+      <div class="pilot-head">
+        <span class="dot-p"></span>
+        <input type="text" class="p-name" maxlength="20" placeholder="Pilot ${i + 1}" aria-label="Pilot ${i + 1} name" />
+        <span class="freq-pill"><span class="p-freq">----</span><small>MHz</small></span>
+      </div>
+      <div class="pilot-freq">
+        <select class="p-band" aria-label="Band">${BANDS.map((b, n) => `<option value="${n}">Band ${b}</option>`).join("")}</select>
+        <select class="p-channel" aria-label="Channel">${[1, 2, 3, 4, 5, 6, 7, 8].map((c) => `<option value="${c - 1}">Channel ${c}</option>`).join("")}</select>
+      </div>
+      <div class="pilot-profile">
+        <select class="p-profile" aria-label="Load pilot profile"></select>
+        <button class="btn btn-ghost p-save-profile">Save profile</button>
+      </div>`;
+    const p = pilots[i];
+    row.querySelector(".p-name").addEventListener("input", (e) => (p.name = e.target.value));
+    const onFreq = () => {
+      const b = +row.querySelector(".p-band").value;
+      const c = +row.querySelector(".p-channel").value;
+      p.freq = FREQ_TABLE[b][c];
+      renderPilotRow(i);
+      renderPilotHint();
+    };
+    row.querySelector(".p-band").addEventListener("change", onFreq);
+    row.querySelector(".p-channel").addEventListener("change", onFreq);
+    row.querySelector(".p-profile").addEventListener("change", (e) => {
+      const profile = profiles[+e.target.value];
+      e.target.value = "";
+      if (!profile) return;
+      Object.assign(p, { name: profile.name, freq: profile.freq, enter: profile.enter, exit: profile.exit });
+      renderPilotRow(i);
+      renderPilotHint();
+      renderCalibration();
+    });
+    row.querySelector(".p-save-profile").addEventListener("click", (e) => saveProfile(i, e.target));
+    ui.pilotList.appendChild(row);
+  }
+}
+
+function renderPilotRow(i) {
+  const row = ui.pilotList.children[i];
+  const p = pilots[i];
+  row.hidden = i >= pilotCount;
+  row.querySelector(".p-name").value = p.name || "";
+  const bc = bandChannel(p.freq) || { band: 4, channel: 0 };
+  row.querySelector(".p-band").value = bc.band;
+  row.querySelector(".p-channel").value = bc.channel;
+  row.querySelector(".p-freq").textContent = p.freq;
+  renderProfileSelect(row.querySelector(".p-profile"));
+}
+
+function renderProfileSelect(select) {
+  select.innerHTML =
+    `<option value="">${profiles.length ? "Load profile…" : "No saved profiles"}</option>` +
+    profiles.map((pr, n) => `<option value="${n}">${escapeHtml(pr.name)} · ${channelName(pr.freq) || pr.freq}</option>`).join("");
+}
+
+function renderPilots() {
+  for (let i = 0; i < MAX_PILOTS; i++) renderPilotRow(i);
+  setSegmented($("pilotCount"), pilotCount);
+  renderPilotHint();
+}
+
+// Precision note and warnings for frequencies that are equal or too close
+function renderPilotHint() {
+  let text;
+  if (pilotCount === 1) {
+    text = "One pilot: the receiver stays on one channel for full timing precision.";
+  } else {
+    text = `${pilotCount} pilots share the receiver, which switches between their channels: timing precision about ±${(HOP_MS_PER_PILOT / 2) * pilotCount} ms.`;
+  }
+  const active = pilots.slice(0, pilotCount);
+  const warnings = [];
+  for (let a = 0; a < active.length; a++) {
+    for (let b = a + 1; b < active.length; b++) {
+      const gap = Math.abs(active[a].freq - active[b].freq);
+      if (gap === 0) warnings.push(`Pilots ${a + 1} and ${b + 1} are on the same channel.`);
+      else if (gap < 30) warnings.push(`Pilots ${a + 1} and ${b + 1} are only ${gap} MHz apart; laps may be mixed up.`);
+    }
+  }
+  ui.pilotHint.innerHTML = escapeHtml(text) + warnings.map((w) => `<br><span class="warn">${escapeHtml(w)}</span>`).join("");
+}
+
+setupSegmented($("pilotCount"), (v) => {
+  pilotCount = +v;
+  renderPilots();
+  renderCalibPilotButtons();
+});
+
+setupSegmented($("raceMode"), (v) => {
+  raceMode = +v;
+  renderRaceModeFields();
+});
+
+function renderRaceModeFields() {
+  setSegmented($("raceMode"), raceMode);
+  $("raceTimeField").hidden = raceMode !== MODE.TIMED;
+  $("raceLapsField").hidden = raceMode !== MODE.LAPS;
+  $("raceModeHint").textContent = [
+    "Unlimited laps until you press Stop.",
+    "Race for a set time; each pilot finishes on their first pass after the time is up.",
+    "Each pilot finishes after the set number of laps.",
+  ][raceMode];
+}
+
+async function loadConfig() {
+  const config = await fetchJson("/config");
+  pilots = (config.p || []).slice(0, MAX_PILOTS).map((p) => ({ name: p.name, freq: p.freq, enter: p.enter, exit: p.exit }));
+  while (pilots.length < MAX_PILOTS) pilots.push({ name: "", freq: 5658, enter: 120, exit: 100 });
+  pilotCount = Math.min(Math.max(config.pilots || 1, 1), MAX_PILOTS);
+  raceMode = config.raceMode || 0;
+
+  buildPilotRows();
+  renderPilots();
+  renderRaceModeFields();
+
+  ui.raceTime.value = config.raceSec || 120;
+  ui.raceLaps.value = config.raceLaps || 3;
+  ui.countdown.checked = !!config.countdown;
+  ui.minLap.value = (config.minLap / 10).toFixed(1);
+  ui.announcer.selectedIndex = config.anType;
+  ui.rate.value = (config.anRate / 10).toFixed(1);
+  ui.anDelta.checked = !!config.anDelta;
+  ui.buzzer.checked = !!config.buzzerOn;
+  ui.alarm.value = (config.alarm / 10).toFixed(1);
+  ui.ssid.value = config.ssid;
+  ui.pwd.value = config.pwd;
+  [updateRaceTimeLabel, updateRaceLapsLabel, updateMinLapLabel, updateRateLabel, updateAlarmLabel].forEach((f) => f());
+
+  renderCalibPilotButtons();
+  configLoaded = true;
+}
+
+function configBody() {
+  const p0 = pilots[0];
+  return {
+    name: p0.name,
+    freq: p0.freq,
+    enterRssi: p0.enter,
+    exitRssi: p0.exit,
+    pilots: pilotCount,
+    p: pilots.map((p) => ({ name: p.name, freq: p.freq, enter: p.enter, exit: p.exit })),
+    raceMode: raceMode,
+    raceSec: +ui.raceTime.value,
+    raceLaps: +ui.raceLaps.value,
+    countdown: ui.countdown.checked,
+    minLap: Math.round(ui.minLap.value * 10),
+    alarm: Math.round(ui.alarm.value * 10),
+    anType: ui.announcer.selectedIndex,
+    anRate: Math.round(announcerRate * 10),
+    anDelta: ui.anDelta.checked,
+    buzzerOn: ui.buzzer.checked,
+    ssid: ui.ssid.value,
+    pwd: ui.pwd.value,
+  };
+}
+
 // Returns a promise resolving to true when the timer confirmed the save
 function saveConfig(button) {
   if (!configLoaded) {
-    alert("Configuration not loaded yet. Please wait until all fields are loaded.");
+    showButtonStatus(button, "Settings not loaded yet");
     return Promise.resolve(false);
   }
   if (button) button.disabled = true;
-  return fetch("/config", {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      freq: frequency,
-      minLap: Math.round(minLapInput.value * 10),
-      alarm: Math.round(alarmThreshold.value * 10),
-      anType: announcerSelect.selectedIndex,
-      anRate: Math.round(announcerRate * 10),
-      enterRssi: enterRssi,
-      exitRssi: exitRssi,
-      name: pilotNameInput.value,
-      ssid: ssidInput.value,
-      pwd: pwdInput.value,
-      buzzerOn: document.getElementById("buzzerToggle").checked
-    }),
-  })
+  return postJson("/config", configBody())
     .then((response) => {
-      if (!response.ok) throw new Error("HTTP " + response.status);
-      return response.json();
-    })
-    .then((response) => {
-      console.log("/config:" + JSON.stringify(response));
       const ok = response.status === "OK";
       showSaveResult(button, ok);
       return ok;
@@ -383,230 +351,823 @@ function saveConfig(button) {
     });
 }
 
-// Clears the home WiFi and restarts the timer into its own hotspot
-function forgetHomeWifi(button) {
-  if (!confirm("Forget the home WiFi and restart the timer into its own hotspot?")) return;
-  ssidInput.value = "";
-  pwdInput.value = "";
+$("saveButton").addEventListener("click", (e) => saveConfig(e.target));
+
+// ── Pilot profiles (stored on the timer) ──
+async function loadProfiles() {
+  try {
+    profiles = await fetchJson("/api/profiles");
+    if (!Array.isArray(profiles)) profiles = [];
+  } catch (e) {
+    profiles = [];
+  }
+  profiles.sort((a, b) => a.name.localeCompare(b.name));
+  if (pilots.length) renderPilots();
+}
+
+async function saveProfile(index, button) {
+  const p = pilots[index];
+  const name = (p.name || "").trim();
+  if (!name) {
+    showButtonStatus(button, "Enter a name first");
+    return;
+  }
+  const updated = profiles.filter((pr) => pr.name.toLowerCase() !== name.toLowerCase());
+  updated.push({ name, freq: p.freq, enter: p.enter, exit: p.exit });
+  try {
+    await postJson("/api/profiles", updated);
+    profiles = updated.sort((a, b) => a.name.localeCompare(b.name));
+    renderPilots();
+    showButtonStatus(button, "Saved ✓", 2000);
+  } catch (e) {
+    showButtonStatus(button, "Failed");
+  }
+}
+
+// ── Home WiFi ──
+$("wifiScanButton").addEventListener("click", async (e) => {
+  const button = e.target;
+  const results = $("wifiScanResults");
   button.disabled = true;
-  saveConfig(null).then((ok) => {
-    if (!ok) {
-      button.disabled = false;
-      showButtonStatus(button, "Failed, try again");
-      return;
+  showButtonStatus(button, "Scanning…", 0);
+  try {
+    await fetchJson("/api/wifi/scan?start=1");
+    let scan = { scanning: true };
+    for (let tries = 0; tries < 20 && scan.scanning; tries++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      scan = await fetchJson("/api/wifi/scan");
     }
-    fetch("/restart", { method: "POST" }).catch(() => {});
-    showButtonStatus(button, "Restarting…", 0);
-    document.getElementById("wifiForgotten").hidden = false;
+    results.innerHTML = "";
+    const networks = (scan.networks || []).sort((a, b) => b.rssi - a.rssi);
+    if (!networks.length) {
+      results.appendChild(el("button", "", "No networks found"));
+    }
+    for (const n of networks) {
+      const item = el("button");
+      item.type = "button";
+      item.append(el("span", "", n.ssid + (n.open ? "" : " 🔒")), el("span", "signal", n.rssi + " dBm"));
+      item.addEventListener("click", () => {
+        ui.ssid.value = n.ssid;
+        results.hidden = true;
+        ui.pwd.focus();
+      });
+      results.appendChild(item);
+    }
+    results.hidden = false;
+    showButtonStatus(button, "Scan", 1);
+  } catch (err) {
+    showButtonStatus(button, "Scan failed");
+  }
+  button.disabled = false;
+});
+
+$("restartEspButton").addEventListener("click", async (e) => {
+  if (!confirm("Restart the timer?")) return;
+  e.target.disabled = true;
+  try {
+    await postJson("/restart");
+    showButtonStatus(e.target, "Restarting…");
+  } catch (err) {
+    showButtonStatus(e.target, "Failed");
+  }
+  e.target.disabled = false;
+});
+
+// Clears the home WiFi and restarts the timer into its own hotspot
+$("forgetWifiButton").addEventListener("click", async (e) => {
+  const button = e.target;
+  if (!confirm("Forget the home WiFi and restart the timer into its own hotspot?")) return;
+  ui.ssid.value = "";
+  ui.pwd.value = "";
+  button.disabled = true;
+  const ok = await saveConfig(null);
+  if (!ok) {
+    button.disabled = false;
+    showButtonStatus(button, "Failed, try again");
+    return;
+  }
+  fetch("/restart", { method: "POST" }).catch(() => {});
+  showButtonStatus(button, "Restarting…", 0);
+  $("wifiForgotten").hidden = false;
+});
+
+// ── Device info (firmware updates are on update.html) ──
+async function loadInfo() {
+  try {
+    const info = await fetchJson("/api/info");
+    $("infoVersion").textContent = info.version;
+    $("infoMode").textContent = info.mode === "hotspot" ? "Own hotspot · " + info.ssid : "Home WiFi · " + info.ssid;
+    $("infoIp").textContent = info.ip + (info.mode === "wifi" ? " · " + info.host : "");
+  } catch (e) {
+    /* older firmware */
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Tabs
+// ═══════════════════════════════════════════════════════════════════
+
+let currentTab = "config";
+
+document.querySelector(".tabs").addEventListener("click", (e) => {
+  const button = e.target.closest(".tablinks");
+  if (!button) return;
+  openTab(button.dataset.tab);
+});
+
+function openTab(tab) {
+  currentTab = tab;
+  for (const b of document.querySelectorAll(".tablinks")) b.classList.toggle("active", b.dataset.tab === tab);
+  for (const s of document.querySelectorAll(".tabcontent")) s.hidden = s.id !== tab;
+  if (tab === "history") loadHistory();
+  if (tab === "calib") startCalibration();
+  else stopCalibration();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Race: status polling, rendering, stats
+// ═══════════════════════════════════════════════════════════════════
+
+let status = null; // latest /api/status
+let statusAtMs = 0; // local time when it arrived
+let raceData = null; // latest /api/race
+let seenRaceId = null; // race whose laps have been announced
+let seenLaps = []; // lap entries per pilot already announced
+let seenTimeUp = false;
+let seenFinished = [];
+let seenRaceFinished = false;
+let raceFetchPending = false;
+
+const timerEl = $("timer");
+
+function pollStatus() {
+  const fast = currentTab === "race" || currentTab === "calib" || !$("raceScreen").hidden;
+  fetchJson("/api/status")
+    .then(handleStatus)
+    .catch((err) => console.debug("/api/status failed:", err))
+    .finally(() => setTimeout(pollStatus, fast ? 250 : 600));
+}
+
+function handleStatus(s) {
+  const previous = status;
+  status = s;
+  statusAtMs = Date.now();
+
+  $("bvolt").textContent = (s.vbat / 10).toFixed(1) + "V";
+  if (currentTab === "calib" && s.pilots[calibIndex]) $("rssiNow").textContent = s.pilots[calibIndex].rssi;
+
+  const lapCountsChanged =
+    !previous ||
+    previous.race !== s.race ||
+    previous.state !== s.state ||
+    s.pilots.some((p, i) => !previous.pilots[i] || previous.pilots[i].laps !== p.laps || previous.pilots[i].fin !== p.fin);
+  if (lapCountsChanged && !raceFetchPending) {
+    raceFetchPending = true;
+    fetchJson("/api/race")
+      .then(handleRace)
+      .catch((err) => console.debug("/api/race failed:", err))
+      .finally(() => (raceFetchPending = false));
+  }
+
+  if (s.timeUp && !seenTimeUp && seenRaceId === s.race) {
+    queueSpeak("Time's up");
+  }
+  seenTimeUp = s.timeUp;
+  renderRaceControls();
+}
+
+// Current race clock in ms (negative during the countdown)
+function raceElapsed() {
+  if (!status) return 0;
+  if (status.state === STATE.RUNNING || status.state === STATE.COUNTDOWN) {
+    return status.elapsed + (Date.now() - statusAtMs);
+  }
+  return status.elapsed;
+}
+
+function clockText() {
+  if (!status) return formatClock(0);
+  const elapsed = raceElapsed();
+  if (status.state === STATE.COUNTDOWN) return String(Math.ceil(-elapsed / 1000) || "GO");
+  if (status.state === STATE.RUNNING && status.mode === MODE.TIMED && !status.timeUp) {
+    return formatClock(status.raceMs - elapsed); // time left
+  }
+  if (status.state === STATE.RUNNING) return formatClock(elapsed);
+  return formatClock(raceData ? lastRaceDuration(raceData) : 0);
+}
+
+// Duration of a finished race: the longest total time of any pilot
+function lastRaceDuration(r) {
+  let longest = 0;
+  for (const p of r.pilots) {
+    const total = p.laps.reduce((a, b) => a + b, 0);
+    longest = Math.max(longest, total);
+  }
+  return longest;
+}
+
+function statusText() {
+  if (!status) return ["Connecting…", ""];
+  switch (status.state) {
+    case STATE.COUNTDOWN:
+      return ["Get ready", "waiting"];
+    case STATE.WAITING:
+      return ["Waiting for first gate pass…", "waiting"];
+    case STATE.RUNNING:
+      if (status.mode === MODE.TIMED) return status.timeUp ? ["Time's up · finish your lap", "waiting"] : ["Time left", "running"];
+      if (status.mode === MODE.LAPS) return [`Racing · ${status.raceLaps} laps`, "running"];
+      return ["Racing", "running"];
+    case STATE.FINISHED:
+      return ["Finished", ""];
+    default:
+      return [raceData && raceData.pilots.some((p) => p.laps.length) ? "Last race" : "Ready", ""];
+  }
+}
+
+setInterval(() => {
+  const text = clockText();
+  if (currentTab === "race") timerEl.textContent = text;
+  if (!$("raceScreen").hidden) $("rsClock").textContent = text;
+}, 50);
+
+function renderRaceControls() {
+  const state = status ? status.state : STATE.IDLE;
+  const racing = state === STATE.COUNTDOWN || state === STATE.WAITING || state === STATE.RUNNING;
+  $("startRaceButton").disabled = racing;
+  $("stopRaceButton").disabled = !racing;
+  $("clearLapsButton").disabled = racing;
+  const [text, cls] = statusText();
+  const statusEl = $("raceStatus");
+  statusEl.textContent = text;
+  statusEl.className = "race-status" + (cls ? " " + cls : "");
+  $("rsStatus").textContent = text;
+  const mode = status ? status.mode : raceMode;
+  let info = MODE_NAMES[mode];
+  if (status && mode === MODE.TIMED) info += " · " + formatMinSec(Math.round(status.raceMs / 1000));
+  if (status && mode === MODE.LAPS) info += " · " + status.raceLaps + " laps";
+  if (status && status.cd) info += " · countdown";
+  $("raceInfo").textContent = info;
+}
+
+// Per-pilot statistics from lap times in ms (entry 0 = start pass)
+function pilotStats(p) {
+  const laps = p.laps.slice(1);
+  const n = laps.length;
+  const stats = { laps: n, last: null, best: null, avg: null, delta: null, best3: null, consistency: null, total: p.laps.reduce((a, b) => a + b, 0) };
+  if (!n) return stats;
+  stats.last = laps[n - 1];
+  stats.best = Math.min(...laps);
+  stats.avg = laps.reduce((a, b) => a + b, 0) / n;
+  if (n >= 2) {
+    const previousBest = Math.min(...laps.slice(0, -1));
+    stats.delta = stats.last - previousBest;
+    const variance = laps.reduce((a, b) => a + (b - stats.avg) ** 2, 0) / n;
+    stats.consistency = Math.sqrt(variance);
+  }
+  for (let i = 0; i + 3 <= n; i++) {
+    const sum = laps[i] + laps[i + 1] + laps[i + 2];
+    if (stats.best3 === null || sum < stats.best3) stats.best3 = sum;
+  }
+  return stats;
+}
+
+// Positions: laps race = most laps then least total time; practice/timed = most laps then least total time
+function positions(r) {
+  const order = r.pilots
+    .map((p, i) => ({ i, laps: Math.max(0, p.laps.length - 1), total: p.laps.reduce((a, b) => a + b, 0) }))
+    .sort((a, b) => b.laps - a.laps || a.total - b.total);
+  const pos = [];
+  order.forEach((o, rank) => (pos[o.i] = rank + 1));
+  return pos;
+}
+
+function handleRace(r) {
+  // Before any race, show the configured pilots
+  if (r.state === STATE.IDLE && !r.pilots.some((p) => p.laps.length)) {
+    r.pilots = pilots.slice(0, pilotCount).map((p) => ({ name: p.name, freq: p.freq, laps: [], fin: false }));
+  }
+  raceData = r;
+  if (seenRaceId !== r.race) {
+    // First sight of this race. If it hasn't started yet, announce everything
+    // from its first pass; otherwise just show it (don't replay old laps).
+    seenRaceId = r.race;
+    const fresh = r.state === STATE.COUNTDOWN || r.state === STATE.WAITING;
+    seenLaps = r.pilots.map((p) => (fresh ? 0 : p.laps.length));
+    seenFinished = r.pilots.map((p) => !fresh && p.fin);
+    seenRaceFinished = !fresh && r.state === STATE.FINISHED;
+  } else {
+    announceNewLaps(r);
+  }
+  renderRacePilots(r);
+  renderRaceScreen(r);
+  renderRaceControls();
+}
+
+function announceNewLaps(r) {
+  const multi = r.pilots.length > 1;
+  r.pilots.forEach((p, i) => {
+    const name = pilotLabel(p.name, i);
+    for (let n = seenLaps[i] || 0; n < p.laps.length; n++) {
+      if (n === 0) {
+        if (!r.cd && r.pilots.every((q, j) => j === i || (seenLaps[j] || 0) === 0)) queueSpeak("Race start");
+        else if (multi) queueSpeak(name + " started");
+        continue;
+      }
+      announceLap(p, i, n, r);
+    }
+    seenLaps[i] = p.laps.length;
+    if (p.fin && !seenFinished[i]) {
+      if (multi) queueSpeak(name + " finished");
+      seenFinished[i] = true;
+    }
+  });
+  if (r.state === STATE.FINISHED && !seenRaceFinished) {
+    seenRaceFinished = true;
+    const pos = positions(r);
+    if (multi) queueSpeak("Race over. Winner " + pilotLabel(r.pilots[pos.indexOf(1)].name, pos.indexOf(1)));
+    else queueSpeak("Race over");
+  }
+}
+
+function announceLap(p, i, n, r) {
+  const lapMs = p.laps[n];
+  const lapStr = secs(lapMs);
+  const name = pilotLabel(p.name, i);
+  const who = r.pilots.length > 1 || (p.name && p.name.trim()) ? name + " " : "";
+  const previous = p.laps.slice(1, n);
+  const type = ui.announcer.value;
+
+  if (type === "beep") {
+    beep(100, 330 + i * 110, "square");
+    return;
+  }
+  if (type === "1lap") {
+    queueSpeak(`${who}lap ${n}, ${lapStr}`);
+  } else if (type === "2lap" && n >= 2) {
+    queueSpeak(`${who}2 laps ${secs(lapMs + p.laps[n - 1])}`);
+  } else if (type === "3lap" && n >= 3) {
+    queueSpeak(`${who}3 laps ${secs(lapMs + p.laps[n - 1] + p.laps[n - 2])}`);
+  }
+  if (type === "none") return;
+  if (previous.length) {
+    const previousBest = Math.min(...previous);
+    if (lapMs < previousBest) queueSpeak("Best lap");
+    else if (ui.anDelta.checked) {
+      const delta = (lapMs - previousBest) / 1000;
+      queueSpeak("plus " + delta.toFixed(2));
+    }
+    if (ui.anDelta.checked && lapMs < previousBest) queueSpeak("minus " + ((previousBest - lapMs) / 1000).toFixed(2));
+  }
+}
+
+function statBox(label, value, extraClass) {
+  return `<div class="stat"><div class="stat-label">${label}</div><div class="stat-value ${extraClass || ""}">${value}</div></div>`;
+}
+
+function deltaText(ms) {
+  if (ms === null) return ["–", ""];
+  if (Math.abs(ms) < 5) return ["±0.00", ""];
+  const sign = ms < 0 ? "−" : "+";
+  return [sign + (Math.abs(ms) / 1000).toFixed(2), ms < 0 ? "delta-faster" : "delta-slower"];
+}
+
+function renderRacePilots(r) {
+  const container = $("racePilots");
+  container.innerHTML = "";
+  const pos = positions(r);
+  const showPos = r.pilots.length > 1 && r.pilots.some((p) => p.laps.length > 1);
+  r.pilots.forEach((p, i) => {
+    const st = pilotStats(p);
+    const card = el("div", "card race-pilot pilot-" + (i + 1));
+    const [dText, dClass] = deltaText(st.delta);
+    const bestIndex = st.best === null ? -1 : p.laps.indexOf(st.best, 1);
+    const rows = [];
+    for (let n = p.laps.length - 1; n >= 1; n--) {
+      const d = st.best === null ? "" : n === bestIndex ? "best" : "+" + secs(p.laps[n] - st.best);
+      rows.push(`<tr${n === bestIndex ? ' class="best-lap"' : ""}><td>${n}</td><td>${secs(p.laps[n])}s</td><td>${d}</td></tr>`);
+    }
+    if (p.laps.length) rows.push(`<tr><td>0</td><td>${r.cd ? "Start " + secs(p.laps[0]) + "s" : "Start"}</td><td></td></tr>`);
+    card.innerHTML = `
+      <div class="race-pilot-head">
+        <span class="dot-p"></span>
+        <span>${showPos ? pos[i] + ". " : ""}${escapeHtml(pilotLabel(p.name, i))}</span>
+        <span class="muted">${channelName(p.freq)} ${p.freq}</span>
+        ${p.fin ? '<span class="finished">Finished</span>' : ""}
+      </div>
+      <div class="stats">
+        ${statBox("Laps", st.laps)}
+        ${statBox("Last", st.last === null ? "–" : secs(st.last))}
+        ${statBox("Delta", dText, dClass)}
+        ${statBox("Best", st.best === null ? "–" : secs(st.best))}
+        ${statBox("Average", st.avg === null ? "–" : secs(st.avg))}
+        ${statBox("Best 3 laps", st.best3 === null ? "–" : secs(st.best3))}
+      </div>
+      <p class="hint">Consistency: ${st.consistency === null ? "–" : "±" + secs(st.consistency) + "s"} · Total ${secs(st.total)}s</p>
+      ${rows.length ? `<div class="lap-table-wrap"><table><tr><th>Lap</th><th>Time</th><th>vs best</th></tr>${rows.join("")}</table></div>` : ""}`;
+    container.appendChild(card);
   });
 }
 
-function populateFreqOutput() {
-  let band = bandSelect.options[bandSelect.selectedIndex].value;
-  let chan = channelSelect.options[channelSelect.selectedIndex].value;
-  frequency = freqLookup[bandSelect.selectedIndex][channelSelect.selectedIndex];
-  freqOutput.textContent = band + chan;
-  document.getElementById("freqMhz").textContent = frequency;
-  document.getElementById("raceFreq").textContent = band + chan + " · " + frequency + " MHz";
+// ── Race controls ──
+function startRace() {
+  const t = Math.floor(Date.now() / 1000);
+  queueSpeak(ui.countdown.checked ? "Get ready" : "Start racing when ready");
+  return fetch("/timer/start?t=" + t, { method: "POST" }).then((r) => {
+    if (r.status === 409) showButtonStatus($("startRaceButton"), "Busy, try again");
+    pollOnce();
+  });
 }
 
-// Restart the ESP device via POST /restart
-function restartEsp() {
-  const btn = document.getElementById('restartEspButton');
-  if (!confirm('Are you sure?')) return;
-  if (btn) btn.disabled = true;
-  fetch('/restart', {
-    method: 'POST',
-    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }
-  })
-    .then(response => {
-      if (!response.ok) throw new Error('Network response was not ok');
-      return response.json();
+function stopRace() {
+  queueSpeak("Race stopped");
+  return fetch("/timer/stop", { method: "POST" }).then(pollOnce);
+}
+
+function clearRace() {
+  return fetch("/timer/clear", { method: "POST" }).then(pollOnce);
+}
+
+function pollOnce() {
+  fetchJson("/api/status").then(handleStatus).catch(() => {});
+}
+
+$("startRaceButton").addEventListener("click", startRace);
+$("stopRaceButton").addEventListener("click", stopRace);
+$("clearLapsButton").addEventListener("click", clearRace);
+
+// ── Race screen ──
+$("raceScreenButton").addEventListener("click", () => {
+  $("raceScreen").hidden = false;
+  if (raceData) renderRaceScreen(raceData);
+  const fs = document.documentElement.requestFullscreen;
+  if (fs) fs.call(document.documentElement).catch(() => {});
+});
+
+$("rsClose").addEventListener("click", () => {
+  $("raceScreen").hidden = true;
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+});
+
+function renderRaceScreen(r) {
+  if ($("raceScreen").hidden) return;
+  const container = $("rsPilots");
+  container.innerHTML = "";
+  const pos = positions(r);
+  r.pilots.forEach((p, i) => {
+    const st = pilotStats(p);
+    const tile = el("div", "rs-pilot pilot-" + (i + 1));
+    let deltaHtml = "";
+    if (st.delta !== null) {
+      const [text, cls] = deltaText(st.delta);
+      deltaHtml = `<span class="${cls.replace("delta-", "rs-delta-")}">${text}</span>`;
+    }
+    tile.innerHTML = `
+      <div class="rs-name"><span>${r.pilots.length > 1 ? pos[i] + ". " : ""}${escapeHtml(pilotLabel(p.name, i))}</span><span class="rs-lapno">${p.fin ? "Finished" : "Lap " + st.laps}</span></div>
+      <div class="rs-last">${st.last === null ? "–" : secs(st.last)}</div>
+      <div class="rs-row">${deltaHtml || "<span></span>"}<span class="rs-best">Best ${st.best === null ? "–" : secs(st.best)}</span></div>`;
+    container.appendChild(tile);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Calibration
+// ═══════════════════════════════════════════════════════════════════
+
+let calibIndex = 0;
+let rssiChart = null;
+let rssiSeries = new TimeSeries();
+let rssiSeq = 0;
+let lastPointMs = 0;
+let calibTimer = null;
+let autoCalSamples = []; // [value] of the selected pilot, 25 ms apart, last 60 s
+
+const enterInput = $("enter");
+const exitInput = $("exit");
+
+function renderCalibPilotButtons() {
+  const container = $("calibPilot");
+  container.hidden = pilotCount < 2;
+  container.innerHTML = "";
+  for (let i = 0; i < pilotCount; i++) {
+    const b = el("button", i === calibIndex ? "active" : "", pilotLabel(pilots[i] && pilots[i].name, i));
+    b.dataset.value = i;
+    container.appendChild(b);
+  }
+  if (calibIndex >= pilotCount) selectCalibPilot(0);
+  renderCalibration();
+}
+
+setupSegmented($("calibPilot"), (v) => selectCalibPilot(+v));
+
+function selectCalibPilot(i) {
+  calibIndex = i;
+  setSegmented($("calibPilot"), i);
+  rssiSeries.clear();
+  autoCalSamples = [];
+  renderCalibration();
+  renderAutoCal();
+}
+
+function renderCalibration() {
+  const p = pilots[calibIndex];
+  if (!p) return;
+  enterInput.value = p.enter;
+  exitInput.value = p.exit;
+  $("enterSpan").textContent = p.enter;
+  $("exitSpan").textContent = p.exit;
+}
+
+enterInput.addEventListener("input", () => {
+  const p = pilots[calibIndex];
+  p.enter = +enterInput.value;
+  if (p.exit >= p.enter) p.exit = Math.max(0, p.enter - 1);
+  renderCalibration();
+});
+
+exitInput.addEventListener("input", () => {
+  const p = pilots[calibIndex];
+  p.exit = +exitInput.value;
+  if (p.exit >= p.enter) p.enter = Math.min(255, p.exit + 1);
+  renderCalibration();
+});
+
+$("saveThresholdsButton").addEventListener("click", (e) => saveConfig(e.target));
+
+function createRssiChart() {
+  const css = getComputedStyle(document.documentElement);
+  rssiChart = new SmoothieChart({
+    responsive: true,
+    millisPerPixel: 20,
+    interpolation: "linear",
+    grid: {
+      fillStyle: "transparent",
+      strokeStyle: css.getPropertyValue("--border").trim() || "rgba(128,128,128,0.25)",
+      millisPerLine: 2000,
+      sharpLines: true,
+      verticalSections: 0,
+      borderVisible: false,
+    },
+    labels: { precision: 0, fillStyle: css.getPropertyValue("--muted").trim() || "#888" },
+    yRangeFunction: (range) => {
+      const p = pilots[calibIndex] || { enter: 120, exit: 100 };
+      return { min: Math.max(0, Math.min(range.min, p.exit) - 10), max: Math.max(range.max, p.enter) + 10 };
+    },
+  });
+  rssiChart.addTimeSeries(rssiSeries, { lineWidth: 2, strokeStyle: "hsl(214, 70%, 60%)", fillStyle: "hsla(214, 70%, 60%, 0.2)" });
+  rssiChart.streamTo($("rssiChart"), 100);
+}
+
+function updateChartLines() {
+  const p = pilots[calibIndex];
+  if (!rssiChart || !p) return;
+  rssiChart.options.horizontalLines = [
+    { color: "hsl(8.2, 86.5%, 53.7%)", lineWidth: 1.7, value: p.enter },
+    { color: "hsl(25, 85%, 55%)", lineWidth: 1.7, value: p.exit },
+  ];
+}
+
+function startCalibration() {
+  if (!rssiChart) createRssiChart();
+  rssiChart.start();
+  if (!calibTimer) pollRssi();
+}
+
+function stopCalibration() {
+  if (rssiChart) rssiChart.stop();
+  clearTimeout(calibTimer);
+  calibTimer = null;
+}
+
+// High-resolution RSSI history (one value per 25 ms) from the timer
+function pollRssi() {
+  fetchJson("/api/rssi?since=" + rssiSeq)
+    .then((r) => {
+      const values = r.pilots[calibIndex] || [];
+      const now = Date.now();
+      values.forEach((v, k) => {
+        const t = Math.max(now - (values.length - 1 - k) * r.step, lastPointMs + 1);
+        rssiSeries.append(t, v);
+        lastPointMs = t;
+      });
+      if (values.length) $("rssiNow").textContent = values[values.length - 1];
+      rssiSeq = r.seq;
+      updateChartLines();
+      if ($("autoCal").checked) {
+        autoCalSamples.push(...values);
+        if (autoCalSamples.length > 2400) autoCalSamples.splice(0, autoCalSamples.length - 2400);
+        renderAutoCal();
+      }
     })
-    .then(json => {
-      console.log('/restart:', json);
-    })
-    .catch(err => {
-      console.error('Failed to restart ESP:', err);
-    })
+    .catch(() => {})
     .finally(() => {
-      if (btn) btn.disabled = false;
+      if (currentTab === "calib") calibTimer = setTimeout(pollRssi, 250);
+      else calibTimer = null;
     });
 }
 
-bcf.addEventListener("change", function handleChange(event) {
-  populateFreqOutput();
-});
-
-function updateAnnouncerRate(obj, value) {
-  announcerRate = parseFloat(value);
-  $(obj).parent().find("span").text(announcerRate.toFixed(1));
-}
-
-function updateMinLap(obj, value) {
-  $(obj)
-    .parent()
-    .find("span")
-    .text(parseFloat(value).toFixed(1) + "s");
-}
-
-function updateAlarmThreshold(obj, value) {
-  $(obj)
-    .parent()
-    .find("span")
-    .text(parseFloat(value) == 0 ? "Off" : parseFloat(value).toFixed(1) + "v");
-}
-
-// Browsers cap the number of AudioContexts, so reuse a single one.
-var audioContext = null;
-
-function beep(duration, frequency, type) {
-  if (!audioContext) audioContext = new AudioContext();
-  if (audioContext.state === "suspended") audioContext.resume();
-  var oscillator = audioContext.createOscillator();
-  oscillator.type = type;
-  oscillator.frequency.value = frequency;
-  oscillator.connect(audioContext.destination);
-  oscillator.start();
-  oscillator.stop(audioContext.currentTime + duration / 1000);
-}
-
-// lapNumber comes from the timer: 0 = race start pass, 1.. = completed laps
-function addLap(lapNumber, lapStr) {
-  const pilotName = pilotNameInput.value;
-  var last2lapStr = "";
-  var last3lapStr = "";
-  const newLap = parseFloat(lapStr);
-  lapNo = lapNumber;
-  const table = document.getElementById("lapTable");
-  const row = table.insertRow();
-  const cell1 = row.insertCell(0);
-  const cell2 = row.insertCell(1);
-  const cell3 = row.insertCell(2);
-  const cell4 = row.insertCell(3);
-  cell1.innerHTML = lapNo;
-  if (lapNo == 0) {
-    cell2.innerHTML = "Start";
-  } else {
-    cell2.innerHTML = lapStr + "s";
-    row.dataset.lapTime = newLap;
-    // Update top-3 best lap times (lower is better)
-    // Shift down when a new top time is achieved.
-    if (newLap < bestLapTime) {
-      // new best: push previous bests down
-      thirdBestLapTime = secondBestLapTime;
-      secondBestLapTime = bestLapTime;
-      bestLapTime = newLap;
-    } else if (newLap < secondBestLapTime) {
-      // new second best (but not best)
-      thirdBestLapTime = secondBestLapTime;
-      secondBestLapTime = newLap;
-    } else if (newLap < thirdBestLapTime) {
-      // new third best
-      thirdBestLapTime = newLap;
+// Auto-calibration: background level from the quiet samples, peak level from passes
+function analyseAutoCal(samples) {
+  if (samples.length < 80) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const floor = sorted[Math.floor(sorted.length * 0.2)];
+  const passLevel = floor + 20;
+  const peaks = [];
+  let peak = 0;
+  let inPass = false;
+  for (const v of samples) {
+    if (v > passLevel) {
+      inPass = true;
+      peak = Math.max(peak, v);
+    } else if (inPass) {
+      peaks.push(peak);
+      inPass = false;
+      peak = 0;
     }
   }
-  if (lapTimes.length >= 1 && lapNo != 0) {
-    last2lapStr = (newLap + lapTimes[lapTimes.length - 1]).toFixed(2);
-    cell3.innerHTML = last2lapStr + "s";
-  }
-  if (lapTimes.length >= 2 && lapNo != 0) {
-    last3lapStr = (newLap + lapTimes[lapTimes.length - 2] + lapTimes[lapTimes.length - 1]).toFixed(2);
-    cell4.innerHTML = last3lapStr + "s";
-  }
-  window.scrollTo(0, document.body.scrollHeight); // Scroll to the bottom of the page
-
-  switch (announcerSelect.options[announcerSelect.selectedIndex].value) {
-    case "beep":
-      beep(100, 330, "square");
-      break;
-    case "1lap":
-      if (lapNo == 0) {
-        queueSpeak(`<p>Race start</p>`);
-      } else {
-        const lapNoStr = pilotName + " Lap " + lapNo + ", ";
-        const text = "<p>" + lapNoStr + lapStr + "</p>";
-        queueSpeak(text);
-        // Add best/2nd/3rd lap announcement if this was a top-3 lap
-        // Compare rounded values to avoid floating point comparison issues
-        const roundedLap = parseFloat(newLap).toFixed(2);
-        if (roundedLap === parseFloat(bestLapTime).toFixed(2)) {
-          queueSpeak(`<p>Best lap</p>`);
-        } else if (roundedLap === parseFloat(secondBestLapTime).toFixed(2)) {
-          queueSpeak(`<p>Second best lap</p>`);
-        } else if (roundedLap === parseFloat(thirdBestLapTime).toFixed(2)) {
-          queueSpeak(`<p>Third best lap</p>`);
-        }
-      }
-      break;
-    case "2lap":
-      if (lapNo == 0) {
-        queueSpeak(`<p>Race start</p>`);
-      } else if (last2lapStr != "") {
-        const text2 = "<p>" + pilotName + " 2 laps " + last2lapStr + "</p>";
-        queueSpeak(text2);
-      }
-      break;
-    case "3lap":
-      if (lapNo == 0) {
-        queueSpeak(`<p>Race start</p>`);
-      } else if (last3lapStr != "") {
-        const text3 = "<p>" + pilotName + " 3 laps " + last3lapStr + "</p>";
-        queueSpeak(text3);
-      }
-      break;
-    default:
-      break;
-  }
-  if (lapNo != 0) lapTimes.push(newLap);
-  highlightBestLap();
+  if (peaks.length < 3) return { floor, passes: peaks.length };
+  peaks.sort((a, b) => a - b);
+  const peakRef = peaks[Math.floor(peaks.length * 0.25)]; // a weaker pass, to be safe
+  const span = peakRef - floor;
+  const enter = Math.round(floor + span * 0.65);
+  const exit = Math.min(enter - 3, Math.round(floor + span * 0.45));
+  return { floor, passes: peaks.length, peak: peakRef, enter, exit };
 }
 
-// Mark the fastest lap row in the table
-function highlightBestLap() {
-  const rows = document.querySelectorAll("#lapTable tr[data-lap-time]");
-  let best = null;
-  rows.forEach((r) => {
-    r.classList.remove("best-lap");
-    if (best === null || parseFloat(r.dataset.lapTime) < parseFloat(best.dataset.lapTime)) best = r;
-  });
-  if (best) best.classList.add("best-lap");
-}
-
-function setRaceStatus(text, state) {
-  const el = document.getElementById("raceStatus");
-  el.textContent = text;
-  el.className = "race-status" + (state ? " " + state : "");
-}
-
-function formatClock(ms) {
-  const totalCs = Math.floor(ms / 10);
-  const cs = totalCs % 100;
-  const s = Math.floor(totalCs / 100) % 60;
-  const m = Math.floor(totalCs / 6000);
-  const pad = (n) => (n < 10 ? "0" + n : "" + n);
-  return `${pad(m)}:${pad(s)}.${pad(cs)}`;
-}
-
-// Race clock based on elapsed wall time, so it stays correct even if the
-// browser throttles timers (e.g. screen off).
-function startTimer() {
-  raceStartMs = Date.now();
-  clearInterval(timerInterval);
-  timerInterval = setInterval(function () {
-    timer.innerHTML = formatClock(Date.now() - raceStartMs);
-  }, 50);
-}
-
-function queueSpeak(obj) {
-  if (!audioEnabled) {
+function renderAutoCal() {
+  const box = $("autoCalResult");
+  if (!$("autoCal").checked) {
+    box.hidden = true;
     return;
   }
-  speakObjsQueue.push(obj);
+  box.hidden = false;
+  const result = analyseAutoCal(autoCalSamples);
+  if (!result) {
+    box.textContent = "Listening… keep the quad powered and fly through the gate.";
+    return;
+  }
+  if (!result.enter) {
+    box.textContent = `Background about ${result.floor}. Passes seen: ${result.passes} of 3.`;
+    return;
+  }
+  box.innerHTML = `Passes seen: <b>${result.passes}</b> · background ${result.floor} · peaks ${result.peak}<br>
+    Suggested: <b>Enter ${result.enter}</b>, <b>Exit ${result.exit}</b>
+    <button class="btn btn-ghost btn-block" id="applyAutoCal" style="margin-top:8px">Apply</button>`;
+  $("applyAutoCal").addEventListener("click", () => {
+    const p = pilots[calibIndex];
+    p.enter = result.enter;
+    p.exit = result.exit;
+    renderCalibration();
+    showButtonStatus($("saveThresholdsButton"), "Applied, now save", 3000);
+  });
 }
 
-var audioLoopRunning = false;
-var lastSpeechMs = 0; // last time the announcer was speaking (for voice command echo filtering)
+$("autoCal").addEventListener("change", () => {
+  autoCalSamples = [];
+  renderAutoCal();
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  History
+// ═══════════════════════════════════════════════════════════════════
+
+let historyList = [];
+
+async function loadHistory() {
+  try {
+    historyList = (await fetchJson("/api/races")).sort((a, b) => b.id - a.id);
+  } catch (e) {
+    historyList = [];
+  }
+  renderHistory();
+}
+
+function raceTitle(race) {
+  if (race.date) {
+    return new Date(race.date * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+  }
+  return "Race #" + race.id;
+}
+
+function renderHistory() {
+  const list = $("historyList");
+  list.innerHTML = "";
+  $("historyEmpty").hidden = historyList.length > 0;
+  for (const race of historyList) {
+    const card = el("div", "card history-item");
+    const summary = el("button", "history-summary");
+    summary.type = "button";
+    summary.innerHTML = `
+      <div class="history-top"><span class="history-title">${escapeHtml(raceTitle(race))}</span><span class="history-meta">${MODE_NAMES[race.mode] || ""}</span></div>
+      <div class="history-pilots">${race.pilots
+        .map((p, i) => `<span class="pilot-${i + 1}"><i class="dot-p"></i>${escapeHtml(pilotLabel(p.name, i))} · ${p.laps} laps · best ${p.best ? secs(p.best) : "–"}</span>`)
+        .join("")}</div>`;
+    const detail = el("div", "history-detail");
+    detail.hidden = true;
+    summary.addEventListener("click", async () => {
+      if (!detail.hidden) {
+        detail.hidden = true;
+        return;
+      }
+      detail.hidden = false;
+      detail.textContent = "Loading…";
+      try {
+        const full = await fetchJson("/api/races?id=" + race.id);
+        renderHistoryDetail(detail, full);
+      } catch (e) {
+        detail.textContent = "Could not load this race.";
+      }
+    });
+    card.append(summary, detail);
+    list.appendChild(card);
+  }
+}
+
+function renderHistoryDetail(container, race) {
+  container.innerHTML = "";
+  race.pilots.forEach((p, i) => {
+    const st = pilotStats(p);
+    const rows = p.laps
+      .slice(1)
+      .map((t, n) => `<tr${t === st.best ? ' class="best-lap"' : ""}><td>${n + 1}</td><td>${secs(t)}s</td></tr>`)
+      .join("");
+    const block = el("div", "pilot-" + (i + 1));
+    block.innerHTML = `
+      <div class="race-pilot-head"><span class="dot-p"></span><span>${escapeHtml(pilotLabel(p.name, i))}</span><span class="muted">${channelName(p.freq)} ${p.freq}</span></div>
+      <p class="hint">Best ${st.best === null ? "–" : secs(st.best)} · average ${st.avg === null ? "–" : secs(st.avg)} · best 3 laps ${st.best3 === null ? "–" : secs(st.best3)}</p>
+      ${rows ? `<div class="lap-table-wrap"><table><tr><th>Lap</th><th>Time</th></tr>${rows}</table></div>` : ""}`;
+    container.appendChild(block);
+  });
+  const exportButton = el("button", "btn btn-ghost btn-block", "Export this race (CSV)");
+  exportButton.addEventListener("click", () => downloadCsv([race], "laptimer-race-" + race.id + ".csv"));
+  container.appendChild(exportButton);
+}
+
+function csvRows(race) {
+  const date = race.date ? new Date(race.date * 1000).toISOString() : "";
+  const rows = [];
+  race.pilots.forEach((p, i) => {
+    p.laps.forEach((t, n) => {
+      if (n === 0) return;
+      rows.push([race.id, date, MODE_NAMES[race.mode] || "", pilotLabel(p.name, i), p.freq, n, secs(t)]);
+    });
+  });
+  return rows;
+}
+
+function downloadCsv(races, filename) {
+  const header = ["race", "date", "mode", "pilot", "frequency", "lap", "time_s"];
+  const lines = [header, ...races.flatMap(csvRows)].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const a = el("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(a.href);
+    a.remove();
+  }, 1000);
+}
+
+$("exportAllButton").addEventListener("click", async (e) => {
+  const button = e.target;
+  showButtonStatus(button, "Preparing…", 0);
+  try {
+    const races = [];
+    for (const r of historyList) races.push(await fetchJson("/api/races?id=" + r.id));
+    downloadCsv(races, "laptimer-races.csv");
+    showButtonStatus(button, "Exported ✓", 2000);
+  } catch (err) {
+    showButtonStatus(button, "Export failed");
+  }
+});
+
+$("clearHistoryButton").addEventListener("click", async (e) => {
+  if (!confirm("Delete all saved races?")) return;
+  try {
+    await postJson("/api/races/clear");
+    loadHistory();
+  } catch (err) {
+    showButtonStatus(e.target, "Failed");
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  Speech (announcer) and beeps
+// ═══════════════════════════════════════════════════════════════════
+
+let audioEnabled = false;
+let audioLoopRunning = false;
+let speakQueue = [];
+let lastSpeechMs = 0; // last time the announcer was speaking (for voice command echo filtering)
+let speakStartMs = 0;
+let speechTestButton = null; // set while "Test voice" is running, to report the result
+const speechSupported = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+const isAndroid = /android/i.test(navigator.userAgent);
+
+function queueSpeak(text) {
+  if (audioEnabled) speakQueue.push(text);
+}
 
 async function enableAudioLoop() {
   audioEnabled = true;
@@ -614,18 +1175,17 @@ async function enableAudioLoop() {
   audioLoopRunning = true;
   while (audioEnabled) {
     // Only "speaking" is checked: some Android browsers leave "pending" stuck
-    const isSpeakingFlag = speechSupported && speechSynthesis.speaking;
-    if (isSpeakingFlag) {
+    const speaking = speechSupported && speechSynthesis.speaking;
+    if (speaking) {
       lastSpeechMs = Date.now();
       // Watchdog: a stuck speech engine would block every later announcement
       if (Date.now() - speakStartMs > 15000) {
         console.warn("Speech stuck, resetting");
         speechSynthesis.cancel();
       }
-    } else if (speakObjsQueue.length > 0) {
-      let obj = speakObjsQueue.shift();
+    } else if (speakQueue.length > 0) {
       lastSpeechMs = Date.now();
-      doSpeak(obj);
+      doSpeak(speakQueue.shift());
     }
     await new Promise((r) => setTimeout(r, 100));
   }
@@ -636,66 +1196,19 @@ function disableAudioLoop() {
   audioEnabled = false;
 }
 
-// Test voice: speaks the first phrase directly from the tap (strictest browsers
-// only allow speech inside a user gesture) and shows the outcome on the button.
-function generateAudio() {
-  const button = document.getElementById("GenerateAudioButton");
-  if (!speechSupported) {
-    showButtonStatus(button, "This browser has no speech");
-    return;
-  }
-  if (!audioEnabled) {
-    showButtonStatus(button, "Turn on voice first");
-    return;
-  }
-  speechTestButton = button;
-  showButtonStatus(button, "Speaking…", 0);
-  const pilotName = pilotNameInput.value;
-  speakObjsQueue = [];
-  speechSynthesis.cancel();
-  doSpeak("<div>testing sound for pilot " + pilotName + "</div>");
-  for (let i = 1; i <= 3; i++) {
-    queueSpeak("<div>" + i + "</div>");
-  }
-  // Some browsers silently ignore speech without any error event
-  setTimeout(() => {
-    if (speechTestButton === button && button.textContent === "Speaking…") {
-      showButtonStatus(button, "Browser gave no sound", 8000);
-      speechTestButton = null;
-    }
-  }, 5000);
-}
-
-// Temporarily replaces a button's label; holdMs 0 keeps it until the next call
-function showButtonStatus(button, text, holdMs = 4000) {
-  if (!button) return;
-  if (!button.dataset.label) button.dataset.label = button.textContent;
-  clearTimeout(button.statusTimer);
-  button.textContent = text;
-  if (holdMs) button.statusTimer = setTimeout(() => (button.textContent = button.dataset.label), holdMs);
-}
+ui.voiceToggle.addEventListener("change", () => (ui.voiceToggle.checked ? enableAudioLoop() : disableAudioLoop()));
 
 // Always announce in English, regardless of the phone's system language.
 // utterance.lang selects the language; forcing a voice object can make Android
 // browsers silent, so only desktop browsers also get an explicit English voice.
 // If the browser rejects English, retry once with its default voice.
-const speechSupported = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
-const isAndroid = /android/i.test(navigator.userAgent);
-var speakStartMs = 0;
-var speechTestButton = null; // set while "Test voice" is running, to report the result
-
 function findEnglishVoice() {
   const voices = speechSynthesis.getVoices();
-  return (
-    voices.find((v) => v.lang.replace("_", "-") === "en-US") ||
-    voices.find((v) => v.lang.toLowerCase().startsWith("en"))
-  );
+  return voices.find((v) => v.lang.replace("_", "-") === "en-US") || voices.find((v) => v.lang.toLowerCase().startsWith("en"));
 }
 
-function doSpeak(obj, useEnglish = true) {
-  if (!speechSupported) return;
-  const text = $("<div>").html(obj).text().trim();
-  if (!text) return;
+function doSpeak(text, useEnglish = true) {
+  if (!speechSupported || !text) return;
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.rate = announcerRate;
   if (useEnglish) {
@@ -709,7 +1222,7 @@ function doSpeak(obj, useEnglish = true) {
     if (speechTestButton) showButtonStatus(speechTestButton, "Speaking… ✓", 0);
   };
   utterance.onend = () => {
-    if (speechTestButton && speakObjsQueue.length === 0) {
+    if (speechTestButton && speakQueue.length === 0) {
       showButtonStatus(speechTestButton, "Voice works ✓");
       speechTestButton = null;
     }
@@ -718,7 +1231,7 @@ function doSpeak(obj, useEnglish = true) {
     console.warn("Speech error:", e.error);
     if (e.error === "interrupted" || e.error === "canceled") return;
     if (useEnglish) {
-      doSpeak(obj, false); // retry with the browser's default voice
+      doSpeak(text, false); // retry with the browser's default voice
     } else if (speechTestButton) {
       showButtonStatus(speechTestButton, "Voice error: " + e.error, 8000);
       speechTestButton = null;
@@ -728,168 +1241,129 @@ function doSpeak(obj, useEnglish = true) {
   speechSynthesis.speak(utterance);
 }
 
-// Announce the current best lap time via the existing audio queue.
-function speakBestTime() {
-  if (bestLapTime === Infinity) {
-    queueSpeak('<p>No best lap recorded yet</p>');
-  } else {
-    const bestStr = parseFloat(bestLapTime).toFixed(2);
-    const pilotName = pilotNameInput.value || '';
-    const pre = pilotName ? pilotName + ', ' : '';
-    queueSpeak(`<p>${pre}Best lap ${bestStr} seconds</p>`);
+// Test voice: speaks the first phrase directly from the tap (strictest browsers
+// only allow speech inside a user gesture) and shows the outcome on the button.
+$("GenerateAudioButton").addEventListener("click", (e) => {
+  const button = e.target;
+  if (!speechSupported) {
+    showButtonStatus(button, "This browser has no speech");
+    return;
   }
-}
-
-// Clear stored best/second/third lap times and announce the action.
-function clearBestTimes() {
-  bestLapTime = Infinity;
-  secondBestLapTime = Infinity;
-  thirdBestLapTime = Infinity;
-  if (audioEnabled) {
-    queueSpeak('<p>Best times cleared</p>');
+  if (!audioEnabled) {
+    showButtonStatus(button, "Turn on voice first");
+    return;
   }
-}
-
-function setRaceButtons(active) {
-  raceActive = active;
-  startRaceButton.disabled = active;
-  stopRaceButton.disabled = !active;
-}
-
-// Arms the timer; the race clock starts when the timer reports the first gate pass.
-async function startRace() {
-  setRaceButtons(true);
-  waitingToStart = true;
-  lastLapNumber = -1;
-  clearLaps();
-  clearInterval(timerInterval);
-  timer.innerHTML = formatClock(0);
-  setRaceStatus("Waiting for first gate pass…", "waiting");
-  queueSpeak("<p>Start racing when ready</p>");
-  fetch("/timer/start", {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-  })
-    .then((response) => response.json())
-    .then((response) => console.log("/timer/start:" + JSON.stringify(response)));
-}
-
-function stopRace() {
-  queueSpeak('<p>Race stopped</p>');
-  clearInterval(timerInterval);
-  timer.innerHTML = formatClock(0);
-  setRaceStatus("Ready");
-  waitingToStart = false;
-  setRaceButtons(false);
-  fetch("/timer/stop", {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-  })
-    .then((response) => response.json())
-    .then((response) => console.log("/timer/stop:" + JSON.stringify(response)));
-
-  lapNo = -1;
-  lapTimes = [];
-  // reset best lap tracking
-  bestLapTime = Infinity;
-  secondBestLapTime = Infinity;
-  thirdBestLapTime = Infinity;
-}
-
-function clearLaps() {
-  var tableHeaderRowCount = 1;
-  var rowCount = lapTable.rows.length;
-  for (var i = tableHeaderRowCount; i < rowCount; i++) {
-    lapTable.deleteRow(tableHeaderRowCount);
-  }
-  lapNo = -1;
-  lapTimes = [];
-  // reset best lap tracking
-  bestLapTime = Infinity;
-  secondBestLapTime = Infinity;
-  thirdBestLapTime = Infinity;
-}
-
-
-function handleStatus(status) {
-  rssiBuffer.push(status.rssi);
-  if (rssiBuffer.length > 10) {
-    rssiBuffer.shift();
-  }
-
-  rssiNowDisplay.textContent = status.rssi;
-  if (typeof status.vbat !== "undefined") {
-    batteryVoltageDisplay.textContent = (status.vbat / 10).toFixed(1) + "V";
-  }
-
-  const n = status.lapnumber;
-  if (typeof n === "undefined") return;
-
-  // First status after page load: just sync, don't replay old laps
-  if (lastLapNumber === null) {
-    lastLapNumber = n;
-    if (n >= 0) {
-      // a race is already running (page reloaded or started from another device)
-      setRaceButtons(true);
-      setRaceStatus("Racing", "running");
+  speechTestButton = button;
+  showButtonStatus(button, "Speaking…", 0);
+  speakQueue = [];
+  speechSynthesis.cancel();
+  doSpeak("testing sound for " + pilotLabel(pilots[0] && pilots[0].name, 0));
+  for (let i = 1; i <= 3; i++) queueSpeak(String(i));
+  // Some browsers silently ignore speech without any error event
+  setTimeout(() => {
+    if (speechTestButton === button && button.textContent === "Speaking…") {
+      showButtonStatus(button, "Browser gave no sound", 8000);
+      speechTestButton = null;
     }
-    return;
-  }
-  if (n === lastLapNumber) return;
+  }, 5000);
+});
 
-  // After pressing Start, only the race start pass (lap 0) matters; a stale
-  // lap number from the previous race may still arrive in an in-flight poll.
-  if (waitingToStart && n !== 0) {
-    lastLapNumber = n;
-    return;
-  }
+// Browsers cap the number of AudioContexts, so reuse a single one.
+let audioContext = null;
 
-  if (n < lastLapNumber) {
-    // Timer was stopped/restarted (from another device or voice command)
-    lastLapNumber = n;
-    return;
-  }
-  lastLapNumber = n;
-
-  if (n === 0) {
-    // First gate pass: race starts now
-    waitingToStart = false;
-    setRaceButtons(true);
-    setRaceStatus("Racing", "running");
-    startTimer();
-    addLap(0, "0");
-  } else {
-    const lap = (parseFloat(status.laptime) / 1000).toFixed(2);
-    addLap(n, lap);
-    console.log("lap", n, "raw:", status.laptime, "formatted:", lap);
-  }
+function beep(duration, frequency, type) {
+  if (!audioContext) audioContext = new AudioContext();
+  if (audioContext.state === "suspended") audioContext.resume();
+  const oscillator = audioContext.createOscillator();
+  oscillator.type = type;
+  oscillator.frequency.value = frequency;
+  oscillator.connect(audioContext.destination);
+  oscillator.start();
+  oscillator.stop(audioContext.currentTime + duration / 1000);
 }
 
-// Poll faster on the calibration tab for a smoother RSSI graph.
-// Chained timeouts avoid piling up requests on a slow connection.
-function pollStatus() {
-  const intervalMs = calib.style.display != "none" ? 200 : 500;
-  fetch("/api/status")
-    .then((response) => response.json())
-    .then(handleStatus)
-    .catch((err) => console.debug("/api/status failed:", err))
-    .finally(() => setTimeout(pollStatus, intervalMs));
-}
-pollStatus();
+// ═══════════════════════════════════════════════════════════════════
+//  Voice commands
+// ═══════════════════════════════════════════════════════════════════
 
-function setBandChannelIndex(freq) {
-  for (var i = 0; i < freqLookup.length; i++) {
-    for (var j = 0; j < freqLookup[i].length; j++) {
-      if (freqLookup[i][j] == freq) {
-        bandSelect.selectedIndex = i;
-        channelSelect.selectedIndex = j;
+// Colors the mic chip in the top bar: 'listening' (green), 'error' (red) or '' (grey)
+function setMicState(state) {
+  const mic = $("micIndicator");
+  mic.classList.toggle("listening", state === "listening");
+  mic.classList.toggle("error", state === "error");
+}
+
+function speakBestTimes() {
+  if (!raceData || !raceData.pilots.some((p) => p.laps.length > 1)) {
+    queueSpeak("No best lap recorded yet");
+    return;
+  }
+  raceData.pilots.forEach((p, i) => {
+    const st = pilotStats(p);
+    if (st.best !== null) queueSpeak(`${pilotLabel(p.name, i)}, best lap ${secs(st.best)} seconds`);
+  });
+}
+
+function startVoiceRecognition() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    console.warn("Speech recognition not supported in this browser. Voice commands disabled.");
+    return;
+  }
+  const recognition = new SpeechRecognition();
+  recognition.lang = "en-US";
+  recognition.continuous = true;
+  recognition.interimResults = false;
+
+  recognition.onresult = (event) => {
+    for (let i = event.resultIndex; i < event.results.length; ++i) {
+      if (!event.results[i].isFinal) continue;
+      const transcript = event.results[i][0].transcript.trim().toLowerCase();
+      // Ignore what the mic hears while (or just after) the announcer speaks,
+      // otherwise "Race stopped" / "Start racing" would trigger commands.
+      if (Date.now() - lastSpeechMs < 1500) break;
+      const has = (word) => new RegExp("\\b" + word + "\\b").test(transcript);
+      const racing = status && (status.state === STATE.COUNTDOWN || status.state === STATE.WAITING || status.state === STATE.RUNNING);
+      if (has("best time")) speakBestTimes();
+      else if (has("clear time") || has("clear best")) {
+        if (!racing) clearRace();
+      } else if (has("start") || has("begin") || has("go")) {
+        if (!racing) $("startRaceButton").click();
+      } else if (has("stop")) {
+        if (racing) stopRace();
       }
+      break;
     }
+  };
+  recognition.onerror = () => setMicState("error");
+  recognition.onend = () => {
+    try {
+      recognition.start(); // keep listening
+    } catch (e) {
+      console.warn("Failed to restart recognition", e);
+    }
+  };
+  try {
+    recognition.start();
+    setMicState("listening");
+  } catch (e) {
+    console.warn("Speech recognition start failed", e);
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+//  Start
+// ═══════════════════════════════════════════════════════════════════
+
+window.addEventListener("load", async () => {
+  try {
+    await loadConfig();
+  } catch (e) {
+    console.error("Could not load settings", e);
+  }
+  loadProfiles();
+  loadInfo();
+  pollStatus();
+  if (ui.voiceToggle.checked) enableAudioLoop();
+  startVoiceRecognition();
+});

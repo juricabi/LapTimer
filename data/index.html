@@ -7,8 +7,7 @@
   <meta name="theme-color" content="#0f172a" />
   <title>LapTimer</title>
   <link rel="icon" type="image/png" href="favicon.ico" />
-  <link rel="stylesheet" type="text/css" href="style.css?v=2" />
-  <script src="jquery-3.7.1.min.js"></script>
+  <link rel="stylesheet" type="text/css" href="style.css?v=3" />
   <script src="smoothie.js"></script>
 </head>
 
@@ -30,61 +29,63 @@
   </header>
 
   <nav class="tabs" role="tablist">
-    <button id="nav-link-config" class="tablinks active" onclick="openTab(event, 'config')">Setup</button>
-    <button id="nav-link-race" class="tablinks" onclick="openTab(event, 'race')">Race</button>
-    <button id="nav-link-calib" class="tablinks" onclick="openTab(event, 'calib')">Calibrate</button>
+    <button class="tablinks active" data-tab="config">Setup</button>
+    <button class="tablinks" data-tab="race">Race</button>
+    <button class="tablinks" data-tab="calib">Calibrate</button>
+    <button class="tablinks" data-tab="history">History</button>
   </nav>
 
   <main>
     <!-- ───────────── Setup ───────────── -->
     <section id="config" class="tabcontent">
       <div class="card">
-        <h2>Video channel</h2>
-        <div class="freq-display" aria-live="polite">
-          <span class="freq-mhz"><span id="freqMhz">----</span><small>MHz</small></span>
-          <span id="freqOutput" class="freq-ch">--</span>
+        <h2>Pilots</h2>
+        <div class="segmented" id="pilotCount" role="radiogroup" aria-label="Number of pilots">
+          <button data-value="1" class="active">1</button>
+          <button data-value="2">2</button>
+          <button data-value="3">3</button>
+          <button data-value="4">4</button>
         </div>
-        <div id="bandChannelFreq" class="channel-row">
-          <label class="field">
-            <span class="field-label">Band</span>
-            <select id="bandSelect">
-              <option value="A">A</option>
-              <option value="B">B</option>
-              <option value="E">E</option>
-              <option value="F">F</option>
-              <option value="R">R</option>
-              <option value="L">L</option>
-            </select>
-          </label>
-          <label class="field">
-            <span class="field-label">Channel</span>
-            <select id="channelSelect">
-              <option value="1">1</option>
-              <option value="2">2</option>
-              <option value="3">3</option>
-              <option value="4">4</option>
-              <option value="5">5</option>
-              <option value="6">6</option>
-              <option value="7">7</option>
-              <option value="8">8</option>
-            </select>
-          </label>
-        </div>
+        <p class="hint" id="pilotHint"></p>
+        <div id="pilotList"></div>
       </div>
 
       <div class="card">
         <h2>Race</h2>
+        <div class="segmented" id="raceMode" role="radiogroup" aria-label="Race mode">
+          <button data-value="0" class="active">Practice</button>
+          <button data-value="1">Timed</button>
+          <button data-value="2">Laps</button>
+        </div>
+        <p class="hint" id="raceModeHint"></p>
+        <div class="field" id="raceTimeField">
+          <label class="field-label" for="raceTime">Race time</label>
+          <div class="input-with-value">
+            <span class="val">2:00</span>
+            <input type="range" id="raceTime" min="30" max="600" step="15" />
+          </div>
+        </div>
+        <div class="field" id="raceLapsField">
+          <label class="field-label" for="raceLaps">Laps to finish</label>
+          <div class="input-with-value">
+            <span class="val">3</span>
+            <input type="range" id="raceLaps" min="1" max="30" step="1" />
+          </div>
+        </div>
+        <label class="switch-row">
+          <span>
+            <span class="switch-title">Countdown start</span><br />
+            <span class="hint">3-2-1-go beeps; otherwise the race starts on the first gate pass</span>
+          </span>
+          <span class="switch"><input type="checkbox" id="countdown" /><span class="slider"></span></span>
+        </label>
         <div class="field">
           <label class="field-label" for="minLap">Minimum lap time</label>
           <div class="input-with-value">
             <span class="val">10.0s</span>
-            <input type="range" id="minLap" step="0.5" min="1" max="20" oninput="updateMinLap(this,value)" />
+            <input type="range" id="minLap" step="0.5" min="1" max="20" />
           </div>
         </div>
-        <label class="field">
-          <span class="field-label">Pilot name</span>
-          <input type="text" id="pname" maxlength="20" placeholder="Used in announcements" />
-        </label>
       </div>
 
       <div class="card">
@@ -103,20 +104,24 @@
           <label class="field-label" for="rate">Speech rate</label>
           <div class="input-with-value">
             <span class="val">1.0</span>
-            <input type="range" min="0.1" max="2" step="0.1" id="rate" oninput="updateAnnouncerRate(this,value)" />
+            <input type="range" min="0.1" max="2" step="0.1" id="rate" />
           </div>
         </div>
+        <label class="switch-row">
+          <span>
+            <span class="switch-title">Announce delta</span><br />
+            <span class="hint">Say how much faster or slower than your best lap</span>
+          </span>
+          <span class="switch"><input type="checkbox" id="anDelta" /><span class="slider"></span></span>
+        </label>
         <label class="switch-row">
           <span>
             <span class="switch-title">Voice on this phone</span><br />
             <span class="hint">Speaks lap times through this device</span>
           </span>
-          <span class="switch">
-            <input type="checkbox" id="voiceToggle" checked onchange="this.checked ? enableAudioLoop() : disableAudioLoop()" />
-            <span class="slider"></span>
-          </span>
+          <span class="switch"><input type="checkbox" id="voiceToggle" checked /><span class="slider"></span></span>
         </label>
-        <button id="GenerateAudioButton" class="btn btn-ghost btn-block" onclick="generateAudio()">Test voice</button>
+        <button id="GenerateAudioButton" class="btn btn-ghost btn-block">Test voice</button>
       </div>
 
       <div class="card">
@@ -126,16 +131,13 @@
             <span class="switch-title">Buzzer</span><br />
             <span class="hint">Beeps on the timer for laps and events</span>
           </span>
-          <span class="switch">
-            <input type="checkbox" id="buzzerToggle" checked />
-            <span class="slider"></span>
-          </span>
+          <span class="switch"><input type="checkbox" id="buzzerToggle" checked /><span class="slider"></span></span>
         </label>
         <div class="field">
           <label class="field-label" for="alarmThreshold">Low battery alarm</label>
           <div class="input-with-value">
             <span class="val">Off</span>
-            <input type="range" id="alarmThreshold" step="0.1" min="0" max="4.2" oninput="updateAlarmThreshold(this,value)" />
+            <input type="range" id="alarmThreshold" step="0.1" min="0" max="4.2" />
           </div>
           <p class="hint">Beeps when the 1S battery drops to this voltage. On USB power alone the timer reads about 0.2&nbsp;V, so keep it Off while plugged in.</p>
         </div>
@@ -144,17 +146,21 @@
       <div class="card">
         <h2>Home WiFi</h2>
         <p class="hint">Join the timer to your home WiFi, or leave empty to use its own hotspot. Save, then restart to apply.</p>
-        <label class="field">
-          <span class="field-label">Network name</span>
-          <input type="text" id="ssid" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" />
-        </label>
+        <div class="field">
+          <label class="field-label" for="ssid">Network name</label>
+          <div class="input-row">
+            <input type="text" id="ssid" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <button id="wifiScanButton" class="btn btn-ghost">Scan</button>
+          </div>
+          <div id="wifiScanResults" class="scan-results" hidden></div>
+        </div>
         <label class="field">
           <span class="field-label">Password</span>
           <input type="password" id="pwd" maxlength="32" autocomplete="off" />
         </label>
         <div class="button-row">
-          <button id="restartEspButton" class="btn btn-ghost" onclick="restartEsp()">Restart timer</button>
-          <button class="btn btn-ghost btn-danger" onclick="forgetHomeWifi(this)">Forget home WiFi</button>
+          <button id="restartEspButton" class="btn btn-ghost">Restart timer</button>
+          <button id="forgetWifiButton" class="btn btn-ghost btn-danger">Forget home WiFi</button>
         </div>
         <p id="wifiForgotten" class="note" hidden>
           <b>Restarting into the hotspot.</b> In a few seconds join <b>LapTimer_xxxx&nbsp;192.168.4.1</b>
@@ -167,40 +173,43 @@
         </ul>
       </div>
 
+      <div class="card">
+        <h2>Timer</h2>
+        <dl class="info-grid">
+          <dt>Firmware</dt><dd id="infoVersion">–</dd>
+          <dt>Connection</dt><dd id="infoMode">–</dd>
+          <dt>Address</dt><dd id="infoIp">–</dd>
+        </dl>
+        <a class="link-small" href="update.html">Firmware update</a>
+      </div>
+
       <div class="save-bar">
-        <button class="btn btn-primary btn-block" onclick="saveConfig(this)">Save configuration</button>
+        <button id="saveButton" class="btn btn-primary btn-block">Save configuration</button>
       </div>
     </section>
 
     <!-- ───────────── Race ───────────── -->
-    <section id="race" class="tabcontent">
+    <section id="race" class="tabcontent" hidden>
       <div class="card clock-card">
         <span id="timer">00:00.00</span>
         <div class="race-meta">
           <span id="raceStatus" class="race-status">Ready</span>
-          <span id="raceFreq" class="race-freq"></span>
+          <span id="raceInfo" class="race-freq"></span>
         </div>
       </div>
       <div class="racebuttons">
-        <button id="startRaceButton" class="btn btn-go" onclick="startRace()">Start</button>
-        <button id="stopRaceButton" class="btn btn-stop" onclick="stopRace()" disabled>Stop</button>
-        <button id="clearLapsButton" class="btn btn-ghost" onclick="clearLaps()">Clear</button>
+        <button id="startRaceButton" class="btn btn-go">Start</button>
+        <button id="stopRaceButton" class="btn btn-stop" disabled>Stop</button>
+        <button id="clearLapsButton" class="btn btn-ghost">Clear</button>
       </div>
-      <div class="card table-card">
-        <table id="lapTable">
-          <tr>
-            <th>Lap</th>
-            <th>Time</th>
-            <th>2 laps</th>
-            <th>3 laps</th>
-          </tr>
-        </table>
-      </div>
+      <button id="raceScreenButton" class="btn btn-ghost btn-block">Race screen</button>
+      <div id="racePilots"></div>
     </section>
 
     <!-- ───────────── Calibrate ───────────── -->
-    <section id="calib" class="tabcontent">
+    <section id="calib" class="tabcontent" hidden>
       <div class="card">
+        <div class="segmented" id="calibPilot" role="radiogroup" aria-label="Pilot to calibrate"></div>
         <div class="rssi-now">
           <span class="field-label">Live RSSI</span>
           <span id="rssiNow">--</span>
@@ -212,23 +221,51 @@
           <label class="field-label" for="enter"><i class="dot dot-enter"></i>Enter RSSI</label>
           <div class="input-with-value">
             <span id="enterSpan" class="val">120</span>
-            <input type="range" min="50" max="255" step="1" id="enter" value="120" oninput="updateEnterRssi(this,value)" />
+            <input type="range" min="50" max="255" step="1" id="enter" value="120" />
           </div>
         </div>
         <div class="field">
           <label class="field-label" for="exit"><i class="dot dot-exit"></i>Exit RSSI</label>
           <div class="input-with-value">
             <span id="exitSpan" class="val">100</span>
-            <input type="range" min="50" max="255" step="1" id="exit" value="100" oninput="updateExitRssi(this,value)" />
+            <input type="range" min="50" max="255" step="1" id="exit" value="100" />
           </div>
         </div>
         <p class="hint">A lap is counted when RSSI rises above Enter, peaks, then drops below Exit.</p>
-        <button class="btn btn-primary btn-block" onclick="saveConfig(this)">Save thresholds</button>
+        <label class="switch-row">
+          <span>
+            <span class="switch-title">Auto-calibrate</span><br />
+            <span class="hint">Fly 3 or more passes through the gate; suggested thresholds appear below</span>
+          </span>
+          <span class="switch"><input type="checkbox" id="autoCal" /><span class="slider"></span></span>
+        </label>
+        <div id="autoCalResult" class="note" hidden></div>
+        <button class="btn btn-primary btn-block" id="saveThresholdsButton">Save thresholds</button>
       </div>
+    </section>
+
+    <!-- ───────────── History ───────────── -->
+    <section id="history" class="tabcontent" hidden>
+      <div class="button-row">
+        <button id="exportAllButton" class="btn btn-ghost">Export all (CSV)</button>
+        <button id="clearHistoryButton" class="btn btn-ghost btn-danger">Delete all</button>
+      </div>
+      <p class="hint" id="historyEmpty" hidden>No saved races yet. Races are saved when they finish or are stopped.</p>
+      <div id="historyList"></div>
     </section>
   </main>
 
-  <script src="script.js?v=2"></script>
+  <!-- Full-screen race view for a phone or tablet at the field -->
+  <div id="raceScreen" class="race-screen" hidden>
+    <div class="rs-top">
+      <span id="rsClock" class="rs-clock">00:00.00</span>
+      <span id="rsStatus" class="rs-status"></span>
+      <button id="rsClose" class="rs-close" aria-label="Close race screen">✕</button>
+    </div>
+    <div id="rsPilots" class="rs-pilots"></div>
+  </div>
+
+  <script src="script.js?v=3"></script>
 </body>
 
 </html>
