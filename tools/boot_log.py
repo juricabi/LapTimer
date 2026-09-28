@@ -13,6 +13,7 @@ import serial
 
 if len(sys.argv) < 2:
     sys.exit(__doc__)
+sys.stdout.reconfigure(errors="replace")  # boot noise must not crash a Windows console
 port = sys.argv[1]
 seconds = float(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2][0].isdigit() else 15
 reset = "--reset" in sys.argv
