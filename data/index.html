@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>LapTimer</title>
+  <link rel="icon" type="image/png" href="favicon.ico" />
+  <link rel="stylesheet" type="text/css" href="style.css?v=2" />
+  <script src="jquery-3.7.1.min.js"></script>
+  <script src="smoothie.js"></script>
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="favicon.ico" alt="" width="34" height="34" />
+      <span>LapTimer</span>
+    </div>
+    <div class="status-chips">
+      <span id="micIndicator" class="chip chip-icon" title="Voice commands: start, go, stop, best time, clear time">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          <path d="M19 11a7 7 0 0 1-14 0M12 18v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+      </span>
+      <span id="bvolt" class="chip" title="Battery voltage">--V</span>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button id="nav-link-config" class="tablinks active" onclick="openTab(event, 'config')">Setup</button>
+    <button id="nav-link-race" class="tablinks" onclick="openTab(event, 'race')">Race</button>
+    <button id="nav-link-calib" class="tablinks" onclick="openTab(event, 'calib')">Calibrate</button>
+  </nav>
+
+  <main>
+    <!-- ───────────── Setup ───────────── -->
+    <section id="config" class="tabcontent">
+      <div class="card">
+        <h2>Video channel</h2>
+        <div class="freq-display" aria-live="polite">
+          <span class="freq-mhz"><span id="freqMhz">----</span><small>MHz</small></span>
+          <span id="freqOutput" class="freq-ch">--</span>
+        </div>
+        <div id="bandChannelFreq" class="channel-row">
+          <label class="field">
+            <span class="field-label">Band</span>
+            <select id="bandSelect">
+              <option value="A">A</option>
+              <option value="B">B</option>
+              <option value="E">E</option>
+              <option value="F">F</option>
+              <option value="R">R</option>
+              <option value="L">L</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Channel</span>
+            <select id="channelSelect">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+              <option value="7">7</option>
+              <option value="8">8</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Race</h2>
+        <div class="field">
+          <label class="field-label" for="minLap">Minimum lap time</label>
+          <div class="input-with-value">
+            <span class="val">10.0s</span>
+            <input type="range" id="minLap" step="0.5" min="1" max="20" oninput="updateMinLap(this,value)" />
+          </div>
+        </div>
+        <label class="field">
+          <span class="field-label">Pilot name</span>
+          <input type="text" id="pname" maxlength="20" placeholder="Used in announcements" />
+        </label>
+      </div>
+
+      <div class="card">
+        <h2>Announcer</h2>
+        <label class="field">
+          <span class="field-label">Announce</span>
+          <select id="announcerSelect">
+            <option value="none">Nothing</option>
+            <option value="beep">Beep</option>
+            <option value="1lap">Lap time</option>
+            <option value="2lap">2 consecutive laps</option>
+            <option value="3lap">3 consecutive laps</option>
+          </select>
+        </label>
+        <div class="field">
+          <label class="field-label" for="rate">Speech rate</label>
+          <div class="input-with-value">
+            <span class="val">1.0</span>
+            <input type="range" min="0.1" max="2" step="0.1" id="rate" oninput="updateAnnouncerRate(this,value)" />
+          </div>
+        </div>
+        <label class="switch-row">
+          <span>
+            <span class="switch-title">Voice on this phone</span><br />
+            <span class="hint">Speaks lap times through this device</span>
+          </span>
+          <span class="switch">
+            <input type="checkbox" id="voiceToggle" checked onchange="this.checked ? enableAudioLoop() : disableAudioLoop()" />
+            <span class="slider"></span>
+          </span>
+        </label>
+        <button id="GenerateAudioButton" class="btn btn-ghost btn-block" onclick="generateAudio()">Test voice</button>
+      </div>
+
+      <div class="card">
+        <h2>Alerts</h2>
+        <label class="switch-row">
+          <span>
+            <span class="switch-title">Buzzer</span><br />
+            <span class="hint">Beeps on the timer for laps and events</span>
+          </span>
+          <span class="switch">
+            <input type="checkbox" id="buzzerToggle" checked />
+            <span class="slider"></span>
+          </span>
+        </label>
+        <div class="field">
+          <label class="field-label" for="alarmThreshold">Low battery alarm</label>
+          <div class="input-with-value">
+            <span class="val">Off</span>
+            <input type="range" id="alarmThreshold" step="0.1" min="0" max="4.2" oninput="updateAlarmThreshold(this,value)" />
+          </div>
+          <p class="hint">Beeps when the 1S battery drops to this voltage. On USB power alone the timer reads about 0.2&nbsp;V, so keep it Off while plugged in.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Home WiFi</h2>
+        <p class="hint">Join the timer to your home WiFi, or leave empty to use its own hotspot. Save, then restart to apply.</p>
+        <label class="field">
+          <span class="field-label">Network name</span>
+          <input type="text" id="ssid" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span class="field-label">Password</span>
+          <input type="password" id="pwd" maxlength="32" autocomplete="off" />
+        </label>
+        <div class="button-row">
+          <button id="restartEspButton" class="btn btn-ghost" onclick="restartEsp()">Restart timer</button>
+          <button class="btn btn-ghost btn-danger" onclick="forgetHomeWifi(this)">Forget home WiFi</button>
+        </div>
+        <p id="wifiForgotten" class="note" hidden>
+          <b>Restarting into the hotspot.</b> In a few seconds join <b>LapTimer_xxxx&nbsp;192.168.4.1</b>
+          (password <b>laptimer</b>) and open <b>http://192.168.4.1</b>.
+        </p>
+        <ul class="info-list">
+          <li><b>On your WiFi</b> open <b>http://laptimer.local</b>, or the timer's IP from your router.</li>
+          <li><b>WiFi not found</b> within 60&nbsp;s of power-on: the timer starts its own hotspot <b>LapTimer_xxxx&nbsp;192.168.4.1</b>, password <b>laptimer</b>.</li>
+          <li><b>Once connected</b> it stays on your WiFi and reconnects if the WiFi drops.</li>
+        </ul>
+      </div>
+
+      <div class="save-bar">
+        <button class="btn btn-primary btn-block" onclick="saveConfig(this)">Save configuration</button>
+      </div>
+    </section>
+
+    <!-- ───────────── Race ───────────── -->
+    <section id="race" class="tabcontent">
+      <div class="card clock-card">
+        <span id="timer">00:00.00</span>
+        <div class="race-meta">
+          <span id="raceStatus" class="race-status">Ready</span>
+          <span id="raceFreq" class="race-freq"></span>
+        </div>
+      </div>
+      <div class="racebuttons">
+        <button id="startRaceButton" class="btn btn-go" onclick="startRace()">Start</button>
+        <button id="stopRaceButton" class="btn btn-stop" onclick="stopRace()" disabled>Stop</button>
+        <button id="clearLapsButton" class="btn btn-ghost" onclick="clearLaps()">Clear</button>
+      </div>
+      <div class="card table-card">
+        <table id="lapTable">
+          <tr>
+            <th>Lap</th>
+            <th>Time</th>
+            <th>2 laps</th>
+            <th>3 laps</th>
+          </tr>
+        </table>
+      </div>
+    </section>
+
+    <!-- ───────────── Calibrate ───────────── -->
+    <section id="calib" class="tabcontent">
+      <div class="card">
+        <div class="rssi-now">
+          <span class="field-label">Live RSSI</span>
+          <span id="rssiNow">--</span>
+        </div>
+        <canvas id="rssiChart"></canvas>
+      </div>
+      <div class="card">
+        <div class="field">
+          <label class="field-label" for="enter"><i class="dot dot-enter"></i>Enter RSSI</label>
+          <div class="input-with-value">
+            <span id="enterSpan" class="val">120</span>
+            <input type="range" min="50" max="255" step="1" id="enter" value="120" oninput="updateEnterRssi(this,value)" />
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label" for="exit"><i class="dot dot-exit"></i>Exit RSSI</label>
+          <div class="input-with-value">
+            <span id="exitSpan" class="val">100</span>
+            <input type="range" min="50" max="255" step="1" id="exit" value="100" oninput="updateExitRssi(this,value)" />
+          </div>
+        </div>
+        <p class="hint">A lap is counted when RSSI rises above Enter, peaks, then drops below Exit.</p>
+        <button class="btn btn-primary btn-block" onclick="saveConfig(this)">Save thresholds</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="script.js?v=2"></script>
+</body>
+
+</html>

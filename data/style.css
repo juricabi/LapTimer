@@ -1,0 +1,712 @@
+/* ─────────────────────────────────────────────────────────────
+   Design tokens
+   Contrast (WCAG 2.1) checked for both themes:
+   body/muted text ≥ 4.5:1, button labels ≥ 4.5:1,
+   control borders & focus rings ≥ 3:1 against their surface.
+   ───────────────────────────────────────────────────────────── */
+:root {
+  /* surfaces */
+  --bg: #f1f5f9;
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --border: #e2e8f0;          /* decorative dividers only */
+  --control-border: #768399;  /* inputs, switches: 3.8:1 */
+
+  /* text */
+  --text: #0f172a;            /* 17.9:1 */
+  --muted: #64748b;           /* 4.8:1 */
+
+  /* brand & semantic (fill = button background, text = on surface) */
+  --accent: #2563eb;          /* white label 5.2:1 */
+  --accent-soft: rgba(37, 99, 235, 0.10);
+  --accent-text: #1d4ed8;     /* on accent-soft 5.7:1 */
+  --go: #15803d;              /* white label 5.0:1 */
+  --go-text: #15803d;
+  --stop: #dc2626;            /* white label 4.8:1 */
+  --stop-text: #b91c1c;       /* on surface 6.5:1 */
+  --warn-text: #b45309;       /* 5.0:1 */
+  --best: rgba(22, 163, 74, 0.12);
+
+  --topbar: #0f172a;
+  --topbar-text: #f8fafc;
+  --topbar-muted: #94a3b8;
+
+  /* scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --tap: 44px;                /* minimum touch target */
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 2px 12px rgba(15, 23, 42, 0.05);
+  --focus: 0 0 0 3px rgba(37, 99, 235, 0.45);
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1120;
+    --surface: #131c2e;
+    --surface-2: #1b2539;
+    --border: #243049;
+    --control-border: #64748b;  /* 3.6:1 */
+
+    --text: #e2e8f0;            /* 13.8:1 */
+    --muted: #94a3b8;           /* 6.6:1 */
+
+    --accent: #2563eb;          /* white label 5.2:1 */
+    --accent-soft: rgba(59, 130, 246, 0.16);
+    --accent-text: #bfdbfe;     /* on accent-soft 9.5:1 */
+    --go: #15803d;
+    --go-text: #4ade80;         /* 9.8:1 */
+    --stop: #dc2626;
+    --stop-text: #f87171;       /* on surface 6.2:1 */
+    --warn-text: #fbbf24;
+    --best: rgba(34, 197, 94, 0.14);
+
+    --topbar: #070c18;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --focus: 0 0 0 3px rgba(96, 165, 250, 0.6);
+
+    color-scheme: dark;
+  }
+}
+
+/* ───────── Base ───────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  min-height: 100vh;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}
+
+/* ───────── Top bar & tabs ───────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  padding-top: max(var(--space-3), env(safe-area-inset-top));
+  background: var(--topbar);
+  color: var(--topbar-text);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-weight: 700;
+  font-size: 18px;
+}
+
+/* The logo is dark on transparent, so give it a light tile on the dark top bar */
+.brand img {
+  width: 34px;
+  height: 34px;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  background: #f8fafc;
+}
+
+.status-chips {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 30px;
+  padding: 0 var(--space-3);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip-icon {
+  padding: 0 var(--space-2);
+  color: var(--topbar-muted);
+}
+
+.chip-icon.listening {
+  color: #4ade80;
+}
+
+.chip-icon.error {
+  color: #f87171;
+}
+
+.tabs {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  margin: var(--space-3) auto 0;
+  max-width: 720px;
+  width: calc(100% - 2 * var(--space-3));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.tablinks {
+  flex: 1;
+  min-height: var(--tap);
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.tablinks:hover {
+  color: var(--text);
+}
+
+.tablinks.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ───────── Layout ───────── */
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-3) var(--space-3) var(--space-5);
+}
+
+/* Tabs are shown with display:block by the script, so space children with margins */
+.tabcontent > * + * {
+  margin-top: var(--space-3);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.card h2 {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: calc(-1 * var(--space-1));
+}
+
+.hint {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Small print under a form: muted text, items separated by thin rules */
+.info-list {
+  list-style: none;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.info-list li {
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+
+.info-list b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Highlighted message, e.g. after "Forget home WiFi" */
+.note {
+  padding: var(--space-3);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+/* ───────── Fields ───────── */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.field-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+input[type="text"],
+input[type="password"],
+select {
+  width: 100%;
+  min-height: var(--tap);
+  font: inherit;
+  font-size: 16px; /* 16px stops iOS zooming into the field */
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+input::placeholder {
+  color: var(--muted);
+}
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 36px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus,
+select:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus);
+}
+
+/* Video channel: large frequency readout above the band/channel pickers */
+.freq-display {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.freq-mhz {
+  font-size: 40px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.freq-mhz small {
+  font-size: 16px;
+  font-weight: 700;
+  margin-left: var(--space-1);
+  letter-spacing: 0;
+}
+
+.freq-ch {
+  font-size: 22px;
+  font-weight: 800;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 2px solid currentColor;
+}
+
+.channel-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+/* Range slider with value on the left (script updates the .val span) */
+.input-with-value {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.input-with-value .val {
+  min-width: 52px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  text-align: center;
+  font-weight: 700;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  height: var(--tap);
+  accent-color: var(--accent);
+  cursor: pointer;
+  background: transparent;
+}
+
+/* Toggle row: the whole row is a label, so tapping the text flips the switch */
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: var(--tap);
+  cursor: pointer;
+}
+
+.switch-title {
+  font-weight: 600;
+}
+
+.switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 50px;
+  height: 30px;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.switch .slider {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 2px solid var(--control-border);
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+.switch .slider::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--control-border);
+  transition: transform 0.2s, background-color 0.2s;
+}
+
+.switch input:checked + .slider {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch input:checked + .slider::before {
+  background: #fff;
+  transform: translateX(20px);
+}
+
+.switch input:focus-visible + .slider {
+  box-shadow: var(--focus);
+}
+
+/* ───────── Buttons ───────── */
+.btn {
+  min-height: var(--tap);
+  font: inherit;
+  font-weight: 600;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+  color: #fff;
+  background: var(--accent);
+  transition: filter 0.15s, transform 0.05s, background-color 0.2s;
+}
+
+.btn:hover {
+  filter: brightness(1.08);
+}
+
+.btn:active {
+  transform: scale(0.98);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  transform: none;
+  filter: none;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--control-border);
+}
+
+.button-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.btn-danger {
+  color: var(--stop-text);
+  border-color: var(--stop-text);
+}
+
+.btn-go {
+  background: var(--go);
+}
+
+.btn-stop {
+  background: var(--stop);
+}
+
+.btn.save-ok {
+  background: var(--go);
+}
+
+.btn.save-failed {
+  background: var(--stop);
+}
+
+.save-bar {
+  position: sticky;
+  bottom: 0;
+  padding: var(--space-3) 0;
+  padding-bottom: max(var(--space-3), env(safe-area-inset-bottom));
+  background: linear-gradient(to top, var(--bg) 70%, transparent);
+}
+
+.save-bar .btn {
+  min-height: 50px;
+  font-size: 16px;
+  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.3);
+}
+
+/* ───────── Race ───────── */
+.clock-card {
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-5) var(--space-4);
+}
+
+#timer {
+  font-size: clamp(48px, 16vw, 80px);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.race-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.race-status {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.race-status.waiting {
+  color: var(--warn-text);
+}
+
+.race-status.running {
+  color: var(--go-text);
+}
+
+.race-freq {
+  font-size: 13px;
+  font-weight: 700;
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.racebuttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.racebuttons .btn {
+  min-height: 52px;
+  font-size: 16px;
+}
+
+.table-card {
+  padding: 0;
+  overflow: hidden;
+  gap: 0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+table th,
+table td {
+  padding: var(--space-3);
+  text-align: right;
+}
+
+table th:first-child,
+table td:first-child {
+  text-align: left;
+  color: var(--muted);
+}
+
+table th {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+
+table td {
+  border-bottom: 1px solid var(--border);
+}
+
+table tr:last-child td {
+  border-bottom: 0;
+}
+
+table td:nth-child(2) {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+table tr.best-lap td {
+  background: var(--best);
+}
+
+table tr.best-lap td:nth-child(2)::after {
+  content: " ★";
+  color: var(--go-text);
+}
+
+/* ───────── Calibration ───────── */
+.rssi-now {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+#rssiNow {
+  font-size: 36px;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+#rssiChart {
+  width: 100%;
+  height: 240px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.dot-enter {
+  background: hsl(8.2, 86.5%, 53.7%);
+}
+
+.dot-exit {
+  background: hsl(25, 85%, 55%);
+}
+
+@media (min-width: 640px) {
+  #rssiChart {
+    height: 320px;
+  }
+}
