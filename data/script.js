@@ -1363,14 +1363,15 @@ $("spectrumButton").addEventListener("click", async (e) => {
       showButtonStatus(button, "Not possible during a race");
       return;
     }
-    // draw as the data comes in: bars appear during the first sweep and grow in the next ones
+    // follow the scan as it runs; the chart eases towards each new reading
     let data = { running: true };
-    for (let i = 0; i < 40 && data.running; i++) {
-      await new Promise((r) => setTimeout(r, 300));
+    spectrumReset();
+    for (let i = 0; i < 80 && data.running; i++) {
+      await new Promise((r) => setTimeout(r, 150));
       data = await fetchJson("/api/spectrum");
       if (data.running && data.total) {
         showButtonStatus(button, `Scanning… ${Math.round((100 * data.done) / data.total)}%`, 0);
-        renderSpectrum(data);
+        spectrumUpdate(data);
       }
     }
     const raceStarted = status && status.state >= STATE.COUNTDOWN && status.state <= STATE.RUNNING;
@@ -1378,7 +1379,7 @@ $("spectrumButton").addEventListener("click", async (e) => {
       showButtonStatus(button, "Stopped: a race started", 4000);
       return;
     }
-    renderSpectrum(data);
+    spectrumUpdate(data);
     button.dataset.label = "Scan again";
     showButtonStatus(button, "Scan again", 1);
   } catch (err) {
@@ -1390,60 +1391,120 @@ $("spectrumButton").addEventListener("click", async (e) => {
   }
 });
 
-// Bar chart of RSSI per frequency, with the active pilots' channels marked
-function renderSpectrum(data) {
-  const box = $("spectrum");
-  const values = data.rssi || [];
-  const measured = values.filter((v) => v > 0); // 0 = not measured yet
-  if (!measured.length) return;
-  // Drawn like the live RSSI graph: same line and fill colours and a scale that fits the
-  // data. Noise stays small because the range is at least 90 RSSI units.
-  const barW = 10;
-  const width = values.length * barW;
-  const height = 170;
-  const min = Math.max(0, Math.min(...measured) - 5);
-  const max = Math.max(min + 90, ...measured);
-  const freqX = (f) => ((f - data.start) / data.step) * barW + barW / 2;
-  const y = (v) => height - ((v - min) / (max - min)) * height;
+// The chart is drawn like the live RSSI graph: an area line with a scale that fits the data
+// (at least 90 RSSI units, so noise stays small). It is built once per scan; afterwards only
+// the line moves. Shown values ease towards the latest readings for a smooth update.
+const SPEC_W = 10; // SVG units per frequency step
+const SPEC_H = 170;
+const spec = { data: null, shown: [], min: 0, max: 90, frame: 0, els: null };
 
-  let svg = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Signal strength per frequency">`;
+function spectrumReset() {
+  cancelAnimationFrame(spec.frame); // a frame left over from an earlier scan (e.g. page was hidden)
+  spec.frame = 0;
+  spec.data = null;
+  spec.shown = [];
+  spec.els = null;
+}
+
+function spectrumUpdate(data) {
+  const measured = (data.rssi || []).filter((v) => v > 0); // 0 = not measured yet
+  if (!measured.length) return;
+  if (!spec.els) spectrumBuild(data, Math.min(...measured));
+  spec.data = data;
+  const complete = !data.running;
+  const floor = Math.max(0, Math.min(...measured) - 5);
+  spec.els.note.hidden = !complete || Math.max(...measured) - floor >= 15;
+  if (!spec.frame) spec.frame = requestAnimationFrame(spectrumFrame);
+}
+
+// Builds the chart elements for this scan: plot, pilot markers, labels
+function spectrumBuild(data, firstMin) {
+  const box = $("spectrum");
+  const count = data.rssi.length;
+  const width = count * SPEC_W;
+  const freqX = (f) => ((f - data.start) / data.step) * SPEC_W + SPEC_W / 2;
+  const pct = (f) => ((freqX(f) / width) * 100).toFixed(2) + "%";
+  const active = pilots.slice(0, pilotCount).map((p, i) => ({ p, i })).filter(({ p }) => bandChannel(p.freq));
+
+  let markers = "";
+  active.forEach(({ p, i }) => {
+    const x = freqX(p.freq);
+    markers += `<line x1="${x}" x2="${x}" y1="0" y2="${SPEC_H}" stroke="var(--p${i + 1})" stroke-width="2" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" />`;
+  });
+  let labels = "";
+  for (let f = 5650; f <= data.start + (count - 1) * data.step; f += 25) labels += `<span style="left:${pct(f)}">${f}</span>`;
+  let names = "";
+  active.forEach(({ p, i }) => {
+    names += `<span style="left:${pct(p.freq)};color:var(--p${i + 1})">${escapeHtml(channelName(p.freq))}</span>`;
+  });
+
+  box.innerHTML = `
+    <div class="spectrum-pilots">${names}</div>
+    <div class="spectrum-plot">
+      <svg viewBox="0 0 ${width} ${SPEC_H}" preserveAspectRatio="none" role="img" aria-label="Signal strength per frequency">
+        <path class="spec-area" fill="hsla(214, 70%, 60%, 0.2)" />
+        <path class="spec-line" fill="none" stroke="hsl(214, 70%, 60%)" stroke-width="2" vector-effect="non-scaling-stroke" />
+        ${markers}
+      </svg>
+      <span class="spectrum-scale spectrum-scale-max"></span><span class="spectrum-scale spectrum-scale-min"></span>
+    </div>
+    <div class="spectrum-labels">${labels}</div>
+    <p class="hint spectrum-quiet" hidden>No busy channels found: everything is at the background level.</p>`;
+  box.hidden = false;
+  spec.els = {
+    area: box.querySelector(".spec-area"),
+    line: box.querySelector(".spec-line"),
+    max: box.querySelector(".spectrum-scale-max"),
+    min: box.querySelector(".spectrum-scale-min"),
+    note: box.querySelector(".spectrum-quiet"),
+  };
+  spec.shown = new Array(count).fill(null);
+  spec.min = Math.max(0, firstMin - 5);
+  spec.max = spec.min + 90;
+}
+
+// One animation frame: move shown values and the scale part of the way to their targets
+function spectrumFrame() {
+  spec.frame = 0;
+  const { data, els } = spec;
+  if (!data || !els) return;
+  const target = data.rssi;
+  const measured = target.filter((v) => v > 0);
+  const targetMin = Math.max(0, Math.min(...measured) - 5);
+  const targetMax = Math.max(targetMin + 90, ...measured);
+  const ease = 0.25;
+  let moving = false;
+  const step = (from, to) => {
+    const next = from + (to - from) * ease;
+    if (Math.abs(to - next) > 0.3) {
+      moving = true;
+      return next;
+    }
+    return to;
+  };
+  spec.min = step(spec.min, targetMin);
+  spec.max = step(spec.max, targetMax);
+  target.forEach((v, i) => {
+    if (!v) return;
+    spec.shown[i] = step(spec.shown[i] === null ? spec.min : spec.shown[i], v); // new points rise from the baseline
+  });
+
+  const y = (v) => SPEC_H - ((v - spec.min) / (spec.max - spec.min)) * SPEC_H;
   const points = [];
-  values.forEach((v, i) => {
-    if (v) points.push([i * barW + barW / 2, y(v)]);
+  spec.shown.forEach((v, i) => {
+    if (v !== null) points.push(`${(i * SPEC_W + SPEC_W / 2).toFixed(1)},${y(v).toFixed(1)}`);
   });
   if (points.length) {
-    const line = points.map(([px, py], k) => `${k ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join(" ");
-    const area = `${line} L${points[points.length - 1][0]},${height} L${points[0][0]},${height} Z`;
-    svg += `<path d="${area}" fill="hsla(214, 70%, 60%, 0.2)" />`;
-    svg += `<path d="${line}" fill="none" stroke="hsl(214, 70%, 60%)" stroke-width="2" vector-effect="non-scaling-stroke" />`;
+    const line = "M" + points.join(" L");
+    const firstX = points[0].split(",")[0];
+    const lastX = points[points.length - 1].split(",")[0];
+    els.line.setAttribute("d", line);
+    els.area.setAttribute("d", `${line} L${lastX},${SPEC_H} L${firstX},${SPEC_H} Z`);
   }
+  els.max.textContent = Math.round(spec.max);
+  els.min.textContent = Math.round(spec.min);
 
-  pilots.slice(0, pilotCount).forEach((p, i) => {
-    if (!bandChannel(p.freq)) return;
-    const x = freqX(p.freq);
-    svg += `<line x1="${x}" x2="${x}" y1="0" y2="${height}" stroke="var(--p${i + 1})" stroke-width="2" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" />`;
-  });
-  svg += "</svg>";
-  // frequency labels as normal text (the chart itself stretches), rotated to fit
-  const lastFreq = data.start + (values.length - 1) * data.step;
-  let labels = '<div class="spectrum-labels">';
-  for (let f = 5650; f <= lastFreq; f += 25) {
-    labels += `<span style="left:${((freqX(f) / width) * 100).toFixed(2)}%">${f}</span>`;
-  }
-  labels += "</div>";
-  // pilot channel names above the chart, also as normal text
-  let names = '<div class="spectrum-pilots">';
-  pilots.slice(0, pilotCount).forEach((p, i) => {
-    if (!bandChannel(p.freq)) return;
-    names += `<span style="left:${((freqX(p.freq) / width) * 100).toFixed(2)}%;color:var(--p${i + 1})">${escapeHtml(channelName(p.freq))}</span>`;
-  });
-  names += "</div>";
-  const complete = !data.running;
-  const busy = Math.max(...measured) - min >= 15;
-  const note = !complete || busy ? "" : '<p class="hint spectrum-quiet">No busy channels found: everything is at the background level.</p>';
-  const scale = `<span class="spectrum-scale spectrum-scale-max">${Math.round(max)}</span><span class="spectrum-scale spectrum-scale-min">${Math.round(min)}</span>`;
-  box.innerHTML = names + `<div class="spectrum-plot">${svg}${scale}</div>` + labels + note;
-  box.hidden = false;
+  if (moving || data.running) spec.frame = requestAnimationFrame(spectrumFrame);
 }
 
 // ═══════════════════════════════════════════════════════════════════
