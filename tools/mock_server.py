@@ -194,7 +194,7 @@ class H(SimpleHTTPRequestHandler):
                 if S["failConfig"] > 0:
                     S["failConfig"] -= 1
                     return self._json({"status": "error"}, 500)
-                return self._json(CONFIG)
+                return self._json({"rev": S["rev"], **CONFIG})
             if u.path == "/api/status":
                 count = CONFIG["pilots"] if R["state"] == 0 and not any(p["laps"] for p in R["pilots"]) else R["count"]
                 elapsed = t - R["start"] if R["state"] in (1, 3) else 0

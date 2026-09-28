@@ -88,6 +88,7 @@ void LapTimer::resetPilot(PilotState &p)
 {
     p.inPass = false;
     p.hoverBlocked = false;
+    p.belowExit = 0;
     p.peak = 0;
     p.hasPassed = false;
     p.timeUpBeeped = false;
@@ -634,8 +635,17 @@ void LapTimer::sample(uint8_t pilot, uint8_t v, uint32_t nowMs)
 
     if (p.inPass && v < exit)
     {
-        p.inPass = false;
-        onPass(pilot, passTime(p));
+        // one pilot: the Kalman filter already smooths single readings
+        if (++p.belowExit >= (count > 1 ? HOP_EXIT_READINGS : 1))
+        {
+            p.inPass = false;
+            p.belowExit = 0;
+            onPass(pilot, passTime(p));
+        }
+    }
+    else
+    {
+        p.belowExit = 0;
     }
 }
 

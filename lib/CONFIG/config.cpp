@@ -66,6 +66,7 @@ void Config::write(void)
 
 void Config::toJsonDoc(JsonDocument &config)
 {
+    config["rev"] = revision; // first: values read after it are at least this new
     config["freq"] = conf.frequency;
     config["minLap"] = conf.minLap;
     config["alarm"] = conf.alarm;

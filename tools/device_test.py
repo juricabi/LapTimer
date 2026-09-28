@@ -49,7 +49,7 @@ try:
     rev0 = s0["cfg"]
     st, answer = req("/config", {"countdown": not original["countdown"]})
     _, c = req("/config")
-    same = all(c[k] == original[k] for k in original if k != "countdown")
+    same = all(c[k] == original[k] for k in original if k not in ("countdown", "rev"))
     check("partial settings save keeps the rest", st == 200 and same and c["countdown"] != original["countdown"])
     check("settings revision increases, reply has base and rev",
           answer.get("base") == rev0 and answer.get("rev", 0) == rev0 + 1 and status()["cfg"] == answer["rev"],
@@ -141,7 +141,7 @@ finally:
         req("/api/profiles/remove", {"name": n})
     time.sleep(1.5)
     _, now = req("/config")
-    check("settings restored", all(now[k] == original[k] for k in original))
+    check("settings restored", all(now[k] == original[k] for k in original if k != "rev"))
 
 print(f"\n{sum(results)}/{len(results)} checks passed")
 sys.exit(0 if all(results) else 1)

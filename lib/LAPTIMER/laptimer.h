@@ -29,6 +29,9 @@
 // Still above exit this long after the peak: landed or hovering near the timer. A racing
 // pilot's pass is counted at the peak; before the pilot's first pass the old peak is dropped.
 #define PEAK_TIMEOUT_MS 3000
+// With several pilots a reading is 5 ms of signal, and one odd reading (measured: ~0.4%,
+// near noise level) must not end a pass early: this many readings below exit in a row end it
+#define HOP_EXIT_READINGS 2
 
 // Spectrum scan: RSSI across the 5.8 GHz band to spot channels already in use
 #define SPECTRUM_START_MHZ 5645
@@ -79,6 +82,7 @@ struct PilotState {
     uint32_t peakPrevMs;
     uint8_t peakNext;            // value after the peak (valid if peakNextMs != 0)
     uint32_t peakNextMs;
+    uint8_t belowExit;           // readings below exit in a row
 
     // race data
     bool hasPassed;
