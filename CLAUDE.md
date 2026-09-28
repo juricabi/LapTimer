@@ -32,8 +32,10 @@ Every change goes through all steps; a step is done when its check passes.
   core) queues commands with `requestStart/requestStop/requestClear`.
 - **Race wins over a channel scan**: starting a race cancels a scan; a scan is refused during
   a race, the countdown or a queued start.
-- **Cache busting**: bump `?v=N` on `style.css` / `script.js` in `index.html` and `update.html`
-  whenever those files change (phones otherwise cache them for 10 minutes).
+- **Cache busting** is automatic: `tools/stamp_versions.py` runs before every PlatformIO build
+  and stamps `?v=<content hash>` on `style.css` / `script.js` in `index.html` and `update.html`.
+  Those two pages are served uncached, the CSS/JS cached for a day. Keep new assets in the
+  script's `ASSETS` list.
 - **Storage**: a web-files (LittleFS) update replaces race history and saved pilots; settings
   (EEPROM) and saved WiFi networks (NVS) survive both kinds of update. Every race/profile
   write goes through `RaceHistory::writeJson` (temp file + rename) under the history lock.

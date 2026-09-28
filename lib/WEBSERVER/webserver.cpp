@@ -191,7 +191,10 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
 // opened in the normal browser at the address shown in the WiFi name.
 static void handleRoot(AsyncWebServerRequest *request)
 {
-    request->send(LittleFS, "/index.html", "text/html");
+    // always fresh, so it points to the current ?v= of style.css / script.js
+    AsyncWebServerResponse *response = request->beginResponse(LittleFS, "/index.html", "text/html");
+    response->addHeader("Cache-Control", "no-cache");
+    request->send(response);
 }
 
 static void handleNotFound(AsyncWebServerRequest *request)
@@ -336,7 +339,11 @@ Battery Voltage:\t%0.1fv";
 
     registerApi();
 
-    server.serveStatic("/", LittleFS, "/").setCacheControl("max-age=600");
+    // The pages are always fetched fresh; they load style.css/script.js with ?v=<content hash>
+    // (stamped at build time by tools/stamp_versions.py), so those can be cached for a day.
+    server.serveStatic("/update.html", LittleFS, "/update.html").setCacheControl("no-cache");
+    server.serveStatic("/index.html", LittleFS, "/index.html").setCacheControl("no-cache");
+    server.serveStatic("/", LittleFS, "/").setCacheControl("max-age=86400");
 
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
     DefaultHeaders::Instance().addHeader("Access-Control-Max-Age", "600");
