@@ -1201,7 +1201,7 @@ function createRssiChart() {
     },
   });
   rssiChart.addTimeSeries(rssiSeries, { lineWidth: 2, strokeStyle: "hsl(214, 70%, 60%)", fillStyle: "hsla(214, 70%, 60%, 0.2)" });
-  rssiChart.streamTo($("rssiChart"), 100);
+  rssiChart.streamTo($("rssiChart"), CHART_DELAY_MS + pausedMs);
 }
 
 function updateChartLines() {
@@ -1226,19 +1226,27 @@ function stopCalibration() {
 }
 
 // High-resolution RSSI history (one value per 25 ms) from the timer
-// While a channel scan runs the receiver is busy sweeping: freeze the live graph
+// While a channel scan runs the receiver is busy sweeping: freeze the live graph, then
+// continue where it stopped. The chart is drawn on a clock that leaves out paused time:
+// its delay and the new points' timestamps are both shifted by the total pause.
+const CHART_DELAY_MS = 100;
 let rssiPaused = false;
+let pausedMs = 0; // total time the graph has been paused
+let pauseStartMs = 0;
+let resumedAtMs = 0; // readings from before this moment belong to the paused period
 
 function setRssiPaused(paused) {
   if (paused === rssiPaused) return;
   rssiPaused = paused;
   $("rssiPaused").hidden = !paused;
   if (paused) {
+    pauseStartMs = Date.now();
     if (rssiChart) rssiChart.stop();
     $("rssiNow").textContent = "--";
   } else {
-    rssiSeries.clear(); // start fresh, instead of a line bridging the pause
-    lastPointMs = 0;
+    pausedMs += Date.now() - pauseStartMs;
+    resumedAtMs = Date.now();
+    if (rssiChart) rssiChart.delay = CHART_DELAY_MS + pausedMs;
     if (rssiChart && currentTab === "calib") rssiChart.start();
   }
 }
@@ -1255,7 +1263,9 @@ function pollRssi() {
       const values = r.pilots[calibIndex] || [];
       const now = Date.now();
       values.forEach((v, k) => {
-        const t = Math.max(now - (values.length - 1 - k) * r.step, lastPointMs + 1);
+        const measuredAt = now - (values.length - 1 - k) * r.step;
+        if (measuredAt < resumedAtMs) return; // taken during the pause: skip, the line continues after it
+        const t = Math.max(measuredAt - pausedMs, lastPointMs + 1);
         rssiSeries.append(t, v);
         lastPointMs = t;
       });
