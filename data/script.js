@@ -1924,11 +1924,116 @@ function beep(duration, frequency, type) {
 // ═══════════════════════════════════════════════════════════════════
 
 // Colors the mic chip in the top bar: 'listening' (green), 'error' (red) or '' (grey)
+let micState = "";
+let micError = null; // the last SpeechRecognition error, for the help text
+let recognition = null;
 function setMicState(state) {
+  micState = state;
   const mic = $("micIndicator");
   mic.classList.toggle("listening", state === "listening");
   mic.classList.toggle("error", state === "error");
+  if (!$("micHelp").hidden) renderMicHelp();
 }
+
+// Voice commands can be switched off per phone (Setup); remembered in this browser
+function voiceCommandsWanted() {
+  try {
+    return localStorage.getItem("voiceCommands") !== "0";
+  } catch (e) {
+    return true;
+  }
+}
+$("voiceCommands").checked = voiceCommandsWanted();
+$("voiceCommands").addEventListener("change", () => {
+  try {
+    localStorage.setItem("voiceCommands", $("voiceCommands").checked ? "1" : "0");
+  } catch (e) {
+    /* private mode */
+  }
+  if ($("voiceCommands").checked) startVoiceRecognition();
+  else stopVoiceRecognition();
+});
+
+function stopVoiceRecognition() {
+  const r = recognition;
+  recognition = null;
+  micError = null;
+  if (r) {
+    r.onend = null;
+    try {
+      r.abort();
+    } catch (e) {
+      /* already stopped */
+    }
+  }
+  setMicState("");
+}
+
+// The mic icon explains its colour and, on Chrome over plain http, how to allow the
+// microphone (a page can't open chrome:// links, so the address is there to copy)
+function renderMicHelp() {
+  const box = $("micHelpText");
+  const supported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  const brave = !!navigator.brave;
+  const copy = (text) => `<code>${escapeHtml(text)}</code><button type="button" class="btn btn-ghost btn-small" data-copy="${escapeHtml(text)}">Copy</button>`;
+  let html;
+  if (!voiceCommandsWanted()) {
+    html = "<p>Voice commands are off on this phone. Switch them on in Setup → Announcer.</p>";
+  } else if (!supported) {
+    html = "<p>This browser has no speech recognition. Voice commands work in Chrome.</p>";
+  } else if (micState === "listening") {
+    html = "<p>Listening. Say <b>start</b> (or go), <b>stop</b>, <b>best time</b> or <b>clear time</b>. The announcer's own voice is ignored.</p>";
+  } else if (brave) {
+    html = "<p>Brave blocks the speech service that Chrome uses, so voice commands can't work here. Announcements do. For voice commands open this page in Chrome.</p>";
+  } else if (micError === "not-allowed" || micError === "service-not-allowed") {
+    html = location.protocol === "http:"
+      ? `<p>Chrome allows the microphone only on <i>https</i> sites, and the timer's page is plain <i>http</i>. Allow it once:</p>
+        <ol>
+          <li>Open ${copy("chrome://flags/#unsafely-treat-insecure-origin-as-secure")} in Chrome's address bar.</li>
+          <li>Enter ${copy(location.origin)} in its text box and set it to <b>Enabled</b>.</li>
+          <li>Relaunch Chrome, open the timer's page again and allow the microphone when asked.</li>
+        </ol>
+        <p class="hint">If the microphone was refused before: tap the icon left of the address → Permissions → Microphone → Allow, then reload.</p>`
+      : "<p>The microphone was refused. Tap the icon left of the address → Permissions → Microphone → Allow, then reload the page.</p>";
+  } else if (micError === "network") {
+    html = "<p>No connection to the speech service. Chrome sends speech to Google, so the phone needs internet (mobile data on) while it is on the timer's hotspot. Retrying every few seconds.</p>";
+  } else if (micError === "audio-capture") {
+    html = "<p>No microphone found on this device.</p>";
+  } else {
+    html = "<p>Starting voice recognition… If it stays grey, tap the page once (browsers start the microphone only after a tap) or reload.</p>";
+  }
+  box.innerHTML = html;
+  for (const b of box.querySelectorAll("[data-copy]")) {
+    b.addEventListener("click", () => {
+      // navigator.clipboard needs https: select the text and copy it the old way
+      const ta = document.createElement("textarea");
+      ta.value = b.dataset.copy;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try {
+        ok = document.execCommand("copy");
+      } catch (e) {
+        ok = false;
+      }
+      document.body.removeChild(ta);
+      showButtonStatus(b, ok ? "Copied ✓" : "Select and copy", 2000);
+    });
+  }
+}
+
+$("micIndicator").addEventListener("click", () => {
+  const help = $("micHelp");
+  help.hidden = !help.hidden;
+  if (!help.hidden) {
+    renderMicHelp();
+    help.scrollIntoView({ block: "start" });
+  }
+});
+$("micHelpClose").addEventListener("click", () => ($("micHelp").hidden = true));
 
 function speakBestTime() {
   const best = raceData ? pilotStats(racePilot(raceData)).best : null;
@@ -1941,7 +2046,9 @@ function startVoiceRecognition() {
     console.warn("Speech recognition not supported in this browser. Voice commands disabled.");
     return;
   }
-  const recognition = new SpeechRecognition();
+  if (!voiceCommandsWanted() || recognition) return; // off on this phone, or already running
+  micError = null;
+  recognition = new SpeechRecognition();
   recognition.lang = "en-US";
   recognition.continuous = true;
   recognition.interimResults = false;
@@ -1972,6 +2079,7 @@ function startVoiceRecognition() {
   let lastError = null;
   recognition.onerror = (e) => {
     lastError = e.error;
+    micError = e.error;
     setMicState("error");
   };
   recognition.onend = () => {
@@ -1979,7 +2087,10 @@ function startVoiceRecognition() {
     const restart = () => {
       try {
         recognition.start(); // keep listening
-        if (!lastError) setMicState("listening");
+        if (!lastError) {
+          micError = null;
+          setMicState("listening");
+        }
       } catch (e) {
         console.warn("Failed to restart recognition", e);
       }

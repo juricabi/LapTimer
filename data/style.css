@@ -180,6 +180,46 @@ body {
   color: #f87171;
 }
 
+/* the mic chip is a button: a full touch target without growing the bar */
+button.chip-icon {
+  min-width: var(--tap);
+  min-height: var(--tap);
+  margin: -7px 0;
+  border: 0;
+  justify-content: center;
+  font: inherit;
+  cursor: pointer;
+}
+
+button.chip-icon:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+.mic-help ol {
+  margin: var(--space-2) 0;
+  padding-left: 20px;
+}
+
+.mic-help li {
+  margin: var(--space-2) 0;
+}
+
+.mic-help code {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.mic-help .btn-small {
+  margin-left: var(--space-1);
+  vertical-align: middle;
+}
+
 .tabs {
   position: sticky;
   top: 0;

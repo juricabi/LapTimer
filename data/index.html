@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0f172a" />
   <title>LapTimer</title>
   <link rel="icon" type="image/png" href="favicon.ico" />
-  <link rel="stylesheet" type="text/css" href="style.css?v=29e84595" />
+  <link rel="stylesheet" type="text/css" href="style.css?v=01768a14" />
   <script src="smoothie.js?v=74872da2"></script>
 </head>
 
@@ -18,12 +18,12 @@
       <span>LapTimer</span>
     </div>
     <div class="status-chips">
-      <span id="micIndicator" class="chip chip-icon" title="Voice commands: start, go, stop, best time, clear time">
+      <button type="button" id="micIndicator" class="chip chip-icon" title="Voice commands: tap for details" aria-label="Voice commands: tap for details">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
           <path d="M19 11a7 7 0 0 1-14 0M12 18v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
         </svg>
-      </span>
+      </button>
       <span id="bvolt" class="chip" title="Battery voltage">--V</span>
     </div>
   </header>
@@ -36,6 +36,12 @@
   </nav>
 
   <main>
+    <section id="micHelp" class="card mic-help" hidden>
+      <h2>Voice commands</h2>
+      <div id="micHelpText"></div>
+      <div class="button-row"><button type="button" id="micHelpClose" class="btn btn-ghost">Close</button></div>
+    </section>
+
     <!-- ───────────── Setup ───────────── -->
     <section id="config" class="tabcontent">
       <div class="card" data-needs-config>
@@ -130,6 +136,13 @@
             <span class="hint">Speaks lap times through this device</span>
           </span>
           <span class="switch"><input type="checkbox" id="voiceToggle" data-local checked /><span class="slider"></span></span>
+        </label>
+        <label class="switch-row">
+          <span>
+            <span class="switch-title">Voice commands on this phone</span><br />
+            <span class="hint">"start", "stop", "best time", "clear time" through the microphone. Needs Chrome; tap the mic icon at the top for how to enable it.</span>
+          </span>
+          <span class="switch"><input type="checkbox" id="voiceCommands" data-local checked /><span class="slider"></span></span>
         </label>
         <button id="GenerateAudioButton" class="btn btn-ghost btn-block">Test voice</button>
       </div>
@@ -286,7 +299,7 @@
     <div id="rsPilot" class="rs-pilot"></div>
   </div>
 
-  <script src="script.js?v=ec30cf2a"></script>
+  <script src="script.js?v=4a26e809"></script>
 </body>
 
 </html>
