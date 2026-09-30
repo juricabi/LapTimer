@@ -180,15 +180,19 @@ body {
   color: #f87171;
 }
 
-/* the mic chip is a button: a full touch target without growing the bar */
+/* the mic chip is a button: the same pill as the other chips, with an invisible 44 px
+   touch target around it */
 button.chip-icon {
-  min-width: var(--tap);
-  min-height: var(--tap);
-  margin: -7px 0;
+  position: relative;
   border: 0;
-  justify-content: center;
   font: inherit;
   cursor: pointer;
+}
+
+button.chip-icon::before {
+  content: "";
+  position: absolute;
+  inset: -7px -4px;
 }
 
 button.chip-icon:focus-visible {
