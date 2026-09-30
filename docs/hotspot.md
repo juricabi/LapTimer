@@ -105,6 +105,13 @@ until the next WiFi start, to compare levels; without `k` it applies 19 again.
   or repeat broadcasts, and the first reply after a phone joined was often lost (phones got an
   address after 3-40 s, or Android gave up). The timer runs its own small DHCP server
   (`lib/HOTSPOTDHCP`) that replies directly to the phone (unicast): an address in ~0.6 s.
+- **Two devices on one address.** The built-in server forgot its leases when the timer
+  restarted, while phones keep theirs for two hours, and a phone set to a fixed address is
+  invisible to it: the next device to join was given an address already in use, and the
+  timer's replies went to whichever of the two had spoken last (the page loaded sometimes,
+  no live RSSI, refresh hung). The timer's server keeps its leases across a restart, asks on
+  the network (ARP) whether an address is in use before handing it out, and gives a device
+  the same address back when it can.
 - **Network scan from the page.** Scanning used to take the radio away from the hotspot's
   channel for 1.6 s at a time. It now scans one channel at a time and returns to the hotspot's
   channel in between (40-120 ms away at a time, about 4 s in all), with the hotspot running in

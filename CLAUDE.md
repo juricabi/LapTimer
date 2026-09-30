@@ -121,8 +121,20 @@ Every change goes through all steps; a step is done when its check passes.
   often lost (packet capture: address after 3-40 s or never; Android gives up). The hotspot
   uses `lib/HOTSPOTDHCP` instead, which replies by unicast to the phone's MAC through
   `esp_wifi_internal_tx` (Espressif's later fix, esp-idf #12580, needs static ARP entries,
-  compiled out here). Test from a PC WiFi adapter on the hotspot: `ipconfig /release` +
-  `/renew` timings, `pktmon` for the packets, `/api/debug/aplog` for the timer's side.
+  compiled out here). Second failure: the built-in server forgets its leases on a restart while
+  phones keep theirs (2 h), and a phone on a static address is invisible to it, so the next
+  device got an address already in use and both got each other's replies (page loads
+  sometimes, no live RSSI). `HotspotDhcp` keeps its leases in RTC memory (kept across a
+  software restart: the page's Restart, an update; cleared by a power cycle or an EN reset,
+  which the classic ESP32 treats as power-on), probes each address with ARP before offering or
+  acknowledging it (`inUseByOther`; a used one is set aside for 10 min), tries an address
+  derived from the MAC first, and sends every reply, the NAK too, as a frame to the phone's
+  MAC. Test from a PC WiFi adapter on the hotspot: `ipconfig /release` + `/renew` timings,
+  `pktmon` for the packets, `/api/debug/aplog` for the timer's side (types: 0 joined,
+  1 assigned, 2 left, 3 offered, 4 refused, 5 in use by another device, 6 send failed, 7/8 leases
+  kept/cleared at start); a fake client
+  (`fake_dhcp.py` in the session scratch: a DISCOVER with a made-up MAC) shows what the
+  server does with an address a static device holds.
 - **WiFi radio settings** are ignored before WiFi has started (`WiFi.setTxPower`,
   `esp_wifi_set_protocol` in `init()` never applied). Leave the transmit power at its default
   maximum: asking for 19.5 dBm gives 18 dBm (the ESP32 rounds down to fixed steps). The

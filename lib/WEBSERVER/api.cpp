@@ -44,7 +44,8 @@ static uint32_t bootId = 0; // random per start, so pages notice a restart
 struct ApEvent
 {
     uint32_t ms;
-    uint8_t type; // 0 joined, 1 address handed out, 2 left
+    uint8_t type; // 0 joined, 1 address handed out, 2 left, 3 offered, 4 refused (NAK), 5 in use by another device,
+                  // 6 send failed (ip = error), 7 leases kept across the restart (ip = count), 8 leases cleared (ip = magic found)
     uint8_t mac[6];
     uint32_t ip;
 };
@@ -65,9 +66,9 @@ static void logApEvent(uint8_t type, const uint8_t *mac, uint32_t ip)
     portEXIT_CRITICAL(&apEventLock);
 }
 
-void logHotspotAssigned(const uint8_t *mac, uint32_t ip)
+void logHotspotEvent(uint8_t type, const uint8_t *mac, uint32_t ip)
 {
-    logApEvent(1, mac, ip);
+    logApEvent(type, mac, ip);
 }
 extern volatile uint32_t core0RoundsPerSec;
 #if CONFIG_IDF_TARGET_ESP32

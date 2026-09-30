@@ -35,7 +35,7 @@ static void holdTxGain(int8_t gain = TX_GAIN_BYTE)
 #else
 static void holdTxGain(int8_t gain = TX_GAIN_BYTE) { (void)gain; } // the other chips' radio libraries differ
 #endif
-void logHotspotAssigned(const uint8_t *mac, uint32_t ip); // api.cpp (diagnostics)
+void logHotspotEvent(uint8_t type, const uint8_t *mac, uint32_t ip); // api.cpp (diagnostics)
 static IPAddress ipAddress;
 AsyncWebServer server(80);  // shared with api.cpp
 
@@ -320,7 +320,7 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
             changeTimeMs = currentTimeMs;
             WiFi.softAPConfig(ipAddress, ipAddress, netMsk);
             WiFi.softAP(wifi_ap_ssid.c_str(), wifi_ap_password);
-            hotspotDhcp.onAssigned = logHotspotAssigned;
+            hotspotDhcp.onEvent = logHotspotEvent;
             hotspotDhcp.begin(ipAddress, netMsk); // replaces the built-in DHCP server (unicast replies)
             startServices();
             buz->beep(1000);
