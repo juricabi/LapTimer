@@ -200,6 +200,10 @@ button.chip-icon:focus-visible {
   box-shadow: var(--focus);
 }
 
+.mic-help {
+  margin-bottom: var(--space-3); /* outside the tab containers, which space their own cards */
+}
+
 .mic-help ol {
   margin: var(--space-2) 0;
   padding-left: 20px;
