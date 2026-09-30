@@ -192,7 +192,7 @@ button.chip-icon {
 button.chip-icon::before {
   content: "";
   position: absolute;
-  inset: -7px -4px;
+  inset: -7px -6px; /* 32 x 30 chip -> 44 x 44 */
 }
 
 button.chip-icon:focus-visible {
@@ -202,6 +202,10 @@ button.chip-icon:focus-visible {
 
 .mic-help {
   margin-bottom: var(--space-3); /* outside the tab containers, which space their own cards */
+}
+
+#micHelpText > * + * {
+  margin-top: var(--space-2);
 }
 
 .mic-help ol {

@@ -14,7 +14,8 @@ Every change goes through all steps; a step is done when its check passes.
    390 px width, check light and dark theme and every tab the change touches. Keep the mock's
    endpoints in step with `lib/WEBSERVER/api.cpp`. Done: no console errors, layout fits.
 3. **Deploy** — `python tools/ota_upload.py <timer-ip> fw fs` (firmware first). The IP is much
-   faster than `laptimer.local` on Windows. Done: "back online" after each file.
+   faster than `laptimer.local` on Windows. Done: "back online" after each file, and "web files
+   verified" after `fs` (the tool fetches every file of `data/` and compares sizes).
 4. **Verify on the timer** — `python tools/device_test.py <timer-ip>`; for boot/WiFi changes
    also `python tools/boot_log.py <port> 25 --reset` over several boots. Done: all checks PASS.
    With a drone, `python tools/rssi_log.py <timer-ip> <seconds>` records the RSSI and the
@@ -132,9 +133,8 @@ Every change goes through all steps; a step is done when its check passes.
   MAC. Test from a PC WiFi adapter on the hotspot: `ipconfig /release` + `/renew` timings,
   `pktmon` for the packets, `/api/debug/aplog` for the timer's side (types: 0 joined,
   1 assigned, 2 left, 3 offered, 4 refused, 5 in use by another device, 6 send failed, 7/8 leases
-  kept/cleared at start); a fake client
-  (`fake_dhcp.py` in the session scratch: a DISCOVER with a made-up MAC) shows what the
-  server does with an address a static device holds.
+  kept/cleared at start); `tools/fake_dhcp.py` (a DISCOVER or REQUEST with a made-up MAC)
+  shows what the server does with an address a static device holds.
 - **WiFi radio settings** are ignored before WiFi has started (`WiFi.setTxPower`,
   `esp_wifi_set_protocol` in `init()` never applied). Leave the transmit power at its default
   maximum: asking for 19.5 dBm gives 18 dBm (the ESP32 rounds down to fixed steps). The
@@ -143,6 +143,18 @@ Every change goes through all steps; a step is done when its check passes.
   a time. Link tests made before the transmit power fix (above) are unreliable: its dropouts looked
   like scan, bandwidth or DHCP trouble. `/api/debug/load` shows the real radio settings;
   `/api/debug/hotspot` switches to the hotspot until the next restart.
+- **Voice commands** (Chrome's `SpeechRecognition`): recognition runs on Google's servers, so
+  the phone needs internet on the timer's network — none on the timer's own hotspot, and
+  mobile data doesn't help (Android then loses the timer); they work on home WiFi or with the
+  timer on the phone's hotspot. Brave blocks the service (`navigator.brave`). On plain http
+  Chrome refuses the microphone until the page's address is in
+  `chrome://flags/#unsafely-treat-insecure-origin-as-secure` (a page can't open chrome://
+  links: the mic card shows it to copy). Chrome ends a session after silence (`no-speech`,
+  then `end`): reopen at once, the short gap is Chrome's. A doomed session fires `start`
+  before its error, which made the icon blink red and green: after a failure it turns green
+  only once a session has held 5 s. Recovery is silent (reachability fetch, `online`
+  event), no retry button. Voice and Voice commands are per phone (localStorage), in
+  Setup → This phone; the announcer settings are on the timer.
 - **Android and `.local`**: Android doesn't resolve mDNS names reliably, least of all on its
   own hotspot. `laptimer.local` works on laptops and iPhones; on Android use the IP.
 - **Sampling rate**: `analogRead()` takes ~90 us per RSSI reading (setup repeated on every

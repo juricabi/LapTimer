@@ -473,14 +473,14 @@ void LapTimer::sample(uint8_t v, uint32_t nowMs)
         inPass = true; // new peak (a stale one needs a clear rise, see PEAK_REARM)
         peakStale = false;
         peak = v;
-        peakFirstMs = peakLastMs = nowMs;
+        peakFirstMs = peakLastMs = peakSinceMs = nowMs;
     }
     else if (inPass && v >= enter && v + PEAK_TOLERANCE >= peak)
     {
         peakLastMs = nowMs; // still at the peak (plateau)
     }
 
-    if (inPass && (nowMs - peakFirstMs) > PEAK_TIMEOUT_MS)
+    if (inPass && ((nowMs - peakLastMs) > PEAK_TIMEOUT_MS || (nowMs - peakSinceMs) > PEAK_PARKED_MS))
     {
         if (state == RACE_RUNNING && hasPassed && !peakStale && peak >= v + PEAK_DROP)
         {
@@ -493,10 +493,11 @@ void LapTimer::sample(uint8_t v, uint32_t nowMs)
         }
         // Waiting near the gate (on the pad, maybe just switched on) with the signal only
         // drifting or flat: drop the old peak; the take-off through the gate makes a new one.
-        // Repeats every PEAK_TIMEOUT_MS while it stays, so the level to rise from follows it.
+        // Repeats while it stays (at the latest every PEAK_PARKED_MS), so the level to rise
+        // from follows the drone.
         peakStale = true;
         peak = v;
-        peakFirstMs = peakLastMs = nowMs;
+        peakFirstMs = peakLastMs = peakSinceMs = nowMs;
     }
 
     if (inPass && v < exit)
@@ -585,6 +586,7 @@ void LapTimer::updateRace(uint32_t nowMs)
         if (toGo <= 0)
         {
             state = RACE_RUNNING;
+            peakSinceMs = nowMs; // a drone on the pad since the countdown: PEAK_PARKED_MS counts from GO
             buz->beep(600);
             led->on(600);
         }

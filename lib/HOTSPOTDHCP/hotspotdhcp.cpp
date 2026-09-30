@@ -7,6 +7,7 @@
 #include <esp_private/wifi.h>
 #include <lwip/etharp.h>
 #include <lwip/tcpip.h>
+#include <new>
 
 #include "debug.h"
 
@@ -34,13 +35,14 @@ struct RtcLeases
 {
     uint32_t magic;
     HotspotDhcp::Lease leases[DHCP_POOL_SIZE];
+    uint32_t savedAtMs; // millis() at the last change: the lease times count from the old clock
     uint32_t check;
 };
 static RTC_NOINIT_ATTR RtcLeases rtcLeases;
 
-static uint32_t leasesChecksum(const HotspotDhcp::Lease *leases)
+static uint32_t leasesChecksum(const HotspotDhcp::Lease *leases, uint32_t savedAtMs)
 {
-    uint32_t sum = 0x5A5A;
+    uint32_t sum = 0x5A5A ^ savedAtMs;
     const uint8_t *b = (const uint8_t *)leases;
     for (size_t i = 0; i < sizeof(HotspotDhcp::Lease) * DHCP_POOL_SIZE; i++)
         sum = sum * 31 + b[i];
@@ -88,9 +90,13 @@ static void arpCb(void *arg)
 static bool inLwip(bool request)
 {
     ArpQuery *q = &arpQuery;
-    ArpPost *post = new ArpPost{++q->gen, request};
+    ArpPost *post = new (std::nothrow) ArpPost{++q->gen, request};
+    if (!post)
+        return false;
     q->done = false;
-    if (tcpip_callback(arpCb, post) != ERR_OK)
+    // try, don't wait: lwIP's thread can itself be waiting for AsyncUDP's queue, which this
+    // task empties (a DHCP flood would lock both). A full queue counts as no answer.
+    if (tcpip_try_callback(arpCb, post) != ERR_OK)
     {
         delete post;
         return false;
@@ -141,20 +147,26 @@ void HotspotDhcp::begin(IPAddress serverIp, IPAddress netMask)
     mask = (uint32_t)netMask;
     leases = rtcLeases.leases;
     uint32_t magicFound = rtcLeases.magic;
-    bool kept = rtcLeases.magic == LEASES_MAGIC && rtcLeases.check == leasesChecksum(leases);
+    bool kept = rtcLeases.magic == LEASES_MAGIC && rtcLeases.check == leasesChecksum(leases, rtcLeases.savedAtMs);
     if (!kept)
         memset(leases, 0, sizeof(Lease) * DHCP_POOL_SIZE);
     uint32_t now = millis();
     static const uint8_t noMac[6] = {0, 0, 0, 0, 0, 0};
     for (int i = 0; i < DHCP_POOL_SIZE; i++)
     {
-        // the clock restarted with the timer: acknowledged leases get a full term again;
-        // offers that were never taken, and addresses set aside as in use by an unknown
-        // device (no MAC), are dropped: the ARP probe finds such a device again
-        if (leases[i].used && leases[i].bound && memcmp(leases[i].mac, noMac, 6) != 0)
-            leases[i].expiresMs = now + DHCP_LEASE_SECONDS * 1000UL;
+        // the clock restarted with the timer: acknowledged leases keep the time they had left
+        // when the table was last saved (the time between that and the restart is unknown:
+        // a lease lasts a little longer, never shorter); expired ones, offers that were never
+        // taken, and addresses set aside as in use by an unknown device (no MAC) are dropped:
+        // the ARP probe finds such a device again
+        int32_t left = (int32_t)(leases[i].expiresMs - rtcLeases.savedAtMs);
+        if (leases[i].used && leases[i].bound && memcmp(leases[i].mac, noMac, 6) != 0 && left > 0)
+            leases[i].expiresMs = now + (uint32_t)left;
         else
+        {
             leases[i].used = leases[i].bound = false;
+            memset(leases[i].mac, 0, 6);
+        }
     }
     rtcLeases.magic = LEASES_MAGIC;
     commit();
@@ -190,9 +202,12 @@ int HotspotDhcp::leaseForAddress(uint32_t ip)
     return -1;
 }
 
+// Saves the table's checksum: called right after every change, so a restart in the middle of
+// a packet (an update, a crash) keeps what was decided so far
 void HotspotDhcp::commit()
 {
-    rtcLeases.check = leasesChecksum(leases);
+    rtcLeases.savedAtMs = millis();
+    rtcLeases.check = leasesChecksum(leases, rtcLeases.savedAtMs);
 }
 
 // Keeps an address away from everyone for ten minutes: another device was found using it
@@ -202,12 +217,13 @@ void HotspotDhcp::setAside(int lease, uint32_t now)
     leases[lease].used = true;
     leases[lease].bound = true;
     leases[lease].expiresMs = now + 600000;
+    commit();
 }
 
 // Is another device using this address (a phone that kept its lease across the timer's
 // restart or power cycle)? The ARP table knows every device the timer has talked to; a
 // silent one is asked twice (an ARP request is a broadcast, which the hotspot can lose).
-bool HotspotDhcp::inUseByOther(uint32_t ip, const uint8_t *mac)
+bool HotspotDhcp::inUseByOther(uint32_t ip, const uint8_t *mac, const uint8_t *radioMac)
 {
     esp_netif_t *ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     struct netif *n = ap ? (struct netif *)esp_netif_get_netif_impl(ap) : nullptr;
@@ -218,7 +234,7 @@ bool HotspotDhcp::inUseByOther(uint32_t ip, const uint8_t *mac)
     for (int probe = 0; probe < 3; probe++)
     {
         if (inLwip(false) && arpQuery.found)
-            return memcmp(arpQuery.mac, mac, 6) != 0;
+            return memcmp(arpQuery.mac, mac, 6) != 0 && (!radioMac || memcmp(arpQuery.mac, radioMac, 6) != 0);
         if (probe == 2 || !inLwip(true))
             break;
         delay(DHCP_ARP_PROBE_MS);
@@ -240,7 +256,7 @@ int HotspotDhcp::findLease(const uint8_t *mac)
 // a power cycle), else a free one, else an expired one, else the offer that expires first;
 // -1 when every address is bound (no offer then: a phone keeps its address until it expires).
 // An address another device is found to be using is set aside for ten minutes.
-int HotspotDhcp::newLease(const uint8_t *mac)
+int HotspotDhcp::newLease(const uint8_t *mac, const uint8_t *radioMac)
 {
     uint32_t now = millis();
     for (int attempt = 0; attempt < DHCP_POOL_SIZE; attempt++)
@@ -269,7 +285,7 @@ int HotspotDhcp::newLease(const uint8_t *mac)
         }
         if (pick < 0)
             return -1;
-        if (inUseByOther(addressOf(pick), mac))
+        if (inUseByOther(addressOf(pick), mac, radioMac))
         {
             event(EVENT_IN_USE, mac, addressOf(pick));
             setAside(pick, now);
@@ -279,6 +295,7 @@ int HotspotDhcp::newLease(const uint8_t *mac)
         leases[pick].bound = false;
         memcpy(leases[pick].mac, mac, 6);
         leases[pick].expiresMs = now + 60000; // an offer is held for a minute; the ACK extends it
+        commit();
         return pick;
     }
     return -1;
@@ -309,19 +326,23 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
     uint32_t now = millis();
     // expired leases are cleared, not just treated as free: the clock wraps after 49 days,
     // and an expired lease left in place would look valid again 24.8 days after it expired
+    bool swept = false;
     for (int i = 0; i < DHCP_POOL_SIZE; i++)
     {
         if (leases[i].used && (int32_t)(now - leases[i].expiresMs) >= 0)
         {
             leases[i].used = leases[i].bound = false;
             memset(leases[i].mac, 0, 6);
+            swept = true;
         }
     }
+    if (swept)
+        commit();
     int lease = findLease(mac);
     switch (type[0])
     {
     case DISCOVER:
-        if (lease >= 0 && inUseByOther(addressOf(lease), mac))
+        if (lease >= 0 && inUseByOther(addressOf(lease), mac, dstMac))
         {
             // its remembered address was taken meanwhile (a device on a fixed address):
             // set aside, and a new one below (offering it again would loop offer / refuse)
@@ -330,7 +351,7 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
             lease = -1;
         }
         if (lease < 0)
-            lease = newLease(mac);
+            lease = newLease(mac, dstMac);
         if (lease >= 0)
         {
             reply(msg, OFFER, addressOf(lease), dstMac);
@@ -347,7 +368,7 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
         int wantedLease = leaseForAddress(wanted);
         bool freeForIt = wantedLease >= 0 && (!leases[wantedLease].used || wantedLease == lease ||
                                               (int32_t)(now - leases[wantedLease].expiresMs) >= 0);
-        bool taken = freeForIt && inUseByOther(wanted, mac);
+        bool taken = freeForIt && inUseByOther(wanted, mac, dstMac);
         if (!freeForIt || taken)
         {
             // not ours to give (an address from another network, another phone's, or one
@@ -372,6 +393,7 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
         leases[wantedLease].bound = true;
         memcpy(leases[wantedLease].mac, mac, 6);
         leases[wantedLease].expiresMs = now + DHCP_LEASE_SECONDS * 1000UL;
+        commit(); // saved before the phone is told
         reply(msg, ACK, wanted, dstMac);
         event(EVENT_ASSIGNED, mac, wanted);
         break;

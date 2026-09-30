@@ -46,27 +46,48 @@ def wait_for(host, seconds=90):
 
 # Every file of data/ must come back from the timer with its full size: a web-files upload
 # once ended with two files missing (404) although the timer had accepted the image.
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+
+
+def data_files():
+    return sorted(n for n in os.listdir(DATA_DIR) if os.path.isfile(os.path.join(DATA_DIR, n)))
+
+
+# The check compares with data/, so littlefs.bin must have been built from what is there now
+def check_image_is_current():
+    image = os.path.join(BUILD, "littlefs.bin")
+    newer = [n for n in data_files() if os.path.getmtime(os.path.join(DATA_DIR, n)) > os.path.getmtime(image)]
+    if newer:
+        sys.exit(f"data/ changed after littlefs.bin was built ({', '.join(newer)}): "
+                 "run pio run -e PhobosLT -t buildfs first")
+
+
 def verify_web_files(host):
-    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
     bad = []
-    for name in sorted(os.listdir(data_dir)):
+    for name in data_files():
         path = "/" if name == "index.html" else "/" + name
-        expected = os.path.getsize(os.path.join(data_dir, name))
-        try:
-            got = len(urllib.request.urlopen(f"http://{host}{path}", timeout=10).read())
-        except Exception as e:
-            got = f"error ({e})"
+        expected = os.path.getsize(os.path.join(DATA_DIR, name))
+        got = None
+        for attempt in range(2):  # one slow answer is no failure
+            try:
+                got = len(urllib.request.urlopen(f"http://{host}{path}", timeout=10).read())
+                break
+            except Exception as e:
+                got = f"error ({e})"
+                time.sleep(1)
         if got != expected:
             bad.append(f"{name}: got {got}, expected {expected} bytes")
     if bad:
         sys.exit("  web files on the timer are incomplete - upload fs again:\n    " + "\n    ".join(bad))
-    print(f"  web files verified ({len(os.listdir(data_dir))} files)")
+    print(f"  web files verified ({len(data_files())} files)")
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 3 or any(k not in FILES for k in sys.argv[2:]):
         sys.exit(__doc__)
     host = sys.argv[1]
+    if "fs" in sys.argv[2:]:
+        check_image_is_current()
     for kind in sys.argv[2:]:
         upload(host, kind)
         if not wait_for(host):

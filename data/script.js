@@ -831,7 +831,8 @@ function clockText() {
   if (status.state === STATE.RUNNING) return formatClock(elapsed);
   // a timed race counts down: before the start the clock shows the time it will start from
   if (status.state === STATE.WAITING) return formatClock(status.mode === MODE.TIMED ? status.raceMs : 0);
-  if (status.state === STATE.IDLE && raceMode === MODE.TIMED) return formatClock((+ui.raceTime.value || 0) * 1000);
+  const lastLaps = raceData ? racePilot(raceData).laps.length : 0;
+  if (status.state === STATE.IDLE && raceMode === MODE.TIMED && !lastLaps) return formatClock((+ui.raceTime.value || 0) * 1000);
   return formatClock(raceData ? pilotTotal(racePilot(raceData)) : 0); // last race (its total is in the stats too)
 }
 
@@ -861,11 +862,6 @@ setInterval(() => {
     updateCurrentLaps();
   }
 }, 50);
-
-function raceIsRunning() {
-  const state = status ? status.state : STATE.IDLE;
-  return state === STATE.COUNTDOWN || state === STATE.WAITING || state === STATE.RUNNING;
-}
 
 function renderRaceControls() {
   const state = status ? status.state : STATE.IDLE;
@@ -1053,6 +1049,9 @@ function renderRacePilot(r) {
 }
 
 // ── Race controls ──
+// Start, stop and clear speak their result on this phone once the timer has answered, the
+// same for the buttons and the voice commands. The phrases avoid the command words (start,
+// go, begin, stop): the microphone may hear them.
 // The timer refuses a start while it is still saving the previous race, so retry briefly.
 // A refused or unanswered start may still have started the race (the reply got lost, or
 // another phone started it): the timer's state decides.
@@ -1064,13 +1063,14 @@ async function startRace() {
     const t = Math.floor(Date.now() / 1000);
     const r = await fetchTimeout("/timer/start?t=" + t, { method: "POST" }).catch(() => null);
     if ((r && r.ok) || (await raceIsOn())) {
-      queueSpeak(ui.countdown.checked ? "Get ready" : "Start racing when ready");
+      queueSpeak(ui.countdown.checked ? "Get ready" : "Waiting for the first pass");
       pollOnce();
       return;
     }
     await sleep(250);
   }
   showButtonStatus(button, "Timer busy, try again");
+  queueSpeak("The timer is busy, try again");
   pollOnce();
 }
 
@@ -1083,20 +1083,36 @@ async function raceIsOn() {
   return isRacing();
 }
 
-function stopRace() {
-  queueSpeak("Race stopped");
-  return fetchTimeout("/timer/stop", { method: "POST" })
-    .catch(() => showButtonStatus($("stopRaceButton"), "No answer, try again"))
-    .then(pollOnce);
+async function stopRace() {
+  const r = await fetchTimeout("/timer/stop", { method: "POST" }).catch(() => null);
+  if (r && r.ok) queueSpeak("Race stopped");
+  else {
+    showButtonStatus($("stopRaceButton"), "No answer, try again");
+    queueSpeak("No answer from the timer");
+  }
+  pollOnce();
 }
 
-function clearRace() {
-  return fetchTimeout("/timer/clear", { method: "POST" })
-    .then((r) => {
-      if (r.status === 409) showButtonStatus($("clearLapsButton"), "Busy, try again");
-    })
-    .catch(() => showButtonStatus($("clearLapsButton"), "No answer, try again"))
-    .then(pollOnce);
+async function clearRace() {
+  const button = $("clearLapsButton");
+  if (isRacing()) {
+    queueSpeak("The race is still running");
+    return;
+  }
+  if (!(raceData && racePilot(raceData).laps.length)) {
+    queueSpeak("Nothing to clear");
+    return;
+  }
+  const r = await fetchTimeout("/timer/clear", { method: "POST" }).catch(() => null);
+  if (r && r.ok) queueSpeak("Times cleared");
+  else if (r && r.status === 409) {
+    showButtonStatus(button, "Busy, try again"); // the last race is still being saved
+    queueSpeak("The timer is busy, try again");
+  } else {
+    showButtonStatus(button, "No answer, try again");
+    queueSpeak("No answer from the timer");
+  }
+  pollOnce();
 }
 
 function pollOnce() {
@@ -1684,7 +1700,7 @@ function renderHistoryDetail(container, race, editing, summary) {
   const buttons = el("div", "button-row");
   const editButton = el("button", "btn btn-ghost", editing ? "Done" : "Fix laps");
   editButton.addEventListener("click", () => {
-    if (!editing && raceIsRunning()) showButtonStatus(editButton, "After the race");
+    if (!editing && isRacing()) showButtonStatus(editButton, "After the race");
     else renderHistoryDetail(container, race, !editing, summary);
   });
   const exportButton = el("button", "btn btn-ghost", "Export CSV");
@@ -1704,7 +1720,7 @@ async function editLap(race, pilotIndex, op, lap, container, summary) {
   try {
     await postJson("/api/races/edit", { id: race.id, pilot: pilotIndex, op, lap, expect: race.pilots[pilotIndex].laps[lap] });
   } catch (e) {
-    note = e.status === 409 && raceIsRunning() ? "Not during a race: try again after it."
+    note = e.status === 409 && isRacing() ? "Not during a race: try again after it."
       : e.status === 409 ? "The laps changed meanwhile. Here they are now; check and try again."
       : "Could not change this lap.";
   }
@@ -1776,7 +1792,7 @@ $("exportAllButton").addEventListener("click", async (e) => {
 });
 
 $("clearHistoryButton").addEventListener("click", async (e) => {
-  if (raceIsRunning()) {
+  if (isRacing()) {
     showButtonStatus(e.target, "After the race");
     return;
   }
@@ -1855,6 +1871,7 @@ ui.voiceToggle.addEventListener("change", () => {
     /* private mode */
   }
   renderAnnouncerNote();
+  if (!$("micHelp").hidden) renderMicHelp();
 });
 
 // Always announce in English, regardless of the phone's system language.
@@ -1944,24 +1961,37 @@ function beep(duration, frequency, type) {
 // ═══════════════════════════════════════════════════════════════════
 //  Voice commands
 // ═══════════════════════════════════════════════════════════════════
-// Chrome's speech recognition (Web Speech API) opens a session with Google's servers; the
-// session closes by itself after a stretch of silence and is opened again at once (the short
+// Chrome's speech recognition (Web Speech API) opens a session with Google's servers; Chrome
+// ends it after a stretch of silence or after each phrase, and it is opened again (the short
 // gap is Chrome's). A real failure turns the mic icon red, the mic card says why, and the
-// recovery is automatic: no internet → tried again when the browser reports it is online,
-// and every 30 s after a silent reachability check (no microphone chime); no microphone →
-// tried again every 30 s; a refused microphone, or Brave (it blocks the speech service) →
-// no retry, the card says what to do. The icon is green only while a session is really
-// open (Chrome's "start" event) and, after a failure, only once a session has held for 5 s:
-// a doomed session looks fine for a moment, which made the icon blink red and green.
+// recovery is automatic:
+// - no internet: a silent reachability check every 30 s (no microphone, no chime) and a retry
+//   as soon as the browser reports it is online;
+// - no microphone: tried again every 30 s;
+// - microphone refused before any session ever started (plain http without the Chrome flag),
+//   or Brave (it blocks the speech service): no retry, the card says what to do. Android
+//   reports a busy recognizer with the same "not-allowed": after a session has run once, it
+//   is taken as busy and tried again after a few seconds.
+// The icon is green only while a session is really open. After a failure it turns green once
+// a session has held 5 s or ended normally: a doomed session fires "start" before its error,
+// which made the icon blink red and green.
+// Android aborts recognition in a hidden tab (screen off, Chrome in the background) and when
+// another tab starts one: nothing is reopened while the page is hidden, and quick normal ends
+// in a row are reopened with growing pauses (1 s up to 30 s), so two open tabs don't fight.
 
 let micState = ""; // "" grey, "listening" green, "error" red
-let micError = null; // the last failure: not-allowed, network, audio-capture, ...
+let micError = null; // the last failure: not-allowed, busy, network, audio-capture, ...
 let recognition = null; // the SpeechRecognition while voice commands are on
 let micRetryTimer = null;
 let micHoldTimer = null;
-let micFailures = 0; // failures in a row; a session that held 5 s resets it
-let micSessionFailed = false; // the session now ending failed (set in onerror, read in onend)
-const isBrave = !!navigator.brave;
+let micReopenTimer = null;
+let micFailures = 0; // failures in a row; a session that held 5 s or ended normally resets it
+let micSessionFailed = false; // this session failed (set in onerror, read in onend)
+let micSessionStartedAt = null; // when this session's "start" came (null: none yet)
+let micEverStarted = false; // a session has run on this page (then "not-allowed" means busy)
+let micQuickEnds = 0; // sessions in a row that ended within a second of starting
+let micPausedHidden = false; // not reopened because the page is hidden
+const isBrave = () => !!navigator.brave;
 const speechRecognitionSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 
 function setMicState(state) {
@@ -1972,29 +2002,31 @@ function setMicState(state) {
   if (!$("micHelp").hidden) renderMicHelp();
 }
 
-// Voice commands can be switched off per phone (Setup); remembered in this browser
-function voiceCommandsWanted() {
-  try {
-    return localStorage.getItem("voiceCommands") !== "0";
-  } catch (e) {
-    return true;
-  }
+// Voice commands can be switched off per phone (Setup → This phone); remembered in this
+// browser (browsers keep it per address of the timer). In private mode it lasts until reload.
+let voiceCommandsOn = true;
+try {
+  voiceCommandsOn = localStorage.getItem("voiceCommands") !== "0";
+} catch (e) {
+  /* private mode: on */
 }
-$("voiceCommands").checked = voiceCommandsWanted();
+$("voiceCommands").checked = voiceCommandsOn;
 $("voiceCommands").addEventListener("change", () => {
+  voiceCommandsOn = $("voiceCommands").checked;
   try {
-    localStorage.setItem("voiceCommands", $("voiceCommands").checked ? "1" : "0");
+    localStorage.setItem("voiceCommands", voiceCommandsOn ? "1" : "0");
   } catch (e) {
     /* private mode */
   }
-  if ($("voiceCommands").checked) startVoiceRecognition();
+  if (voiceCommandsOn) startVoiceRecognition();
   else stopVoiceRecognition();
 });
 
 function clearMicTimers() {
   clearTimeout(micRetryTimer);
   clearTimeout(micHoldTimer);
-  micRetryTimer = micHoldTimer = null;
+  clearTimeout(micReopenTimer);
+  micRetryTimer = micHoldTimer = micReopenTimer = null;
 }
 
 function stopVoiceRecognition() {
@@ -2003,7 +2035,9 @@ function stopVoiceRecognition() {
   recognition = null;
   micError = null;
   micFailures = 0;
+  micQuickEnds = 0;
   micSessionFailed = false;
+  micPausedHidden = false;
   if (r) {
     r.onstart = r.onend = r.onerror = r.onresult = null;
     try {
@@ -2015,20 +2049,32 @@ function stopVoiceRecognition() {
   setMicState("");
 }
 
-// Opens a session; a start that throws (Chrome: already running, or refused) is treated
-// like a failed session
+// Opens a session. While the page is hidden it waits for the page to be shown again.
 function openMicSession() {
   if (!recognition) return;
+  if (document.hidden) {
+    micPausedHidden = true;
+    return;
+  }
+  micPausedHidden = false;
+  micSessionStartedAt = null;
   try {
     recognition.start();
   } catch (e) {
+    if (e.name === "InvalidStateError") return; // already running: nothing to do
     console.warn("Speech recognition start failed", e);
     micError = micError || "start-failed";
     micFailures++;
+    clearTimeout(micHoldTimer);
+    micHoldTimer = null;
     setMicState("error");
     scheduleMicRetry();
   }
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && recognition && micPausedHidden && !micRetryTimer && !micReopenTimer) openMicSession();
+});
 
 // Can the phone reach the internet (Chrome's speech service)? Silent: no microphone involved.
 function internetReachable() {
@@ -2042,15 +2088,16 @@ function internetReachable() {
 }
 
 function scheduleMicRetry(delayMs = 30000) {
+  const r = recognition;
   clearTimeout(micRetryTimer);
   micRetryTimer = setTimeout(async () => {
     micRetryTimer = null;
-    if (!recognition) return; // switched off meanwhile
+    if (!r || recognition !== r) return; // switched off (and maybe on again) meanwhile
     if (micError === "network" && !(await internetReachable())) {
-      scheduleMicRetry(); // still no internet: look again later, without opening the microphone
+      if (recognition === r && !micRetryTimer) scheduleMicRetry(); // still offline: look again later
       return;
     }
-    if (!recognition || micRetryTimer) return;
+    if (recognition !== r || micRetryTimer) return;
     openMicSession();
   }, delayMs);
 }
@@ -2058,6 +2105,15 @@ function scheduleMicRetry(delayMs = 30000) {
 window.addEventListener("online", () => {
   if (recognition && micRetryTimer && micError === "network") scheduleMicRetry(500);
 });
+
+// A session that ran normally (or held 5 s) after a failure: recovered
+function micRecovered() {
+  clearTimeout(micHoldTimer);
+  micHoldTimer = null;
+  micFailures = 0;
+  micError = null;
+  setMicState("listening");
+}
 
 function speakBestTime() {
   const best = raceData ? pilotStats(racePilot(raceData)).best : null;
@@ -2069,38 +2125,34 @@ function startVoiceRecognition() {
     console.warn("Speech recognition not supported in this browser. Voice commands disabled.");
     return;
   }
-  if (!voiceCommandsWanted() || recognition) return; // off on this phone, or already on
+  if (!voiceCommandsOn || recognition) return; // off on this phone, or already on
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const r = new SpeechRecognition();
   recognition = r;
   micError = null;
   micFailures = 0;
+  micQuickEnds = 0;
   micSessionFailed = false;
   r.lang = "en-US";
   r.continuous = true;
   r.interimResults = false;
 
+  // Each command answers on this phone, also when there is nothing to do (the race
+  // controls speak their result). What the mic hears while, or just after, this phone
+  // speaks is ignored: the answers could otherwise trigger commands.
   r.onresult = (event) => {
     for (let i = event.resultIndex; i < event.results.length; ++i) {
       if (!event.results[i].isFinal) continue;
       const transcript = event.results[i][0].transcript.trim().toLowerCase();
-      // Ignore what the mic hears while (or just after) the announcer speaks,
-      // otherwise "Race stopped" / "Start racing" would trigger commands.
       if (Date.now() - lastSpeechMs < 1500) break;
       const has = (word) => new RegExp("\\b" + word + "\\b").test(transcript);
-      const racing = status && (status.state === STATE.COUNTDOWN || status.state === STATE.WAITING || status.state === STATE.RUNNING);
-      // every command answers, also when there is nothing to do
-      const hasLaps = !!(raceData && racePilot(raceData).laps.length);
       if (has("best time")) speakBestTime();
-      else if (has("clear time") || has("clear best")) {
-        if (racing) queueSpeak("Stop the race first");
-        else if (!hasLaps) queueSpeak("Nothing to clear");
-        else clearRace().then(() => queueSpeak("Times cleared"));
-      } else if (has("start") || has("begin") || has("go")) {
-        if (racing) queueSpeak("The race is already running");
-        else $("startRaceButton").click();
+      else if (has("clear time") || has("clear best")) clearRace();
+      else if (has("start") || has("begin") || has("go")) {
+        if (isRacing()) queueSpeak("The race is already running");
+        else startRace(); // does nothing while a start is already on its way (it answers)
       } else if (has("stop")) {
-        if (racing) stopRace();
+        if (isRacing()) stopRace();
         else queueSpeak("No race is running");
       }
       break;
@@ -2108,55 +2160,72 @@ function startVoiceRecognition() {
   };
   r.onstart = () => {
     if (recognition !== r) return;
+    micEverStarted = true;
+    micSessionStartedAt = Date.now();
+    clearTimeout(micRetryTimer);
+    micRetryTimer = null;
     if (micFailures === 0) setMicState("listening");
-    else {
-      clearTimeout(micHoldTimer);
-      micHoldTimer = setTimeout(() => {
-        micFailures = 0;
-        micError = null;
-        setMicState("listening");
-      }, 5000);
-    }
+    else if (!micHoldTimer) micHoldTimer = setTimeout(micRecovered, 5000);
   };
   r.onerror = (e) => {
     if (recognition !== r) return;
-    // a session ended by silence ("no-speech") or a stop ("aborted") is not a failure
+    // a session ended by silence ("no-speech") or aborted (hidden page, another tab) is no failure
     if (e.error === "no-speech" || e.error === "aborted") return;
     micSessionFailed = true;
-    micError = e.error;
+    // Android: "not-allowed" also means the recognizer is busy; refused only before any session
+    micError = e.error === "not-allowed" && micEverStarted ? "busy" : e.error;
     micFailures++;
     clearTimeout(micHoldTimer);
+    micHoldTimer = null;
     setMicState("error");
   };
   r.onend = () => {
     if (recognition !== r) return;
     const failed = micSessionFailed;
+    const ran = micSessionStartedAt !== null ? Date.now() - micSessionStartedAt : 0;
     micSessionFailed = false;
-    if (!failed) {
-      openMicSession(); // Chrome closed the session (silence): keep listening
+    micSessionStartedAt = null;
+    clearTimeout(micReopenTimer); // one way back only: a reopen or a retry
+    micReopenTimer = null;
+    if (failed) {
+      if (micError === "not-allowed" || micError === "service-not-allowed" || isBrave()) return; // the card says what to do
+      scheduleMicRetry(micError === "busy" ? 3000 : 30000);
       return;
     }
-    // refused, or Brave: nothing to retry, the mic card says what to do
-    if (micError === "not-allowed" || micError === "service-not-allowed" || isBrave) return;
-    scheduleMicRetry();
+    if (micFailures > 0 && ran >= 1000) micRecovered(); // a normal session after a failure
+    // quick ends in a row (aborted by another tab, a busy recognizer): growing pauses
+    micQuickEnds = ran < 1000 ? micQuickEnds + 1 : 0;
+    const pause = micQuickEnds ? Math.min(30000, 1000 * 2 ** (micQuickEnds - 1)) : 0;
+    if (!pause) openMicSession();
+    else {
+      clearTimeout(micReopenTimer);
+      micReopenTimer = setTimeout(() => {
+        micReopenTimer = null;
+        if (recognition === r) openMicSession();
+      }, pause);
+    }
   };
   openMicSession();
 }
+
+// Some browsers start the microphone only after a tap on the page
+document.addEventListener("pointerdown", () => startVoiceRecognition(), { once: true });
 
 // The mic icon explains its colour and, on Chrome over plain http, how to allow the
 // microphone (a page can't open chrome:// links, so the address is there to copy)
 function renderMicHelp() {
   const box = $("micHelpText");
-  const copy = (text) => `<code>${escapeHtml(text)}</code><button type="button" class="btn btn-ghost btn-small" data-copy="${escapeHtml(text)}">Copy</button>`;
+  const attr = (text) => escapeHtml(text).replace(/"/g, "&quot;");
+  const copy = (text) => `<code>${escapeHtml(text)}</code><button type="button" class="btn btn-ghost btn-small" data-copy="${attr(text)}">Copy</button>`;
   let html;
-  if (!voiceCommandsWanted()) {
+  if (!voiceCommandsOn) {
     html = "<p>Voice commands are off on this phone. Switch them on in Setup → This phone.</p>";
   } else if (!speechRecognitionSupported) {
     html = "<p>This browser has no speech recognition. Voice commands work in Chrome.</p>";
   } else if (micState === "listening") {
     html = "<p>Listening. Say <b>start</b> (or go), <b>stop</b>, <b>best time</b> or <b>clear time</b>; this phone speaks the answer. The announcer's own voice is ignored. Chrome closes a session after a few seconds of silence and it is opened again at once: that short gap is Chrome's.</p>";
     if (!audioEnabled) html += "<p class=\"hint\">Voice is off (Setup → This phone), so the answers are silent.</p>";
-  } else if (isBrave && micState === "error") {
+  } else if (isBrave() && micState === "error") {
     html = "<p>Brave blocks the speech service that Chrome uses, so voice commands can't work here. Announcements do. For voice commands open this page in Chrome.</p>";
   } else if (micError === "not-allowed" || micError === "service-not-allowed") {
     html = location.protocol === "http:"
@@ -2168,6 +2237,8 @@ function renderMicHelp() {
         </ol>
         <p class="hint">If the microphone was refused before: tap the icon left of the address → Permissions → Microphone → Allow, then reload.</p>`
       : "<p>The microphone was refused. Tap the icon left of the address → Permissions → Microphone → Allow, then reload the page.</p>";
+  } else if (micError === "busy") {
+    html = "<p>Speech recognition is busy: another app or another open page of the timer is using it. Tried again in a few seconds; close the other page if it stays red.</p>";
   } else if (micError === "network") {
     html = `<p>No connection to the speech service: Chrome sends speech to Google, and on the timer's hotspot the phone has no internet (mobile data doesn't help: Android then stops reaching the timer).</p>
       <p>Voice commands work when the phone has internet on the same network: at home with the timer on your WiFi, or at the field with the timer joined to <b>your phone's hotspot</b> (Setup → WiFi networks, then open the timer's address). They resume by themselves once the phone is online.</p>`;
@@ -2177,7 +2248,7 @@ function renderMicHelp() {
   } else if (micState === "error") {
     html = `<p>Speech recognition failed (${escapeHtml(String(micError))}). Tried again every 30 s.</p>`;
   } else {
-    html = "<p>Starting voice recognition… If it stays grey, tap the page once (browsers start the microphone only after a tap) or reload.</p>";
+    html = "<p>Starting voice recognition… If it stays grey, tap the page once or reload it.</p>";
   }
   box.innerHTML = html;
   for (const b of box.querySelectorAll("[data-copy]")) {
@@ -2187,9 +2258,12 @@ function renderMicHelp() {
       ta.value = b.dataset.copy;
       ta.setAttribute("readonly", "");
       ta.style.position = "fixed";
+      ta.style.top = "0";
+      ta.style.left = "0";
       ta.style.opacity = "0";
       document.body.appendChild(ta);
       ta.select();
+      ta.setSelectionRange(0, ta.value.length); // iOS
       let ok = false;
       try {
         ok = document.execCommand("copy");

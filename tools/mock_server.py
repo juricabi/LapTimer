@@ -287,7 +287,9 @@ class H(SimpleHTTPRequestHandler):
                                    "txPowerDbm": 19.5, "protoAp": 7, "protoSta": 7, "bwAp": 2, "ps": 1, "channel": 1,
                                    "apClients": 0, "txLoop": 0, "txGain": 19, "txAnaGain": "0120005f"})
             if u.path == "/api/debug/aplog":
-                return self._json({"entries": []})
+                return self._json({"now": now_ms(), "events": []})
+            if u.path == "/ota/start":  # update.html / ElegantOTA: a GET, then POST /ota/upload
+                return self._json({"status": "OK"})
             if u.path == "/api/info":
                 return self._json({"version": "1.1.0-dev", "mode": "wifi", "ip": "192.168.1.50", "ssid": "Home WiFi",
                                    "host": "laptimer.local", "signal": -55})
