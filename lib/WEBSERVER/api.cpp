@@ -71,10 +71,16 @@ void logHotspotAssigned(const uint8_t *mac, uint32_t ip)
 }
 extern volatile uint32_t core0RoundsPerSec;
 #if CONFIG_IDF_TARGET_ESP32
-extern "C" uint8_t phy_set_most_tpw_disbg; // see webserver.cpp
+extern "C" uint8_t phy_set_most_tpw_disbg; // see webserver.cpp, holdTxGain
+extern "C" uint8_t chip7_sleep_params[];
 static int txPowerLoopOn() { return phy_set_most_tpw_disbg ? 0 : 1; }
+static int txGainByte() { return (int8_t)chip7_sleep_params[184]; }
+extern "C" uint32_t tx_rf_ana_gain; // calibrated at the first WiFi start after boot
+static uint32_t txAnaGain() { return tx_rf_ana_gain; }
 #else
 static int txPowerLoopOn() { return -1; } // not handled on this chip
+static int txGainByte() { return 0; }
+static uint32_t txAnaGain() { return 0; }
 #endif
 
 static uint32_t paramU32(AsyncWebServerRequest *request, const char *name, uint32_t fallback)
@@ -247,10 +253,17 @@ void Webserver::registerApi()
         snprintf(buf, sizeof(buf),
                  "{\"samplesPerSec\":%u,\"core0RoundsPerSec\":%u,\"cpuMhz\":%u,"
                  "\"wifiMode\":%d,\"txPowerDbm\":%.2f,\"protoAp\":%u,\"protoSta\":%u,\"bwAp\":%d,\"ps\":%d,"
-                 "\"channel\":%d,\"apClients\":%d,\"txLoop\":%d}",
+                 "\"channel\":%d,\"apClients\":%d,\"txLoop\":%d,\"txGain\":%d,\"txAnaGain\":\"%08x\"}",
                  timer->getSamplesPerSec(), core0RoundsPerSec, getCpuFrequencyMhz(),
-                 mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), txPowerLoopOn());
+                 mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), txPowerLoopOn(), txGainByte(), txAnaGain());
         request->send(200, "application/json", buf); });
+
+    // Diagnostics: apply the held transmit gain again, or another value (?k=, until the next
+    // WiFi start), to compare levels (/api/debug/load shows txGain)
+    server.on("/api/debug/txgain", HTTP_POST, [this](AsyncWebServerRequest *request)
+              {
+        txGainRequest = request->hasParam("k") ? constrain(atoi(request->getParam("k")->value().c_str()), -60, 30) : TX_GAIN_BYTE;
+        sendOk(request); });
 
     // Diagnostics: switch to the timer's own hotspot until the next restart (saved networks stay).
     // bw=20|40 and ps=0|1 override its channel width and power save, for comparisons.

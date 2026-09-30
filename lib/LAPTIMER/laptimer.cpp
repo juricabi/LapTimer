@@ -419,8 +419,10 @@ void LapTimer::update(uint32_t nowMs)
 // Keeps the receiver on the pilot's channel and feeds every reading through the Kalman filter
 void LapTimer::scan(uint32_t nowMs)
 {
-    // during a race the race's channel, otherwise the live setting (or off while held)
-    uint16_t freq = isRacing() ? raceFreq : (receiverHeld ? POWER_DOWN_FREQ_MHZ : conf->getFrequency());
+    // during a race the race's channel, otherwise the live setting
+    uint16_t freq = isRacing() ? raceFreq : conf->getFrequency();
+    if (!receiverEnabled && (int32_t)(nowMs - RECEIVER_WAIT_MAX_MS) < 0)
+        freq = POWER_DOWN_FREQ_MHZ; // power-up: WiFi hasn't calibrated its transmitter yet
     if (rx->getFrequency() != freq)
     {
         rx->setFrequency(freq);

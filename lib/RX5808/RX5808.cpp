@@ -23,7 +23,12 @@ void RX5808::init() {
     // power register is written, so wait before the next write
     resetRxModule();
     delay(RX5808_RESET_MS);
-    setFrequency(POWER_DOWN_FREQ_MHZ);  // LapTimer::scan() powers it up and tunes it
+    // Left in its reset state (as after power-up) until LapTimer::scan() tunes it: the ESP32
+    // calibrates its transmitter when WiFi starts, and a tuned or powered-down RX5808 disturbs
+    // that (CLAUDE.md, Transmit power fade). Marked powered down, so the first tune writes the
+    // power register (setupRxModule) and wakes it.
+    currentFrequency = POWER_DOWN_FREQ_MHZ;
+    rxPoweredDown = true;
 }
 
 // Set frequency on RX5808 module to given value

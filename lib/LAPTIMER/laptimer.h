@@ -19,6 +19,7 @@
 // over 150 switches 36 ms typically, 44.5 ms at most (timed from the end of the register
 // write; the wait here starts a little earlier). Too slow to share one receiver between
 // pilots: a fast pass would fall between the readings.
+#define RECEIVER_WAIT_MAX_MS 5000 // power-up: receiver off until WiFi has started, at most this long
 #define RX_LOCK_MS 50
 // Still above exit this long after the peak: landed or hovering near the timer. If the
 // signal fell clearly (PEAK_DROP) from the peak after the first pass, the pass is counted at
@@ -107,10 +108,10 @@ class LapTimer {
     bool isStepTestDone() { return stepTestDone; }
     uint8_t getStepTestSample(uint16_t i) { return stepTestData[i]; }
 
-    // Receiver off while the hotspot's transmit power settles (20 s, TX_POWER_SETTLE_MS; see
-    // webserver.cpp, txPowerStep). A race keeps its receiver: holding is ignored while one runs.
-    void holdReceiver(bool hold) { receiverHeld = hold; }
-    bool isReceiverOff() { return rx->getFrequency() == POWER_DOWN_FREQ_MHZ; }
+    // At power-up the receiver stays off until WiFi has started (at most RECEIVER_WAIT_MAX_MS):
+    // the ESP32 calibrates its transmitter then, and the tuned RX5808 disturbs that
+    // calibration (CLAUDE.md, Transmit power fade). The web server calls this once WiFi is up.
+    void enableReceiver() { receiverEnabled = true; }
 
     // Diagnostics: RSSI samples taken in the last full second
     uint32_t getSamplesPerSec() { return samplesPerSec; }
@@ -127,7 +128,7 @@ class LapTimer {
     RX5808 *rx;
     Buzzer *buz;
     Led *led;
-    volatile bool receiverHeld = false;
+    volatile bool receiverEnabled = false;
 
     // race, with the settings taken at race start (switching to another pilot during a
     // race doesn't change the race: same channel, name and thresholds)

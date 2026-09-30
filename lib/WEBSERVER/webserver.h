@@ -21,7 +21,10 @@
 #define WIFI_PAGE_SCAN_TRIES 3     // a channel scan fails now and then (library state): try again
 #define WIFI_PAGE_SCAN_WAIT_MS 1000   // per channel
 #define WIFI_RECONNECT_TIMEOUT_MS 500
-#define TX_POWER_SETTLE_MS 20000  // hotspot start: receiver off this long while the TX power settles
+// transmit gain byte held (webserver.cpp, holdTxGain): the radio's own power loop never goes
+// above +19; 0 is its value after boot, about 4 dB weaker (measured)
+#define TX_GAIN_BYTE 19
+#define TX_GAIN_NONE -1000
 
 class Webserver {
    public:
@@ -70,9 +73,6 @@ class Webserver {
     uint8_t apWidthMhz = 20;
     bool apPowerSave = false;
     volatile bool hotspotRequested = false; // /api/debug/hotspot, applied in handleWebUpdate
-    // hotspot transmit power (txPowerStep)
-    enum { TX_POWER_START, TX_POWER_SETTLING, TX_POWER_HELD } txPowerState = TX_POWER_START;
-    uint32_t txPowerSinceMs = 0;
-    void txPowerStep(uint32_t nowMs);
+    volatile int txGainRequest = TX_GAIN_NONE; // /api/debug/txgain, applied in handleWebUpdate
 
 };

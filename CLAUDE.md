@@ -80,26 +80,30 @@ Every change goes through all steps; a step is done when its check passes.
   after it; wake from power down with `setupRxModule()` only. Check the RSSI after a restart.
 - **Channels in two bands**: the timer stores only MHz, and 5880 is both F8 and R7. The page's
   `bandChannel(freq, preferBand)` keeps the band the picker shows, or switching band jumps.
-- **Hotspot fading (not solved)**: the tuned RX5808 leaks into the ESP32's transmit power
-  detector, and the PHY's background power loop (`tx_pwctrl_background` in libphy) turns the
-  transmitter down ~30 dB over 2-10 minutes until the hotspot vanishes, recovers, fades again.
-  Bisected with a bare softAP firmware: steady alone, with busy cores and nonstop ADC too;
-  fading once the RX5808 is tuned; steady with the loop off. It depends on the pilot channel:
-  5800 fades on WiFi channels 1, 6 and 11; 5865 doesn't (rises to ~-60 dBm); powered down after
-  5800, ~-77. A station hides it (the radio sleeps between beacons, which restarts the loop).
-  Shipped: `txPowerStep` (webserver.cpp) turns the receiver off for 20 s at hotspot start, then
-  holds the loop (`phy_set_most_tpw_disbg = 1`) - no fade, but the held level varies from
-  -60 to -89 dBm at 1-2 m, depending on hidden libphy state (how long it ran as a station).
-  Dead ends, all unreliable: longer settle; resetting `tx_pwctrl_track_num` (big steps only
-  in the first 20 rounds per boot); full WiFi restart before settling (-86); parking the
-  receiver on 5865 while settling (-64, then -82); libphy's fixed-power mode, which
-  `esp_wifi_set_max_tx_power` reaches only below the rate target (~13.5 dBm; -82 dBm at
-  8.5 dBm). The radio caps requests at its highest rate target, 18 dBm. Experiments:
-  `git stash list`. Advice: station mode (phone hotspot) at the field; likely real fix: more
-  distance/shielding between the RX5808 and the ESP32's antenna. Measure with
-  `tools/hotspot_signal.py` (beacon dBm per scan; Windows' "Signal %" hides fading), check
-  `/api/debug/load` `txLoop`, and see `docs/hotspot.md`. Classic ESP32 only
-  (`#if CONFIG_IDF_TARGET_ESP32`: the C3/S3 libphy lacks the flag).
+- **Transmit power fade** (classic ESP32): the tuned RX5808 (oscillator at (f-479)/2, ~2.65
+  GHz) leaks into the ESP32's transmit power detector. libphy's power loop
+  (`tx_pwctrl_background`, every 5th frame sent) reads too much power and steps its gain byte
+  (`chip7_sleep_params[184]`, `[185]`, int8) down with no lower limit; it wraps from -128 to
+  +127, so the hotspot faded ~30 dB over 2-10 min, vanished and came back full, over and over.
+  Pilot channels 5769, 5800, 5843, 5880, 5917 faded; 5658, 5732, 5865 didn't; the WiFi channel
+  made no difference. A station hides it (the radio sleeps between beacons). Second effect: the
+  first WiFi start after boot calibrates the transmitter (`tx_rf_ana_gain`), and the RX5808
+  disturbs that too: tuned to 5800 it came out random (0x5a/0x5f/0x7a), powered down 0x75 and
+  weak (-74 dBm), left in its reset state 0x5f every boot. Fix: `RX5808::init` leaves it in
+  reset and `LapTimer::scan` keeps it untuned until the web server calls `enableReceiver()`
+  after WiFi started (at most `RECEIVER_WAIT_MAX_MS`); `holdTxGain` (webserver.cpp) switches
+  the loop off (`phy_set_most_tpw_disbg = 1`) and applies gain byte `TX_GAIN_BYTE` 19 (the
+  loop's own maximum; its start value 0 is ~4 dB weaker) with `tx_gain_table_set()`. The
+  library clears the flag whenever it applies a TX power (WiFi start, mode change), so
+  `handleWebUpdate` holds it again. Result: -54..-62 dBm at 1-2 m, steady (routers -50..-56).
+  Trade-off: no temperature compensation (it is part of the loop). Dead ends: holding the
+  loop after a 20 s settle (-60..-89, varied with hidden state), longer settles, resetting
+  `tx_pwctrl_track_num`, a WiFi restart, parking the receiver on 5865, libphy's fixed-power
+  mode (only below ~13.5 dBm), more power (requests cap at 18 dBm). Check `/api/debug/load`
+  (`txLoop` 0, `txGain` 19, `txAnaGain` the same every boot), compare levels with
+  `POST /api/debug/txgain?k=`, measure with `tools/hotspot_signal.py` (beacon dBm; Windows'
+  "Signal %" hides fading); `docs/hotspot.md` has the measurements. The C3/S3 libphy lacks
+  these symbols: not handled, not measured.
 - **Boot freeze**: `analogRead()` reconfigures the ADC on every call (pin mux, attenuation,
   touch) without a lock across cores. With the battery read on core 0 during the RSSI
   sampling on core 1, about every second boot froze silently (both cores stuck, no WiFi,
@@ -119,7 +123,7 @@ Every change goes through all steps; a step is done when its check passes.
   maximum: asking for 19.5 dBm gives 18 dBm (the ESP32 rounds down to fixed steps). The
   hotspot runs at 20 MHz with power save off, in AP+STA mode so a network scan never switches
   modes (that restarts the hotspot and drops phones), and the page's scan goes one channel at
-  a time. Link tests made before the fading fix (above) are unreliable: its dropouts looked
+  a time. Link tests made before the transmit power fix (above) are unreliable: its dropouts looked
   like scan, bandwidth or DHCP trouble. `/api/debug/load` shows the real radio settings;
   `/api/debug/hotspot` switches to the hotspot until the next restart.
 - **Android and `.local`**: Android doesn't resolve mDNS names reliably, least of all on its

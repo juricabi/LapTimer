@@ -11,10 +11,29 @@
 static IPAddress netMsk(255, 255, 255, 0);
 static HotspotDhcp hotspotDhcp;
 #if CONFIG_IDF_TARGET_ESP32
-// ESP32 PHY (libphy): 1 = its background TX power loop is off and the transmitter keeps its
-// current gain. The PHY clears it whenever it applies a TX power (WiFi start, mode change),
-// and the gain then starts low again; see txPowerStep. Only the classic ESP32's libphy has it.
+// Transmit power (classic ESP32, CLAUDE.md: Transmit power fade). The radio library's power
+// loop measures every 5th frame and steps a gain byte (chip7_sleep_params[184], [185]). The
+// tuned RX5808 leaks into its power detector on many channels, so the loop keeps stepping
+// down; the byte has no lower limit and wraps from -128 to +127: the transmitter fades ~30 dB
+// and jumps back every few minutes. So the loop stays off (phy_set_most_tpw_disbg) and the
+// byte is set to TX_GAIN_BYTE and applied. The library clears the flag whenever it applies a
+// TX power (WiFi start, mode change): holdTxGain() runs again then.
 extern "C" uint8_t phy_set_most_tpw_disbg;
+extern "C" uint8_t chip7_sleep_params[];
+extern "C" uint32_t phy_enter_critical(void);
+extern "C" void phy_exit_critical(uint32_t);
+extern "C" void tx_gain_table_set(void);
+static void holdTxGain(int8_t gain = TX_GAIN_BYTE)
+{
+    phy_set_most_tpw_disbg = 1;
+    uint32_t state = phy_enter_critical();
+    chip7_sleep_params[184] = gain;
+    chip7_sleep_params[185] = gain;
+    tx_gain_table_set();
+    phy_exit_critical(state);
+}
+#else
+static void holdTxGain(int8_t gain = TX_GAIN_BYTE) { (void)gain; } // the other chips' radio libraries differ
 #endif
 void logHotspotAssigned(const uint8_t *mac, uint32_t ip); // api.cpp (diagnostics)
 static IPAddress ipAddress;
@@ -156,64 +175,6 @@ void Webserver::pageScanStep(uint32_t nowMs)
         pageScanActive = false; // done: the results are complete before this flag clears
 }
 
-// Hotspot transmit power. The tuned RX5808 leaks into the ESP32's transmit power detector:
-// with the PHY's power loop running, the hotspot fades ~30 dB within minutes and vanishes
-// (CLAUDE.md, Hotspot fading). But the loop is what raises the gain to its target after a
-// start (about one step a second, ~14 s from the start value to the target). So: receiver
-// off, loop on for TX_POWER_SETTLE_MS, then loop off (the gain holds) and the receiver back
-// on. Hotspot only: a station's radio sleeps between beacons, which starts the loop over.
-// Classic ESP32 only (the C3/S3 radio libraries differ; not measured there).
-void Webserver::txPowerStep(uint32_t nowMs)
-{
-#if CONFIG_IDF_TARGET_ESP32
-    if (wifiMode != WIFI_AP)
-        return;
-    if (txPowerState == TX_POWER_SETTLING)
-    {
-        if (timer->isRacing())
-        {
-            // the race needs its receiver: hold the gain so far (with the receiver on, the
-            // loop would pull it down) and settle again after the race
-            phy_set_most_tpw_disbg = 1;
-            timer->holdReceiver(false);
-            txPowerState = TX_POWER_START;
-            return;
-        }
-        if (!timer->isReceiverOff())
-        {
-            txPowerSinceMs = nowMs; // settling counts from the moment the receiver is off
-            return;
-        }
-        if (nowMs - txPowerSinceMs < TX_POWER_SETTLE_MS)
-            return;
-        phy_set_most_tpw_disbg = 1;
-        timer->holdReceiver(false);
-        txPowerState = TX_POWER_HELD;
-        DEBUG("Hotspot TX power held\n");
-        return;
-    }
-    // hotspot just started, or the PHY applied a TX power again (the gain starts over)
-    if (txPowerState == TX_POWER_START || !phy_set_most_tpw_disbg)
-    {
-        if (timer->isRacing())
-        {
-            // no settling during a race: hold the gain as it is (with the receiver on, the
-            // loop would pull it down) and settle after the race
-            phy_set_most_tpw_disbg = 1;
-            txPowerState = TX_POWER_START;
-            return;
-        }
-        phy_set_most_tpw_disbg = 0;
-        timer->holdReceiver(true);
-        txPowerSinceMs = nowMs;
-        txPowerState = TX_POWER_SETTLING;
-        DEBUG("Hotspot TX power settling\n");
-    }
-#else
-    (void)nowMs;
-#endif
-}
-
 void Webserver::handleWebUpdate(uint32_t currentTimeMs)
 {
     if (hotspotRequested)
@@ -224,8 +185,16 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
         changeTimeMs = currentTimeMs; // after WIFI_RECONNECT_TIMEOUT_MS, so the reply goes out first
         wifiMode = WIFI_OFF;
     }
+    if (txGainRequest != TX_GAIN_NONE)
+    {
+        holdTxGain(txGainRequest); // /api/debug/txgain
+        txGainRequest = TX_GAIN_NONE;
+    }
     pageScanStep(currentTimeMs);
-    txPowerStep(currentTimeMs);
+#if CONFIG_IDF_TARGET_ESP32
+    if (wifiMode != WIFI_OFF && !phy_set_most_tpw_disbg)
+        holdTxGain(); // the library applied a TX power again, which let its loop run
+#endif
 
     // Power-up scan for saved networks: join the strongest one in range, or use the hotspot
     if (staScanning)
@@ -340,7 +309,8 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
             // with the station interface on (idle): a network scan then never switches
             // modes, which restarted the hotspot and dropped its phones
             WiFi.mode(WIFI_AP_STA);
-            txPowerState = TX_POWER_START; // txPowerStep settles and holds the transmit power
+            holdTxGain(); // fixed transmit gain (see its declaration)
+            timer->enableReceiver(); // the transmitter is calibrated now
             // 20 MHz: the default 40 MHz in the crowded 2.4 GHz band lost packets (DHCP took
             // up to 40 s, phones gave up). No power save: the hotspot must hear its phones.
             esp_wifi_set_bandwidth(WIFI_IF_AP, apWidthMhz == 40 ? WIFI_BW_HT40 : WIFI_BW_HT20);
@@ -360,6 +330,8 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
             wifiMode = WIFI_STA;
             WiFi.setHostname(wifi_hostname); // hostname must be set before the mode is set to STA
             WiFi.mode(wifiMode);
+            holdTxGain(); // fixed transmit gain (see its declaration)
+            timer->enableReceiver(); // the transmitter is calibrated now
             changeTimeMs = currentTimeMs;
             // look for the saved networks first (handled at the top of this function)
             WiFi.scanNetworks(true);

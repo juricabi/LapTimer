@@ -97,10 +97,8 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
 - WiFi network `LapTimer_xxxx 192.168.4.1`, password `laptimer`. The address is in the name.
 - Open `http://192.168.4.1`. If the phone says the WiFi has no internet, stay connected;
   if the page doesn't load, turn off mobile data.
-- On some pilot channels (5800 among them) the RX5808 disturbs the ESP32's transmitter and the
-  hotspot's range is short. At the field, let the timer join your **phone's hotspot** instead
-  (below); see [docs/hotspot.md](docs/hotspot.md). When the hotspot starts, the receiver is off
-  for 20 s while its transmit power settles (a race started meanwhile gets it back at once).
+- Earlier versions' hotspot faded away on many pilot channels; why and how it was fixed:
+  [docs/hotspot.md](docs/hotspot.md).
 
 **Your WiFi**
 1. **Setup → WiFi networks**: add your network (Scan helps), then **Restart timer**.
