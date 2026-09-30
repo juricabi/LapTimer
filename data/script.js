@@ -1922,11 +1922,26 @@ function beep(duration, frequency, type) {
 // ═══════════════════════════════════════════════════════════════════
 //  Voice commands
 // ═══════════════════════════════════════════════════════════════════
+// Chrome's speech recognition (Web Speech API) opens a session with Google's servers; the
+// session closes by itself after a stretch of silence and is opened again at once (the short
+// gap is Chrome's). A real failure turns the mic icon red, the mic card says why, and the
+// recovery is automatic: no internet → tried again when the browser reports it is online,
+// and every 30 s after a silent reachability check (no microphone chime); no microphone →
+// tried again every 30 s; a refused microphone, or Brave (it blocks the speech service) →
+// no retry, the card says what to do. The icon is green only while a session is really
+// open (Chrome's "start" event) and, after a failure, only once a session has held for 5 s:
+// a doomed session looks fine for a moment, which made the icon blink red and green.
 
-// Colors the mic chip in the top bar: 'listening' (green), 'error' (red) or '' (grey)
-let micState = "";
-let micError = null; // the last SpeechRecognition error, for the help text
-let recognition = null;
+let micState = ""; // "" grey, "listening" green, "error" red
+let micError = null; // the last failure: not-allowed, network, audio-capture, ...
+let recognition = null; // the SpeechRecognition while voice commands are on
+let micRetryTimer = null;
+let micHoldTimer = null;
+let micFailures = 0; // failures in a row; a session that held 5 s resets it
+let micSessionFailed = false; // the session now ending failed (set in onerror, read in onend)
+const isBrave = !!navigator.brave;
+const speechRecognitionSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+
 function setMicState(state) {
   micState = state;
   const mic = $("micIndicator");
@@ -1954,12 +1969,21 @@ $("voiceCommands").addEventListener("change", () => {
   else stopVoiceRecognition();
 });
 
+function clearMicTimers() {
+  clearTimeout(micRetryTimer);
+  clearTimeout(micHoldTimer);
+  micRetryTimer = micHoldTimer = null;
+}
+
 function stopVoiceRecognition() {
+  clearMicTimers();
   const r = recognition;
   recognition = null;
   micError = null;
+  micFailures = 0;
+  micSessionFailed = false;
   if (r) {
-    r.onend = null;
+    r.onstart = r.onend = r.onerror = r.onresult = null;
     try {
       r.abort();
     } catch (e) {
@@ -1969,21 +1993,141 @@ function stopVoiceRecognition() {
   setMicState("");
 }
 
+// Opens a session; a start that throws (Chrome: already running, or refused) is treated
+// like a failed session
+function openMicSession() {
+  if (!recognition) return;
+  try {
+    recognition.start();
+  } catch (e) {
+    console.warn("Speech recognition start failed", e);
+    micError = micError || "start-failed";
+    micFailures++;
+    setMicState("error");
+    scheduleMicRetry();
+  }
+}
+
+// Can the phone reach the internet (Chrome's speech service)? Silent: no microphone involved.
+function internetReachable() {
+  return new Promise((resolve) => {
+    const control = new AbortController();
+    const timer = setTimeout(() => control.abort(), 5000);
+    fetch("https://www.gstatic.com/generate_204", { mode: "no-cors", cache: "no-store", signal: control.signal })
+      .then(() => resolve(true), () => resolve(false))
+      .finally(() => clearTimeout(timer));
+  });
+}
+
+function scheduleMicRetry(delayMs = 30000) {
+  clearTimeout(micRetryTimer);
+  micRetryTimer = setTimeout(async () => {
+    micRetryTimer = null;
+    if (!recognition) return; // switched off meanwhile
+    if (micError === "network" && !(await internetReachable())) {
+      scheduleMicRetry(); // still no internet: look again later, without opening the microphone
+      return;
+    }
+    if (!recognition || micRetryTimer) return;
+    openMicSession();
+  }, delayMs);
+}
+// Back online (home WiFi, the phone's hotspot): try right away
+window.addEventListener("online", () => {
+  if (recognition && micRetryTimer && micError === "network") scheduleMicRetry(500);
+});
+
+function speakBestTime() {
+  const best = raceData ? pilotStats(racePilot(raceData)).best : null;
+  queueSpeak(best === null ? "No best lap recorded yet" : `Best lap ${secs(best)} seconds`);
+}
+
+function startVoiceRecognition() {
+  if (!speechRecognitionSupported) {
+    console.warn("Speech recognition not supported in this browser. Voice commands disabled.");
+    return;
+  }
+  if (!voiceCommandsWanted() || recognition) return; // off on this phone, or already on
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const r = new SpeechRecognition();
+  recognition = r;
+  micError = null;
+  micFailures = 0;
+  micSessionFailed = false;
+  r.lang = "en-US";
+  r.continuous = true;
+  r.interimResults = false;
+
+  r.onresult = (event) => {
+    for (let i = event.resultIndex; i < event.results.length; ++i) {
+      if (!event.results[i].isFinal) continue;
+      const transcript = event.results[i][0].transcript.trim().toLowerCase();
+      // Ignore what the mic hears while (or just after) the announcer speaks,
+      // otherwise "Race stopped" / "Start racing" would trigger commands.
+      if (Date.now() - lastSpeechMs < 1500) break;
+      const has = (word) => new RegExp("\\b" + word + "\\b").test(transcript);
+      const racing = status && (status.state === STATE.COUNTDOWN || status.state === STATE.WAITING || status.state === STATE.RUNNING);
+      if (has("best time")) speakBestTime();
+      else if (has("clear time") || has("clear best")) {
+        if (!racing) clearRace();
+      } else if (has("start") || has("begin") || has("go")) {
+        if (!racing) $("startRaceButton").click();
+      } else if (has("stop")) {
+        if (racing) stopRace();
+      }
+      break;
+    }
+  };
+  r.onstart = () => {
+    if (recognition !== r) return;
+    if (micFailures === 0) setMicState("listening");
+    else {
+      clearTimeout(micHoldTimer);
+      micHoldTimer = setTimeout(() => {
+        micFailures = 0;
+        micError = null;
+        setMicState("listening");
+      }, 5000);
+    }
+  };
+  r.onerror = (e) => {
+    if (recognition !== r) return;
+    // a session ended by silence ("no-speech") or a stop ("aborted") is not a failure
+    if (e.error === "no-speech" || e.error === "aborted") return;
+    micSessionFailed = true;
+    micError = e.error;
+    micFailures++;
+    clearTimeout(micHoldTimer);
+    setMicState("error");
+  };
+  r.onend = () => {
+    if (recognition !== r) return;
+    const failed = micSessionFailed;
+    micSessionFailed = false;
+    if (!failed) {
+      openMicSession(); // Chrome closed the session (silence): keep listening
+      return;
+    }
+    // refused, or Brave: nothing to retry, the mic card says what to do
+    if (micError === "not-allowed" || micError === "service-not-allowed" || isBrave) return;
+    scheduleMicRetry();
+  };
+  openMicSession();
+}
+
 // The mic icon explains its colour and, on Chrome over plain http, how to allow the
 // microphone (a page can't open chrome:// links, so the address is there to copy)
 function renderMicHelp() {
   const box = $("micHelpText");
-  const supported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-  const brave = !!navigator.brave;
   const copy = (text) => `<code>${escapeHtml(text)}</code><button type="button" class="btn btn-ghost btn-small" data-copy="${escapeHtml(text)}">Copy</button>`;
   let html;
   if (!voiceCommandsWanted()) {
     html = "<p>Voice commands are off on this phone. Switch them on in Setup → Announcer.</p>";
-  } else if (!supported) {
+  } else if (!speechRecognitionSupported) {
     html = "<p>This browser has no speech recognition. Voice commands work in Chrome.</p>";
   } else if (micState === "listening") {
-    html = "<p>Listening. Say <b>start</b> (or go), <b>stop</b>, <b>best time</b> or <b>clear time</b>. The announcer's own voice is ignored.</p>";
-  } else if (brave) {
+    html = "<p>Listening. Say <b>start</b> (or go), <b>stop</b>, <b>best time</b> or <b>clear time</b>. The announcer's own voice is ignored. Chrome closes a session after a few seconds of silence and it is opened again at once: that short gap is Chrome's.</p>";
+  } else if (isBrave && micState === "error") {
     html = "<p>Brave blocks the speech service that Chrome uses, so voice commands can't work here. Announcements do. For voice commands open this page in Chrome.</p>";
   } else if (micError === "not-allowed" || micError === "service-not-allowed") {
     html = location.protocol === "http:"
@@ -1997,23 +2141,16 @@ function renderMicHelp() {
       : "<p>The microphone was refused. Tap the icon left of the address → Permissions → Microphone → Allow, then reload the page.</p>";
   } else if (micError === "network") {
     html = `<p>No connection to the speech service: Chrome sends speech to Google, and on the timer's hotspot the phone has no internet (mobile data doesn't help: Android then stops reaching the timer).</p>
-      <p>Voice commands work when the phone has internet on the same network: at home with the timer on your WiFi, or at the field with the timer joined to <b>your phone's hotspot</b> (Setup → WiFi networks, then open the timer's address). Retrying now and then, with growing pauses.</p>
-      <p><button type="button" class="btn btn-ghost btn-small" data-mic-retry>Try again now</button></p>`;
+      <p>Voice commands work when the phone has internet on the same network: at home with the timer on your WiFi, or at the field with the timer joined to <b>your phone's hotspot</b> (Setup → WiFi networks, then open the timer's address). They resume by themselves once the phone is online.</p>`;
   } else if (micError === "audio-capture") {
     html = `<p>The microphone couldn't be opened: none found, it is used by another app, or the browser's chosen microphone is gone (a Bluetooth headset connected in music mode only has no microphone).</p>
-      <p>Pick a working microphone in the system's sound settings and in the browser's site settings (tap the icon left of the address → Microphone), then try again.</p>
-      <p><button type="button" class="btn btn-ghost btn-small" data-mic-retry>Try again now</button></p>`;
+      <p>Pick a working microphone in the system's sound settings and in the browser's site settings (tap the icon left of the address → Microphone). Tried again every 30 s.</p>`;
+  } else if (micState === "error") {
+    html = `<p>Speech recognition failed (${escapeHtml(String(micError))}). Tried again every 30 s.</p>`;
   } else {
     html = "<p>Starting voice recognition… If it stays grey, tap the page once (browsers start the microphone only after a tap) or reload.</p>";
   }
   box.innerHTML = html;
-  for (const b of box.querySelectorAll("[data-mic-retry]")) {
-    b.addEventListener("click", () => {
-      stopVoiceRecognition();
-      startVoiceRecognition();
-      showButtonStatus(b, "Retrying…", 3000);
-    });
-  }
   for (const b of box.querySelectorAll("[data-copy]")) {
     b.addEventListener("click", () => {
       // navigator.clipboard needs https: select the text and copy it the old way
@@ -2041,99 +2178,10 @@ $("micIndicator").addEventListener("click", () => {
   help.hidden = !help.hidden;
   if (!help.hidden) {
     renderMicHelp();
-    help.scrollIntoView({ block: "start" });
+    window.scrollTo({ top: 0 }); // the card is the first thing under the tab bar
   }
 });
 $("micHelpClose").addEventListener("click", () => ($("micHelp").hidden = true));
-
-function speakBestTime() {
-  const best = raceData ? pilotStats(racePilot(raceData)).best : null;
-  queueSpeak(best === null ? "No best lap recorded yet" : `Best lap ${secs(best)} seconds`);
-}
-
-function startVoiceRecognition() {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    console.warn("Speech recognition not supported in this browser. Voice commands disabled.");
-    return;
-  }
-  if (!voiceCommandsWanted() || recognition) return; // off on this phone, or already running
-  micError = null;
-  recognition = new SpeechRecognition();
-  recognition.lang = "en-US";
-  recognition.continuous = true;
-  recognition.interimResults = false;
-
-  recognition.onresult = (event) => {
-    for (let i = event.resultIndex; i < event.results.length; ++i) {
-      if (!event.results[i].isFinal) continue;
-      const transcript = event.results[i][0].transcript.trim().toLowerCase();
-      // Ignore what the mic hears while (or just after) the announcer speaks,
-      // otherwise "Race stopped" / "Start racing" would trigger commands.
-      if (Date.now() - lastSpeechMs < 1500) break;
-      const has = (word) => new RegExp("\\b" + word + "\\b").test(transcript);
-      const racing = status && (status.state === STATE.COUNTDOWN || status.state === STATE.WAITING || status.state === STATE.RUNNING);
-      if (has("best time")) speakBestTime();
-      else if (has("clear time") || has("clear best")) {
-        if (!racing) clearRace();
-      } else if (has("start") || has("begin") || has("go")) {
-        if (!racing) $("startRaceButton").click();
-      } else if (has("stop")) {
-        if (racing) stopRace();
-      }
-      break;
-    }
-  };
-  // Chrome ends the recognition after every error: a refused microphone would otherwise
-  // restart it in a tight loop (with Android's listening chime each time), so it stops there.
-  // After the other errors (no network, no audio) it retries with growing pauses, 3 s up to a
-  // minute, and the icon stays red until a restart has held for 5 s (a restart looks fine
-  // for a second before the next error arrives: the icon used to blink red and green).
-  const r = recognition;
-  let lastError = null;
-  let errors = 0;
-  let okTimer = null;
-  recognition.onerror = (e) => {
-    // Chrome ends a session after a while of silence with "no-speech" (and "aborted" on a
-    // stop): not failures, the session is simply started again
-    if (e.error === "no-speech" || e.error === "aborted") return;
-    lastError = e.error;
-    micError = e.error;
-    errors++;
-    clearTimeout(okTimer);
-    setMicState("error");
-  };
-  recognition.onend = () => {
-    if (lastError === "not-allowed" || lastError === "service-not-allowed") return;
-    const afterError = !!lastError;
-    const delay = afterError ? Math.min(60000, 3000 * 2 ** Math.min(errors - 1, 4)) : 0;
-    lastError = null;
-    const restart = () => {
-      if (recognition !== r) return; // switched off meanwhile
-      try {
-        r.start(); // keep listening
-      } catch (e) {
-        console.warn("Failed to restart recognition", e);
-        return;
-      }
-      if (!afterError) setMicState("listening");
-      else
-        okTimer = setTimeout(() => {
-          errors = 0;
-          micError = null;
-          setMicState("listening");
-        }, 5000);
-    };
-    if (delay) setTimeout(restart, delay);
-    else restart();
-  };
-  try {
-    recognition.start();
-    setMicState("listening");
-  } catch (e) {
-    console.warn("Speech recognition start failed", e);
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════════
 //  Start
