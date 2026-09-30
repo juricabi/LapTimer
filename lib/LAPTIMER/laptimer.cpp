@@ -468,9 +468,9 @@ void LapTimer::sample(uint8_t v, uint32_t nowMs)
         return;
     }
 
-    if (v >= enter && (!inPass || v > peak))
+    if (v >= enter && (!inPass || v > peak + (peakStale ? PEAK_REARM : 0)))
     {
-        inPass = true; // new peak
+        inPass = true; // new peak (a stale one needs a clear rise, see PEAK_REARM)
         peakStale = false;
         peak = v;
         peakFirstMs = peakLastMs = nowMs;
@@ -480,7 +480,7 @@ void LapTimer::sample(uint8_t v, uint32_t nowMs)
         peakLastMs = nowMs; // still at the peak (plateau)
     }
 
-    if (inPass && (nowMs - peakLastMs) > PEAK_TIMEOUT_MS)
+    if (inPass && (nowMs - peakFirstMs) > PEAK_TIMEOUT_MS)
     {
         if (state == RACE_RUNNING && hasPassed && !peakStale && peak >= v + PEAK_DROP)
         {
@@ -492,7 +492,8 @@ void LapTimer::sample(uint8_t v, uint32_t nowMs)
             return;
         }
         // Waiting near the gate (on the pad, maybe just switched on) with the signal only
-        // drifting: drop the old peak; the take-off through the gate makes a new one
+        // drifting or flat: drop the old peak; the take-off through the gate makes a new one.
+        // Repeats every PEAK_TIMEOUT_MS while it stays, so the level to rise from follows it.
         peakStale = true;
         peak = v;
         peakFirstMs = peakLastMs = nowMs;

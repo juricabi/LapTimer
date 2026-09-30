@@ -21,11 +21,17 @@
 // pilots: a fast pass would fall between the readings.
 #define RECEIVER_WAIT_MAX_MS 5000 // power-up: receiver off until WiFi has started, at most this long
 #define RX_LOCK_MS 50
-// Still above exit this long after the peak: landed or hovering near the timer. If the
-// signal fell clearly (PEAK_DROP) from the peak after the first pass, the pass is counted at
-// the peak; otherwise (drone switched on at the pad, the signal drifting) the peak is dropped.
+// Still above exit this long after the peak was first reached: landed, parked or hovering
+// near the timer (a gate pass is at its peak for a fraction of a second). If the signal fell
+// clearly (PEAK_DROP) from the peak after the first pass, the pass is counted at the peak;
+// otherwise (drone switched on at the pad, the signal drifting, or flat) the peak is dropped
+// and only a clear rise (PEAK_REARM, more than the plateau tolerance and the wander of a
+// parked drone) starts a new one. Counted from the first sample at the peak, not the last:
+// a flat signal refreshes the plateau forever and the timeout never came, so a drone parked
+// within Enter got its pass (or the race start) at the middle of a plateau of any length.
 #define PEAK_TIMEOUT_MS 3000
 #define PEAK_DROP 10
+#define PEAK_REARM 5
 
 // Spectrum scan: RSSI across the 5.8 GHz band to spot channels already in use
 #define SPECTRUM_START_MHZ 5645

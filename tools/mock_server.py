@@ -282,6 +282,12 @@ class H(SimpleHTTPRequestHandler):
                 return self._json({"running": running, "done": done, "total": total, "start": 5645, "step": 5, "rssi": vals})
             if u.path == "/api/wifi/saved":
                 return self._json({"networks": SAVED, "connected": SAVED[0] if SAVED else "", "max": 5})
+            if u.path == "/api/debug/load":
+                return self._json({"samplesPerSec": 8400, "core0RoundsPerSec": 100000, "cpuMhz": 240, "wifiMode": 1,
+                                   "txPowerDbm": 19.5, "protoAp": 7, "protoSta": 7, "bwAp": 2, "ps": 1, "channel": 1,
+                                   "apClients": 0, "txLoop": 0, "txGain": 19, "txAnaGain": "0120005f"})
+            if u.path == "/api/debug/aplog":
+                return self._json({"entries": []})
             if u.path == "/api/info":
                 return self._json({"version": "1.1.0-dev", "mode": "wifi", "ip": "192.168.1.50", "ssid": "Home WiFi",
                                    "host": "laptimer.local", "signal": -55})
@@ -291,6 +297,14 @@ class H(SimpleHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n)
         u = urlparse(self.path)
+        if u.path in ("/ota/start", "/ota/upload"):  # update.html: the upload is accepted and dropped
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"OK")
+            return
+        if u.path in ("/api/debug/hotspot", "/api/debug/txgain"):
+            return self._json({"status": "OK"})
         q = parse_qs(u.query)
         with LOCK:
             if u.path == "/config":

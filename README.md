@@ -124,7 +124,8 @@ opening the page; phones only allow speech after a tap.
 ## Timing precision
 
 The receiver stays on the pilot's channel and reads the signal thousands of times per second.
-A pass is timed at the middle of the signal peak, so the timer itself adds about a
+A pass is timed at the middle of the signal peak (a drone that stays at its peak level for
+more than 3 s is parked or hovering, not passing), so the timer itself adds about a
 millisecond. What remains is how sharp the peak is: put the timer right at the gate, keep
 the drone far away for the rest of the lap, and calibrate Enter/Exit from real passes.
 How fast it reads, and a faster option kept for later: [docs/sampling.md](docs/sampling.md).
