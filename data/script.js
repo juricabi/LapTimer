@@ -695,6 +695,7 @@ async function loadInfo() {
     const info = await fetchJson("/api/info");
     $("infoVersion").textContent = info.version;
     $("infoMode").textContent = info.mode === "hotspot" ? "Own hotspot · " + info.ssid : "Home WiFi · " + info.ssid;
+    $("wifiLostNote").hidden = info.mode !== "wifi"; // only while the timer is on a network
     $("infoIp").textContent = info.ip + (info.mode === "wifi" ? " · " + info.host : "");
   } catch (e) {
     /* older firmware */
