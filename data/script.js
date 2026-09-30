@@ -2000,7 +2000,9 @@ function renderMicHelp() {
       <p>Voice commands work when the phone has internet on the same network: at home with the timer on your WiFi, or at the field with the timer joined to <b>your phone's hotspot</b> (Setup → WiFi networks, then open the timer's address). Retrying now and then, with growing pauses.</p>
       <p><button type="button" class="btn btn-ghost btn-small" data-mic-retry>Try again now</button></p>`;
   } else if (micError === "audio-capture") {
-    html = "<p>No microphone found on this device.</p>";
+    html = `<p>The microphone couldn't be opened: none found, it is used by another app, or the browser's chosen microphone is gone (a Bluetooth headset connected in music mode only has no microphone).</p>
+      <p>Pick a working microphone in the system's sound settings and in the browser's site settings (tap the icon left of the address → Microphone), then try again.</p>
+      <p><button type="button" class="btn btn-ghost btn-small" data-mic-retry>Try again now</button></p>`;
   } else {
     html = "<p>Starting voice recognition… If it stays grey, tap the page once (browsers start the microphone only after a tap) or reload.</p>";
   }
