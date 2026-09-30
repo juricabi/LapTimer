@@ -2132,7 +2132,8 @@ function renderMicHelp() {
   } else if (!speechRecognitionSupported) {
     html = "<p>This browser has no speech recognition. Voice commands work in Chrome.</p>";
   } else if (micState === "listening") {
-    html = "<p>Listening. Say <b>start</b> (or go), <b>stop</b>, <b>best time</b> or <b>clear time</b>. The announcer's own voice is ignored. Chrome closes a session after a few seconds of silence and it is opened again at once: that short gap is Chrome's.</p>";
+    html = "<p>Listening. Say <b>start</b> (or go), <b>stop</b>, <b>best time</b> or <b>clear time</b>; this phone speaks the answer. The announcer's own voice is ignored. Chrome closes a session after a few seconds of silence and it is opened again at once: that short gap is Chrome's.</p>";
+    if (!audioEnabled) html += "<p class=\"hint\">Voice on this phone is off (Setup → Announcer), so the answers are silent.</p>";
   } else if (isBrave && micState === "error") {
     html = "<p>Brave blocks the speech service that Chrome uses, so voice commands can't work here. Announcements do. For voice commands open this page in Chrome.</p>";
   } else if (micError === "not-allowed" || micError === "service-not-allowed") {
