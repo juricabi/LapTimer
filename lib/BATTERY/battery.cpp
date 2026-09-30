@@ -22,8 +22,8 @@ void BatteryMonitor::init(uint8_t pin, uint8_t batScale, uint8_t batAdd, Buzzer 
     }
 }
 
-// Reads the ADC and updates the cached average. Only called from the task
-// running checkBatteryState(), so the sample buffer is never shared.
+// Reads the ADC and updates the cached average. Only called on the timing core (sampleAdc,
+// and init() before the other task starts), so the sample buffer is never shared.
 void BatteryMonitor::sample() {
     // 0-3.3V maps to 0-4095, battery voltage ranges from 4.2V to 3.0V, but the voltage is divided, so 2.1V - 1.5V
     measurements[measurementIndex] = analogRead(vbatPin);
@@ -40,12 +40,14 @@ uint8_t BatteryMonitor::getBatteryVoltage() {
     return voltage;
 }
 
-void BatteryMonitor::checkBatteryState(uint32_t currentTimeMs, uint8_t alarmThreshold) {
+void BatteryMonitor::sampleAdc(uint32_t currentTimeMs) {
     if ((currentTimeMs - lastSampleTimeMs) >= MONITOR_SAMPLE_TIME_MS) {
         lastSampleTimeMs = currentTimeMs;
         sample();
     }
+}
 
+void BatteryMonitor::checkBatteryState(uint32_t currentTimeMs, uint8_t alarmThreshold) {
     switch (state) {
         case ALARM_OFF:
             if ((alarmThreshold > 0) && ((currentTimeMs - lastCheckTimeMs) > MONITOR_CHECK_TIME_MS)) {

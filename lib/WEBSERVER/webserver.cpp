@@ -6,8 +6,15 @@
 #include <esp_wifi.h>
 
 #include "debug.h"
+#include "hotspotdhcp.h"
 
 static IPAddress netMsk(255, 255, 255, 0);
+static HotspotDhcp hotspotDhcp;
+// ESP32 PHY (libphy): 1 = its background TX power loop is off and the transmitter keeps its
+// current gain. The PHY clears it whenever it applies a TX power (WiFi start, mode change),
+// and the gain then starts low again; see txPowerStep.
+extern "C" uint8_t phy_set_most_tpw_disbg;
+void logHotspotAssigned(const uint8_t *mac, uint32_t ip); // api.cpp (diagnostics)
 static IPAddress ipAddress;
 AsyncWebServer server(80);  // shared with api.cpp
 
@@ -39,9 +46,8 @@ void Webserver::init(Config *config, LapTimer *lapTimer, RaceHistory *raceHistor
     WiFi.persistent(false);
     WiFi.disconnect();
     WiFi.mode(WIFI_OFF);
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
-    esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
-    esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_LR);
+    // radio settings are applied after WiFi has started (see WIFI_AP / WIFI_STA below):
+    // before that the ESP32 ignores them
     if (wifiList->count() == 0)
     {
         changeMode = WIFI_AP;
@@ -54,8 +60,143 @@ void Webserver::init(Config *config, LapTimer *lapTimer, RaceHistory *raceHistor
     lastStatus = WL_DISCONNECTED;
 }
 
+// One channel per step, with a pause on the hotspot's channel in between
+void Webserver::pageScanStep(uint32_t nowMs)
+{
+    if (pageScanRequested && !staScanning)
+    {
+        pageScanRequested = false;
+        foundCount = 0;
+        pageScanChannel = 1;
+        pageScanTry = 0;
+        pageScanChannelRunning = false;
+        pageScanAtMs = nowMs;
+        pageScanActive = true;
+        WiFi.scanDelete();
+    }
+    if (!pageScanActive)
+        return;
+    if (!pageScanChannelRunning)
+    {
+        if ((int32_t)(nowMs - pageScanAtMs) < 0 || WiFi.scanComplete() == WIFI_SCAN_RUNNING)
+            return; // pause on the hotspot's channel, or a scan still finishing
+        // started directly: WiFi.scanNetworks() stays at least 100 ms per channel. The
+        // library still collects the results (scanComplete / SSID / RSSI) on SCAN_DONE.
+        WiFi.scanDelete();
+        wifi_scan_config_t config = {};
+        config.channel = pageScanChannel;
+        if (pageScanChannel >= 12)
+        {
+            config.scan_type = WIFI_SCAN_TYPE_PASSIVE;
+            config.scan_time.passive = WIFI_PAGE_SCAN_PASSIVE_MS;
+        }
+        else
+        {
+            config.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+            config.scan_time.active.min = 0;
+            config.scan_time.active.max = WIFI_PAGE_SCAN_ACTIVE_MS;
+        }
+        if (esp_wifi_scan_start(&config, false) != ESP_OK)
+        {
+            pageScanAtMs = nowMs + WIFI_PAGE_SCAN_PAUSE_MS; // busy: try this channel again shortly
+            return;
+        }
+        pageScanChannelRunning = true;
+        pageScanAtMs = nowMs;
+        return;
+    }
+    // started directly, so the library only knows it once SCAN_DONE has arrived (n >= 0)
+    int16_t n = WiFi.scanComplete();
+    if (n < 0 && nowMs - pageScanAtMs < WIFI_PAGE_SCAN_WAIT_MS)
+        return;
+    if (n < 0)
+        esp_wifi_scan_stop(); // timed out
+    if (n < 0 && ++pageScanTry < WIFI_PAGE_SCAN_TRIES)
+    {
+        // failed or timed out: this channel again after the pause
+        WiFi.scanDelete();
+        pageScanChannelRunning = false;
+        pageScanAtMs = nowMs + WIFI_PAGE_SCAN_PAUSE_MS;
+        return;
+    }
+    pageScanTry = 0;
+    for (int16_t i = 0; i < n; i++)
+    {
+        String ssid = WiFi.SSID(i);
+        if (ssid.length() == 0)
+            continue;
+        int k = 0;
+        while (k < foundCount && strcmp(found[k].ssid, ssid.c_str()) != 0)
+            k++;
+        if (k == foundCount)
+        {
+            if (foundCount >= WIFI_PAGE_SCAN_MAX)
+                continue;
+            strlcpy(found[k].ssid, ssid.c_str(), sizeof(found[k].ssid));
+            found[k].rssi = -127;
+            foundCount++;
+        }
+        if (WiFi.RSSI(i) > found[k].rssi)
+            found[k].rssi = WiFi.RSSI(i);
+        found[k].open = WiFi.encryptionType(i) == WIFI_AUTH_OPEN;
+    }
+    WiFi.scanDelete();
+    pageScanChannelRunning = false;
+    pageScanAtMs = nowMs + WIFI_PAGE_SCAN_PAUSE_MS;
+    if (++pageScanChannel > WIFI_PAGE_SCAN_CHANNELS)
+        pageScanActive = false; // done: the results are complete before this flag clears
+}
+
+// Hotspot transmit power. The tuned RX5808 leaks into the ESP32's transmit power detector:
+// with the PHY's power loop running, the hotspot fades ~30 dB within minutes and vanishes
+// (CLAUDE.md, Hotspot fading). But the loop is what raises the gain to its target after a
+// start (about one step a second, ~14 s from the start value to the target). So: receiver
+// off, loop on for TX_POWER_SETTLE_MS, then loop off (the gain holds) and the receiver back
+// on. Hotspot only: a station's radio sleeps between beacons, which starts the loop over.
+void Webserver::txPowerStep(uint32_t nowMs)
+{
+    if (wifiMode != WIFI_AP)
+        return;
+    if (txPowerState == TX_POWER_SETTLING)
+    {
+        if (timer->isRacing())
+        {
+            // the race needs its receiver: hold the gain so far (with the receiver on, the
+            // loop would pull it down) and settle again after the race
+            phy_set_most_tpw_disbg = 1;
+            timer->holdReceiver(false);
+            txPowerState = TX_POWER_START;
+            return;
+        }
+        if (!timer->isReceiverOff())
+        {
+            txPowerSinceMs = nowMs; // settling counts from the moment the receiver is off
+            return;
+        }
+        if (nowMs - txPowerSinceMs < TX_POWER_SETTLE_MS)
+            return;
+        phy_set_most_tpw_disbg = 1;
+        timer->holdReceiver(false);
+        txPowerState = TX_POWER_HELD;
+        DEBUG("Hotspot TX power held\n");
+        return;
+    }
+    // hotspot just started, or the PHY applied a TX power again (the gain starts over)
+    if ((txPowerState == TX_POWER_START || !phy_set_most_tpw_disbg) && !timer->isRacing())
+    {
+        phy_set_most_tpw_disbg = 0;
+        timer->holdReceiver(true);
+        txPowerSinceMs = nowMs;
+        txPowerState = TX_POWER_SETTLING;
+        DEBUG("Hotspot TX power settling\n");
+    }
+}
+
 void Webserver::handleWebUpdate(uint32_t currentTimeMs)
 {
+    pageScanStep(currentTimeMs);
+    txPowerStep(currentTimeMs);
+
     // Power-up scan for saved networks: join the strongest one in range, or use the hotspot
     if (staScanning)
     {
@@ -166,10 +307,20 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
             WiFi.disconnect();
             wifiMode = WIFI_AP;
             WiFi.setHostname(wifi_hostname); // hostname must be set before the mode is set to STA
-            WiFi.mode(wifiMode);
+            // with the station interface on (idle): a network scan then never switches
+            // modes, which restarted the hotspot and dropped its phones
+            WiFi.mode(WIFI_AP_STA);
+            txPowerState = TX_POWER_START; // txPowerStep settles and holds the transmit power
+            // 20 MHz: the default 40 MHz in the crowded 2.4 GHz band lost packets (DHCP took
+            // up to 40 s, phones gave up). No power save: the hotspot must hear its phones.
+            esp_wifi_set_bandwidth(WIFI_IF_AP, apWidthMhz == 40 ? WIFI_BW_HT40 : WIFI_BW_HT20);
+            esp_wifi_set_ps(apPowerSave ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
+            // transmit power: left at the default maximum (asking for 19.5 dBm gives 18 dBm)
             changeTimeMs = currentTimeMs;
             WiFi.softAPConfig(ipAddress, ipAddress, netMsk);
             WiFi.softAP(wifi_ap_ssid.c_str(), wifi_ap_password);
+            hotspotDhcp.onAssigned = logHotspotAssigned;
+            hotspotDhcp.begin(ipAddress, netMsk); // replaces the built-in DHCP server (unicast replies)
             startServices();
             buz->beep(1000);
             led->on(1000);

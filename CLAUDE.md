@@ -80,6 +80,51 @@ Every change goes through all steps; a step is done when its check passes.
   after it; wake from power down with `setupRxModule()` only. Check the RSSI after a restart.
 - **Channels in two bands**: the timer stores only MHz, and 5880 is both F8 and R7. The page's
   `bandChannel(freq, preferBand)` keeps the band the picker shows, or switching band jumps.
+- **Hotspot fading** (every version up to v1.1.0): the tuned RX5808 (its synthesizer runs at
+  (f - 479) / 2, ~2.6-2.7 GHz) leaks into the ESP32's transmit power detector, and the PHY's
+  background power loop (`tx_pwctrl_background` in libphy) keeps turning the transmitter down:
+  ~30 dB over 2-10 minutes until the hotspot vanishes, then it recovers and fades again. Phones
+  drop, DHCP and scans fail, range is a few metres. Bisected with a bare softAP firmware on the
+  timer: steady alone, with the busy cores and nonstop ADC too; fading once the RX5808 is tuned;
+  steady again with the loop off. But the loop is also what raises the gain after a start
+  (~1 step/s, ~14 s): switched off at once the hotspot stays at -77..-81 dBm instead of ~-60.
+  So `txPowerStep` (webserver.cpp), when the hotspot starts: receiver off (`holdReceiver`),
+  loop on for `TX_POWER_SETTLE_MS` (20 s), then libphy's own flag `phy_set_most_tpw_disbg = 1`
+  (the gain holds) and the receiver back on. A race keeps its receiver: the gain so far is held
+  and the settling runs again after the race.
+  The PHY clears the flag whenever it applies a TX power (and resets the gain), which starts
+  the settling again; `esp_wifi_set_max_tx_power` never sets it in this core, and libphy's
+  `tx_pwctrl_track_num` only counts to 20 once per boot (no use as a settle signal).
+  `/api/debug/load` `txLoop` shows the loop (0 = off). A station hides the fade (the radio
+  sleeps between beacons, which starts the loop over). Measure with `tools/hotspot_signal.py`
+  (beacon dBm per scan); Windows' "Signal %" is smoothed and misleads.
+- **Boot freeze**: `analogRead()` reconfigures the ADC on every call (pin mux, attenuation,
+  touch) without a lock across cores. With the battery read on core 0 during the RSSI
+  sampling on core 1, about every second boot froze silently (both cores stuck, no WiFi,
+  serial output cut mid-line); receiver off at boot or any added print/watchdog hid it
+  (timing). All ADC reads stay on core 1: `BatteryMonitor::sampleAdc` runs in `loop()`, and
+  `/api/debug/load` has no `temperatureRead()`. Test boots in bulk: `boot_log.py --reset`
+  20+ times and count those reaching "Connecting to WiFi network".
+- **Hotspot DHCP**: the ESP32's built-in DHCP server (ESP-IDF 4.4) broadcasts its OFFER/ACK;
+  WiFi doesn't acknowledge or retry broadcasts, and the first one after a phone joined was
+  often lost (packet capture: address after 3-40 s or never; Android gives up). The hotspot
+  uses `lib/HOTSPOTDHCP` instead, which replies by unicast to the phone's MAC through
+  `esp_wifi_internal_tx` (Espressif's later fix, esp-idf #12580, needs static ARP entries,
+  compiled out here). Test from a PC WiFi adapter on the hotspot: `ipconfig /release` +
+  `/renew` timings, `pktmon` for the packets, `/api/debug/aplog` for the timer's side.
+- **WiFi radio settings** are ignored before WiFi has started (`WiFi.setTxPower`,
+  `esp_wifi_set_protocol` in `init()` never applied). Leave the transmit power at its default
+  maximum: asking for 19.5 dBm gives 18 dBm (the ESP32 rounds down to fixed steps). The
+  hotspot runs at 20 MHz with power save off, in AP+STA mode so a network scan never switches
+  modes (that restarts the hotspot and drops phones), and the page's scan goes one channel at
+  a time. Link tests made before the fading fix (above) are unreliable: its dropouts looked
+  like scan, bandwidth or DHCP trouble. `/api/debug/load` shows the real radio settings;
+  `/api/debug/hotspot` switches to the hotspot until the next restart.
+- **Android and `.local`**: Android doesn't resolve mDNS names reliably, least of all on its
+  own hotspot. `laptimer.local` works on laptops and iPhones; on Android use the IP.
+- **Sampling rate** is set by the ADC: one RSSI reading takes ~85-125 us depending on the WiFi
+  state, so ~7 000-10 000 samples/s. Compare firmware versions only A/B on the same timer
+  under the same conditions (`/api/debug/load` samplesPerSec); single readings mislead.
 - **Captive portal**: tried and rejected — the sign-in window has no speech and blocks the
   normal browser. The hotspot uses private `192.168.4.1`, shown in the WiFi name, no DNS redirect.
 - **USB flashing** on the owner's board: auto-reset fails, so hold BOOT and tap EN; use
@@ -96,4 +141,6 @@ Every change goes through all steps; a step is done when its check passes.
 - Tests on Android with Brave; UI text and voice in English.
 - Likes things automatic and simple: settings auto-save, one buzzer beep per lap, no captive
   portal, one pilot per timer (saved pilots to switch who flies).
+- Responsiveness over power saving: both cores run flat out at 240 MHz (resting a core or a
+  lower clock were tried and dropped).
 - Wants root causes found and reproduced, not retries that hide them.

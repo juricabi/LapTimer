@@ -17,10 +17,18 @@ static BatteryMonitor monitor;
 
 static TaskHandle_t xTimerTask = NULL;
 
-// Core 0: everything except RSSI sampling
+volatile uint32_t core0RoundsPerSec = 0;  // diagnostics (/api/debug/load)
+
+// Core 0: everything except the ADC reads (RSSI and battery, see loop())
 static void parallelTask(void *pvArgs) {
+    uint32_t rounds = 0, roundsStartMs = 0;
     for (;;) {
         uint32_t currentTimeMs = millis();
+        if (++rounds, currentTimeMs - roundsStartMs >= 1000) {
+            core0RoundsPerSec = rounds;
+            rounds = 0;
+            roundsStartMs = currentTimeMs;
+        }
         buzzer.handleBuzzer(currentTimeMs);
         led.handleLed(currentTimeMs);
         ws.handleWebUpdate(currentTimeMs);
@@ -54,8 +62,12 @@ void setup() {
     initParallelTask();
 }
 
-// Core 1: RSSI sampling, receiver hopping and lap detection
+// Core 1: RSSI sampling, receiver hopping and lap detection, and every other ADC read:
+// analogRead() reconfigures the ADC without a lock, and the battery read on core 0 during
+// the RSSI sampling here froze about every second boot (CLAUDE.md, Boot freeze)
 void loop() {
-    timer.update(millis());
+    uint32_t nowMs = millis();
+    timer.update(nowMs);
+    monitor.sampleAdc(nowMs);
     ElegantOTA.loop();
 }

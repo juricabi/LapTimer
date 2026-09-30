@@ -413,8 +413,8 @@ void LapTimer::update(uint32_t nowMs)
 // Keeps the receiver on the pilot's channel and feeds every reading through the Kalman filter
 void LapTimer::scan(uint32_t nowMs)
 {
-    // during a race the race's channel, otherwise the live setting
-    uint16_t freq = isRacing() ? raceFreq : conf->getFrequency();
+    // during a race the race's channel, otherwise the live setting (or off while held)
+    uint16_t freq = isRacing() ? raceFreq : (receiverHeld ? POWER_DOWN_FREQ_MHZ : conf->getFrequency());
     if (rx->getFrequency() != freq)
     {
         rx->setFrequency(freq);
@@ -434,6 +434,13 @@ void LapTimer::scan(uint32_t nowMs)
 
 void LapTimer::sample(uint8_t v, uint32_t nowMs)
 {
+    sampleCount++;
+    if (nowMs - sampleCountStartMs >= 1000)
+    {
+        samplesPerSec = sampleCount;
+        sampleCount = 0;
+        sampleCountStartMs = nowMs;
+    }
     rssi = v;
     if (!stepHasSample || v > stepMax)
     {

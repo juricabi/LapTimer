@@ -19,7 +19,10 @@ class BatteryMonitor {
     void init(uint8_t pin, uint8_t batScale, uint8_t batAdd, Buzzer *buzzer, Led *l);
     // Latest averaged voltage in tenths of a volt. Safe to call from any task.
     uint8_t getBatteryVoltage();
-    // Samples the ADC and runs the alarm. Call only from one task.
+    // Reads the ADC every MONITOR_SAMPLE_TIME_MS. Call from the timing core only: every ADC
+    // read stays on that core (analogRead() on both cores froze the boot, CLAUDE.md).
+    void sampleAdc(uint32_t currentTimeMs);
+    // Runs the alarm on the latest voltage. Call only from one task.
     void checkBatteryState(uint32_t currentTimeMs, uint8_t alarmThreshold);
 
    private:

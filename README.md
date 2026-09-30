@@ -100,7 +100,8 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
 
 **Your WiFi**
 1. **Setup → WiFi networks**: add your network (Scan helps), then **Restart timer**.
-2. Open `http://laptimer.local`, or the timer's IP from your router.
+2. Open `http://laptimer.local`, or the timer's IP from your router. Android often doesn't
+   resolve `laptimer.local` (especially on its own hotspot): use the IP there.
 3. At power-up it joins the strongest saved network in range (60 s to connect). If none is
    seen, it tries the newest one for 20 s (a hidden network, or a phone hotspot still starting),
    then starts its own hotspot. **Forget all** returns to hotspot mode.

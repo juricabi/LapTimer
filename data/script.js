@@ -572,9 +572,13 @@ $("wifiScanButton").addEventListener("click", async (e) => {
   try {
     await fetchJson("/api/wifi/scan?start=1");
     let scan = { scanning: true };
-    for (let tries = 0; tries < 20 && scan.scanning; tries++) {
+    for (let tries = 0; tries < 30 && scan.scanning; tries++) {
       await new Promise((r) => setTimeout(r, 1000));
-      scan = await fetchJson("/api/wifi/scan");
+      try {
+        scan = await fetchJson("/api/wifi/scan");
+      } catch (e) {
+        // the radio is briefly away while it scans: just ask again
+      }
     }
     results.innerHTML = "";
     const networks = (scan.networks || []).sort((a, b) => b.rssi - a.rssi);

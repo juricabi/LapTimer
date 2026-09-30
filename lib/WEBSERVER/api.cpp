@@ -1,6 +1,7 @@
 // JSON API used by the web page (race, pilots, history, profiles, WiFi, device info)
 #include <ArduinoJson.h>
 #include <AsyncJson.h>
+#include <esp_wifi.h>
 
 #include "debug.h"
 #include "webserver.h"
@@ -39,6 +40,34 @@ static void appendArray(String &out, uint16_t count, F value)
 
 static uint32_t bootId = 0; // random per start, so pages notice a restart
 
+// Diagnostics: the last hotspot events with times, to see where joining a phone is slow
+struct ApEvent
+{
+    uint32_t ms;
+    uint8_t type; // 0 joined, 1 address handed out, 2 left
+    uint8_t mac[6];
+    uint32_t ip;
+};
+static ApEvent apEvents[24];
+static volatile uint8_t apEventCount = 0;
+
+static void logApEvent(uint8_t type, const uint8_t *mac, uint32_t ip)
+{
+    ApEvent &e = apEvents[apEventCount % 24];
+    e.ms = millis();
+    e.type = type;
+    memcpy(e.mac, mac ? mac : (const uint8_t *)"\0\0\0\0\0\0", 6);
+    e.ip = ip;
+    apEventCount++;
+}
+
+void logHotspotAssigned(const uint8_t *mac, uint32_t ip)
+{
+    logApEvent(1, mac, ip);
+}
+extern volatile uint32_t core0RoundsPerSec;
+extern "C" uint8_t phy_set_most_tpw_disbg;
+
 static uint32_t paramU32(AsyncWebServerRequest *request, const char *name, uint32_t fallback)
 {
     if (!request->hasParam(name))
@@ -49,7 +78,31 @@ static uint32_t paramU32(AsyncWebServerRequest *request, const char *name, uint3
 void Webserver::registerApi()
 {
     if (bootId == 0)
+    {
         bootId = (esp_random() & 0x7FFFFFFF) | 1;
+        WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info)
+                     {
+            if (event == ARDUINO_EVENT_WIFI_AP_STACONNECTED)
+                logApEvent(0, info.wifi_ap_staconnected.mac, 0);
+            else if (event == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED)
+                logApEvent(2, info.wifi_ap_stadisconnected.mac, 0); });
+    }
+
+    server.on("/api/debug/aplog", HTTP_GET, [](AsyncWebServerRequest *request)
+              {
+        String body = String("{\"now\":") + millis() + ",\"events\":[";
+        uint8_t n = apEventCount;
+        for (uint8_t k = n > 24 ? n - 24 : 0; k < n; k++)
+        {
+            const ApEvent &e = apEvents[k % 24];
+            char item[96];
+            snprintf(item, sizeof(item), "%s[%u,%u,\"%02x:%02x:%02x:%02x:%02x:%02x\",\"%u.%u.%u.%u\"]",
+                     body.endsWith("[") ? "" : ",", e.ms, e.type, e.mac[0], e.mac[1], e.mac[2], e.mac[3], e.mac[4], e.mac[5],
+                     e.ip & 255, (e.ip >> 8) & 255, (e.ip >> 16) & 255, e.ip >> 24);
+            body += item;
+        }
+        body += "]}";
+        request->send(200, "application/json", body); });
 
     // Polled by the page: race state, RSSI and lap count
     server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *request)
@@ -163,6 +216,42 @@ void Webserver::registerApi()
         body += '}';
         request->send(200, "application/json", body); });
 
+    // Diagnostics: load and radio. No temperature: temperatureRead() drives the ADC's sensor
+    // block from this core, and all ADC use stays on the timing core (CLAUDE.md, Boot freeze).
+    server.on("/api/debug/load", HTTP_GET, [this](AsyncWebServerRequest *request)
+              {
+        // what the radio really uses (settings made before WiFi starts are ignored)
+        wifi_mode_t mode = WIFI_MODE_NULL;
+        int8_t txPower = 0;
+        uint8_t protoAp = 0, protoSta = 0;
+        wifi_bandwidth_t bwAp = WIFI_BW_HT20;
+        wifi_ps_type_t ps = WIFI_PS_NONE;
+        esp_wifi_get_mode(&mode);
+        esp_wifi_get_max_tx_power(&txPower);
+        esp_wifi_get_protocol(WIFI_IF_AP, &protoAp);
+        esp_wifi_get_protocol(WIFI_IF_STA, &protoSta);
+        esp_wifi_get_bandwidth(WIFI_IF_AP, &bwAp);
+        esp_wifi_get_ps(&ps);
+        char buf[320];
+        snprintf(buf, sizeof(buf),
+                 "{\"samplesPerSec\":%u,\"core0RoundsPerSec\":%u,\"cpuMhz\":%u,"
+                 "\"wifiMode\":%d,\"txPowerDbm\":%.2f,\"protoAp\":%u,\"protoSta\":%u,\"bwAp\":%d,\"ps\":%d,"
+                 "\"channel\":%d,\"apClients\":%d,\"txLoop\":%d}",
+                 timer->getSamplesPerSec(), core0RoundsPerSec, getCpuFrequencyMhz(),
+                 mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), phy_set_most_tpw_disbg ? 0 : 1);
+        request->send(200, "application/json", buf); });
+
+    // Diagnostics: switch to the timer's own hotspot until the next restart (saved networks stay).
+    // bw=20|40 and ps=0|1 override its channel width and power save, for comparisons.
+    server.on("/api/debug/hotspot", HTTP_POST, [this](AsyncWebServerRequest *request)
+              {
+        apWidthMhz = paramU32(request, "bw", 20) == 40 ? 40 : 20;
+        apPowerSave = paramU32(request, "ps", 0) != 0;
+        sendOk(request);
+        changeMode = WIFI_AP;
+        changeTimeMs = millis(); // after WIFI_RECONNECT_TIMEOUT_MS, so the reply goes out first
+        wifiMode = WIFI_OFF; });
+
     // Diagnostics: receiver response when switching frequency.
     // ?from=5880&to=5800 starts a test; without parameters returns {done, intervalUs, rise, fall}
     server.on("/api/debug/step", HTTP_GET, [this](AsyncWebServerRequest *request)
@@ -249,20 +338,13 @@ void Webserver::registerApi()
         sendOk(request); });
 
     // WiFi scan for the home WiFi picker. ?start=1 starts a new scan.
-    server.on("/api/wifi/scan", HTTP_GET, [](AsyncWebServerRequest *request)
+    // Network scan for the WiFi picker. ?start=1 starts one; it runs one channel at a time in
+    // handleWebUpdate (see WIFI_PAGE_SCAN_*), so phones on the hotspot keep their connection.
+    server.on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest *request)
               {
-        static uint32_t scanStartMs = 0;
         if (request->hasParam("start"))
-        {
-            WiFi.scanDelete();
-            WiFi.scanNetworks(true);
-            scanStartMs = millis();
-            request->send(200, "application/json", "{\"scanning\":true}");
-            return;
-        }
-        int16_t n = WiFi.scanComplete();
-        // the library reports a scan longer than 6 s as failed although it finishes shortly after
-        if (n == WIFI_SCAN_RUNNING || (n == WIFI_SCAN_FAILED && millis() - scanStartMs < 12000))
+            pageScanRequested = true;
+        if (pageScanRequested || pageScanActive)
         {
             request->send(200, "application/json", "{\"scanning\":true}");
             return;
@@ -270,23 +352,12 @@ void Webserver::registerApi()
         JsonDocument doc;
         doc["scanning"] = false;
         JsonArray list = doc["networks"].to<JsonArray>();
-        for (int16_t i = 0; i < n; i++)
+        for (uint8_t i = 0; i < foundCount; i++)
         {
-            String ssid = WiFi.SSID(i);
-            if (ssid.length() == 0)
-                continue;
-            bool duplicate = false;
-            for (JsonObject e : list)
-            {
-                if (ssid == e["ssid"].as<const char *>())
-                    duplicate = true;
-            }
-            if (duplicate)
-                continue;
             JsonObject e = list.add<JsonObject>();
-            e["ssid"] = ssid;
-            e["rssi"] = WiFi.RSSI(i);
-            e["open"] = WiFi.encryptionType(i) == WIFI_AUTH_OPEN;
+            e["ssid"] = found[i].ssid;
+            e["rssi"] = found[i].rssi;
+            e["open"] = found[i].open;
         }
         sendJson(request, doc); });
 

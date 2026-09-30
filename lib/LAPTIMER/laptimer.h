@@ -107,6 +107,14 @@ class LapTimer {
     bool isStepTestDone() { return stepTestDone; }
     uint8_t getStepTestSample(uint16_t i) { return stepTestData[i]; }
 
+    // Receiver off for a few seconds while the hotspot's transmit power settles (webserver.cpp,
+    // txPowerStep). A race keeps its receiver: holding is ignored while one runs.
+    void holdReceiver(bool hold) { receiverHeld = hold; }
+    bool isReceiverOff() { return rx->getFrequency() == POWER_DOWN_FREQ_MHZ; }
+
+    // Diagnostics: RSSI samples taken in the last full second
+    uint32_t getSamplesPerSec() { return samplesPerSec; }
+
     // RSSI history for the calibration graph
     uint32_t getHistorySeq() { return historySeq; }
     uint8_t getHistory(uint32_t seq) { return history[seq % RSSI_HISTORY]; }
@@ -119,6 +127,7 @@ class LapTimer {
     RX5808 *rx;
     Buzzer *buz;
     Led *led;
+    volatile bool receiverHeld = false;
 
     // race, with the settings taken at race start (switching to another pilot during a
     // race doesn't change the race: same channel, name and thresholds)
@@ -157,6 +166,9 @@ class LapTimer {
     uint8_t history[RSSI_HISTORY];
     uint32_t historyStepMs = 0;
     volatile uint32_t historySeq = 0;
+    uint32_t sampleCount = 0;
+    uint32_t sampleCountStartMs = 0;
+    volatile uint32_t samplesPerSec = 0;
 
     // pass detection
     bool inPass = false;
