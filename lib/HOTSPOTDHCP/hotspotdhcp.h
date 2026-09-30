@@ -50,10 +50,10 @@ class HotspotDhcp {
 
     void handle(AsyncUDPPacket &packet);
     int findLease(const uint8_t *mac);
-    int newLease(const uint8_t *mac, const uint8_t *radioMac);
+    int newLease(const uint8_t *mac);
     int leaseForAddress(uint32_t ip);
     uint32_t addressOf(int lease);
-    bool inUseByOther(uint32_t ip, const uint8_t *mac, const uint8_t *radioMac); // radioMac: the frame's source, may differ from chaddr
+    bool inUseByOther(uint32_t ip, const uint8_t *mac);
     void commit();
     void setAside(int lease, uint32_t now);
     void reply(const uint8_t *request, uint8_t type, uint32_t yiaddr, const uint8_t *dstMac);

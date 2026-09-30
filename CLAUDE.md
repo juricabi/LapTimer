@@ -130,7 +130,8 @@ Every change goes through all steps; a step is done when its check passes.
   which the classic ESP32 treats as power-on), probes each address with ARP before offering or
   acknowledging it (`inUseByOther`; a used one is set aside for 10 min), tries an address
   derived from the MAC first, and sends every reply, the NAK too, as a frame to the phone's
-  MAC. Test from a PC WiFi adapter on the hotspot: `ipconfig /release` + `/renew` timings,
+  MAC. Only the client's own MAC counts as its own in the ARP check (a repeater's shared MAC
+  would let two devices behind it share an address; tried and reverted). Test from a PC WiFi adapter on the hotspot: `ipconfig /release` + `/renew` timings,
   `pktmon` for the packets, `/api/debug/aplog` for the timer's side (types: 0 joined,
   1 assigned, 2 left, 3 offered, 4 refused, 5 in use by another device, 6 send failed, 7/8 leases
   kept/cleared at start); `tools/fake_dhcp.py` (a DISCOVER or REQUEST with a made-up MAC)
@@ -165,6 +166,11 @@ Every change goes through all steps; a step is done when its check passes.
   IRAM averaged into a fixed 100 us filter step; branch `perf/fast-adc`, not flown).
 - **Captive portal**: tried and rejected — the sign-in window has no speech and blocks the
   normal browser. The hotspot uses private `192.168.4.1`, shown in the WiFi name, no DNS redirect.
+- **Connection dropped near boot (open)**: in the first minute after a boot, a request that
+  writes flash (saved pilot, settings) occasionally gets its connection closed or reset
+  (`device_test.py` failed ~3 in 30 runs near boot, 0 in 10 runs later; no reboot, no
+  crash in the serial log; the previous release: 0 in 8 near boot, not conclusive). The page
+  retries saved-pilot and settings saves, so users see no effect. Root cause not found.
 - **Web-files upload can leave files missing**: once, after `ota_upload.py fs` reported the
   timer back online, `style.css` and `update.html` answered 404 while the other four files
   were fine (cause not found; the image was accepted and the MD5 checked). The tool now

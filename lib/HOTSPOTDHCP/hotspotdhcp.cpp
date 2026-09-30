@@ -223,7 +223,7 @@ void HotspotDhcp::setAside(int lease, uint32_t now)
 // Is another device using this address (a phone that kept its lease across the timer's
 // restart or power cycle)? The ARP table knows every device the timer has talked to; a
 // silent one is asked twice (an ARP request is a broadcast, which the hotspot can lose).
-bool HotspotDhcp::inUseByOther(uint32_t ip, const uint8_t *mac, const uint8_t *radioMac)
+bool HotspotDhcp::inUseByOther(uint32_t ip, const uint8_t *mac)
 {
     esp_netif_t *ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     struct netif *n = ap ? (struct netif *)esp_netif_get_netif_impl(ap) : nullptr;
@@ -233,8 +233,11 @@ bool HotspotDhcp::inUseByOther(uint32_t ip, const uint8_t *mac, const uint8_t *r
     arpQuery.ip.addr = ip;
     for (int probe = 0; probe < 3; probe++)
     {
+        // only the client's own MAC counts as its own: a device behind another device's radio
+        // (a MAC-rewriting repeater) is moved to a new address at renewal, which still works,
+        // while accepting the radio's MAC would let two devices behind it share one address
         if (inLwip(false) && arpQuery.found)
-            return memcmp(arpQuery.mac, mac, 6) != 0 && (!radioMac || memcmp(arpQuery.mac, radioMac, 6) != 0);
+            return memcmp(arpQuery.mac, mac, 6) != 0;
         if (probe == 2 || !inLwip(true))
             break;
         delay(DHCP_ARP_PROBE_MS);
@@ -256,7 +259,7 @@ int HotspotDhcp::findLease(const uint8_t *mac)
 // a power cycle), else a free one, else an expired one, else the offer that expires first;
 // -1 when every address is bound (no offer then: a phone keeps its address until it expires).
 // An address another device is found to be using is set aside for ten minutes.
-int HotspotDhcp::newLease(const uint8_t *mac, const uint8_t *radioMac)
+int HotspotDhcp::newLease(const uint8_t *mac)
 {
     uint32_t now = millis();
     for (int attempt = 0; attempt < DHCP_POOL_SIZE; attempt++)
@@ -285,7 +288,7 @@ int HotspotDhcp::newLease(const uint8_t *mac, const uint8_t *radioMac)
         }
         if (pick < 0)
             return -1;
-        if (inUseByOther(addressOf(pick), mac, radioMac))
+        if (inUseByOther(addressOf(pick), mac))
         {
             event(EVENT_IN_USE, mac, addressOf(pick));
             setAside(pick, now);
@@ -342,7 +345,7 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
     switch (type[0])
     {
     case DISCOVER:
-        if (lease >= 0 && inUseByOther(addressOf(lease), mac, dstMac))
+        if (lease >= 0 && inUseByOther(addressOf(lease), mac))
         {
             // its remembered address was taken meanwhile (a device on a fixed address):
             // set aside, and a new one below (offering it again would loop offer / refuse)
@@ -351,7 +354,7 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
             lease = -1;
         }
         if (lease < 0)
-            lease = newLease(mac, dstMac);
+            lease = newLease(mac);
         if (lease >= 0)
         {
             reply(msg, OFFER, addressOf(lease), dstMac);
@@ -368,7 +371,7 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
         int wantedLease = leaseForAddress(wanted);
         bool freeForIt = wantedLease >= 0 && (!leases[wantedLease].used || wantedLease == lease ||
                                               (int32_t)(now - leases[wantedLease].expiresMs) >= 0);
-        bool taken = freeForIt && inUseByOther(wanted, mac, dstMac);
+        bool taken = freeForIt && inUseByOther(wanted, mac);
         if (!freeForIt || taken)
         {
             // not ours to give (an address from another network, another phone's, or one
