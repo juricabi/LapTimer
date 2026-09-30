@@ -1996,7 +1996,8 @@ function renderMicHelp() {
         <p class="hint">If the microphone was refused before: tap the icon left of the address → Permissions → Microphone → Allow, then reload.</p>`
       : "<p>The microphone was refused. Tap the icon left of the address → Permissions → Microphone → Allow, then reload the page.</p>";
   } else if (micError === "network") {
-    html = "<p>No connection to the speech service. Chrome sends speech to Google, so the phone needs internet (mobile data on) while it is on the timer's hotspot. Retrying every few seconds.</p>";
+    html = `<p>No connection to the speech service: Chrome sends speech to Google, and on the timer's hotspot the phone has no internet (mobile data doesn't help: Android then stops reaching the timer).</p>
+      <p>Voice commands work when the phone has internet on the same network: at home with the timer on your WiFi, or at the field with the timer joined to <b>your phone's hotspot</b> (Setup → WiFi networks, then open the timer's address). Retrying every few seconds.</p>`;
   } else if (micError === "audio-capture") {
     html = "<p>No microphone found on this device.</p>";
   } else {

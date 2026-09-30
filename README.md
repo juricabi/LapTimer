@@ -29,8 +29,10 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
   (the timer has no certificate), and Chrome allows the microphone only on trusted sites:
   allow the timer's address once in `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
   (e.g. `http://192.168.4.1`), relaunch, and accept the microphone prompt. The mic icon in
-  the top bar is green while listening. Brave blocks the speech service, so no voice commands
-  there (announcements work everywhere).
+  the top bar is green while listening. Chrome's speech recognition runs on Google's servers,
+  so the phone needs internet on the same network: your home WiFi, or the timer joined to your
+  phone's hotspot (on the timer's own hotspot there is none). Brave blocks the speech service,
+  so no voice commands there (announcements work everywhere).
 - Buzzer and LED on the timer for laps, countdown, time up, race finished and low battery.
 
 **Setup and calibration**
