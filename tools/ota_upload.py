@@ -44,6 +44,25 @@ def wait_for(host, seconds=90):
     return False
 
 
+# Every file of data/ must come back from the timer with its full size: a web-files upload
+# once ended with two files missing (404) although the timer had accepted the image.
+def verify_web_files(host):
+    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+    bad = []
+    for name in sorted(os.listdir(data_dir)):
+        path = "/" if name == "index.html" else "/" + name
+        expected = os.path.getsize(os.path.join(data_dir, name))
+        try:
+            got = len(urllib.request.urlopen(f"http://{host}{path}", timeout=10).read())
+        except Exception as e:
+            got = f"error ({e})"
+        if got != expected:
+            bad.append(f"{name}: got {got}, expected {expected} bytes")
+    if bad:
+        sys.exit("  web files on the timer are incomplete - upload fs again:\n    " + "\n    ".join(bad))
+    print(f"  web files verified ({len(os.listdir(data_dir))} files)")
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 3 or any(k not in FILES for k in sys.argv[2:]):
         sys.exit(__doc__)
@@ -53,3 +72,6 @@ if __name__ == "__main__":
         if not wait_for(host):
             sys.exit(f"The timer did not come back at {host}. It may have started its own hotspot; see tools/boot_log.py.")
         print("  back online")
+        if kind == "fs":
+            time.sleep(3)  # the file system is mounted a moment after the page answers
+            verify_web_files(host)

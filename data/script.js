@@ -2067,13 +2067,19 @@ function startVoiceRecognition() {
       if (Date.now() - lastSpeechMs < 1500) break;
       const has = (word) => new RegExp("\\b" + word + "\\b").test(transcript);
       const racing = status && (status.state === STATE.COUNTDOWN || status.state === STATE.WAITING || status.state === STATE.RUNNING);
+      // every command answers, also when there is nothing to do
+      const hasLaps = !!(raceData && racePilot(raceData).laps.length);
       if (has("best time")) speakBestTime();
       else if (has("clear time") || has("clear best")) {
-        if (!racing) clearRace();
+        if (racing) queueSpeak("Stop the race first");
+        else if (!hasLaps) queueSpeak("Nothing to clear");
+        else clearRace().then(() => queueSpeak("Times cleared"));
       } else if (has("start") || has("begin") || has("go")) {
-        if (!racing) $("startRaceButton").click();
+        if (racing) queueSpeak("The race is already running");
+        else $("startRaceButton").click();
       } else if (has("stop")) {
         if (racing) stopRace();
+        else queueSpeak("No race is running");
       }
       break;
     }

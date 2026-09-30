@@ -153,6 +153,11 @@ Every change goes through all steps; a step is done when its check passes.
   IRAM averaged into a fixed 100 us filter step; branch `perf/fast-adc`, not flown).
 - **Captive portal**: tried and rejected — the sign-in window has no speech and blocks the
   normal browser. The hotspot uses private `192.168.4.1`, shown in the WiFi name, no DNS redirect.
+- **Web-files upload can leave files missing**: once, after `ota_upload.py fs` reported the
+  timer back online, `style.css` and `update.html` answered 404 while the other four files
+  were fine (cause not found; the image was accepted and the MD5 checked). The tool now
+  fetches every file of `data/` after an upload and compares sizes: upload again if it
+  complains. A page without its stylesheet or the update page's 404 means exactly this.
 - **USB flashing** on the owner's board: auto-reset fails, so hold BOOT and tap EN; set
   `upload_speed = 115200` in `targets/PhobosLT.ini` (its 460800 dropped mid-write). Prefer WiFi updates. Opening the serial port (e.g.
   `boot_log.py` without `--reset`) can still restart the board: don't mistake that for a crash.
