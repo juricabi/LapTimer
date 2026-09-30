@@ -25,7 +25,12 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 
 **Voice and sound**
 - The phone announces lap times in English, with deltas, best laps and the finish.
-- Voice commands: "start", "stop", "best time", "clear time".
+- Voice commands: "start", "stop", "best time", "clear time". The page is plain `http://`
+  (the timer has no certificate), and Chrome allows the microphone only on trusted sites:
+  allow the timer's address once in `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
+  (e.g. `http://192.168.4.1`), relaunch, and accept the microphone prompt. The mic icon in
+  the top bar is green while listening. Brave blocks the speech service, so no voice commands
+  there (announcements work everywhere).
 - Buzzer and LED on the timer for laps, countdown, time up, race finished and low battery.
 
 **Setup and calibration**

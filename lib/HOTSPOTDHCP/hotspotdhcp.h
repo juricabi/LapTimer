@@ -55,6 +55,7 @@ class HotspotDhcp {
     uint32_t addressOf(int lease);
     bool inUseByOther(uint32_t ip, const uint8_t *mac);
     void commit();
-    void reply(const uint8_t *request, uint8_t type, uint32_t yiaddr);
+    void setAside(int lease, uint32_t now);
+    void reply(const uint8_t *request, uint8_t type, uint32_t yiaddr, const uint8_t *dstMac);
     void event(uint8_t type, const uint8_t *mac, uint32_t ip) { if (onEvent) onEvent(type, mac, ip); }
 };

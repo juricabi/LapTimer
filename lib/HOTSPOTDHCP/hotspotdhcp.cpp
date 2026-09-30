@@ -47,7 +47,9 @@ static uint32_t leasesChecksum(const HotspotDhcp::Lease *leases)
     return sum;
 }
 
-// ARP table lookups and requests run in lwIP's own thread
+// ARP table lookups and requests run in lwIP's own thread. One query at a time (the UDP task
+// is the only caller); a callback that runs after its query was given up on (lwIP stalled)
+// is told apart by its generation number and ignored, so it never writes into a dead query.
 struct ArpQuery
 {
     struct netif *netif;
@@ -55,28 +57,44 @@ struct ArpQuery
     uint8_t mac[6];
     volatile int found;
     volatile bool done;
+    volatile uint32_t gen;
 };
-static void arpRequestCb(void *arg)
+static ArpQuery arpQuery;
+struct ArpPost
 {
-    ArpQuery *q = (ArpQuery *)arg;
-    etharp_request(q->netif, &q->ip);
-    q->done = true;
+    uint32_t gen;
+    bool request;
+};
+static void arpCb(void *arg)
+{
+    ArpPost *post = (ArpPost *)arg;
+    ArpQuery *q = &arpQuery;
+    if (post->gen == q->gen)
+    {
+        if (post->request)
+            etharp_request(q->netif, &q->ip);
+        else
+        {
+            struct eth_addr *eth = nullptr;
+            const ip4_addr_t *ipr = nullptr;
+            q->found = etharp_find_addr(q->netif, &q->ip, &eth, &ipr) >= 0 && eth ? 1 : 0;
+            if (q->found)
+                memcpy(q->mac, eth->addr, 6);
+        }
+        q->done = true;
+    }
+    delete post;
 }
-static void arpFindCb(void *arg)
+static bool inLwip(bool request)
 {
-    ArpQuery *q = (ArpQuery *)arg;
-    struct eth_addr *eth = nullptr;
-    const ip4_addr_t *ipr = nullptr;
-    q->found = etharp_find_addr(q->netif, &q->ip, &eth, &ipr) >= 0 && eth ? 1 : 0;
-    if (q->found)
-        memcpy(q->mac, eth->addr, 6);
-    q->done = true;
-}
-static bool inLwip(tcpip_callback_fn fn, ArpQuery *q)
-{
+    ArpQuery *q = &arpQuery;
+    ArpPost *post = new ArpPost{++q->gen, request};
     q->done = false;
-    if (tcpip_callback(fn, q) != ERR_OK)
+    if (tcpip_callback(arpCb, post) != ERR_OK)
+    {
+        delete post;
         return false;
+    }
     for (int i = 0; i < 200 && !q->done; i++)
         delay(1);
     return q->done;
@@ -117,6 +135,8 @@ void HotspotDhcp::begin(IPAddress serverIp, IPAddress netMask)
     esp_netif_t *ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     if (ap)
         esp_netif_dhcps_stop(ap);
+    if (running)
+        return; // already serving this hotspot (the AP branch ran again): only the built-in server, started again by softAPConfig(), is stopped
     server = (uint32_t)serverIp;
     mask = (uint32_t)netMask;
     leases = rtcLeases.leases;
@@ -125,11 +145,13 @@ void HotspotDhcp::begin(IPAddress serverIp, IPAddress netMask)
     if (!kept)
         memset(leases, 0, sizeof(Lease) * DHCP_POOL_SIZE);
     uint32_t now = millis();
+    static const uint8_t noMac[6] = {0, 0, 0, 0, 0, 0};
     for (int i = 0; i < DHCP_POOL_SIZE; i++)
     {
-        // the clock restarted with the timer: acknowledged leases get a full term again,
-        // offers that were never taken are dropped
-        if (leases[i].used && leases[i].bound)
+        // the clock restarted with the timer: acknowledged leases get a full term again;
+        // offers that were never taken, and addresses set aside as in use by an unknown
+        // device (no MAC), are dropped: the ARP probe finds such a device again
+        if (leases[i].used && leases[i].bound && memcmp(leases[i].mac, noMac, 6) != 0)
             leases[i].expiresMs = now + DHCP_LEASE_SECONDS * 1000UL;
         else
             leases[i].used = leases[i].bound = false;
@@ -173,6 +195,15 @@ void HotspotDhcp::commit()
     rtcLeases.check = leasesChecksum(leases);
 }
 
+// Keeps an address away from everyone for ten minutes: another device was found using it
+void HotspotDhcp::setAside(int lease, uint32_t now)
+{
+    memset(leases[lease].mac, 0, 6);
+    leases[lease].used = true;
+    leases[lease].bound = true;
+    leases[lease].expiresMs = now + 600000;
+}
+
 // Is another device using this address (a phone that kept its lease across the timer's
 // restart or power cycle)? The ARP table knows every device the timer has talked to; a
 // silent one is asked twice (an ARP request is a broadcast, which the hotspot can lose).
@@ -182,14 +213,13 @@ bool HotspotDhcp::inUseByOther(uint32_t ip, const uint8_t *mac)
     struct netif *n = ap ? (struct netif *)esp_netif_get_netif_impl(ap) : nullptr;
     if (!n)
         return false;
-    ArpQuery q = {};
-    q.netif = n;
-    q.ip.addr = ip;
+    arpQuery.netif = n;
+    arpQuery.ip.addr = ip;
     for (int probe = 0; probe < 3; probe++)
     {
-        if (inLwip(arpFindCb, &q) && q.found)
-            return memcmp(q.mac, mac, 6) != 0;
-        if (probe == 2 || !inLwip(arpRequestCb, &q))
+        if (inLwip(false) && arpQuery.found)
+            return memcmp(arpQuery.mac, mac, 6) != 0;
+        if (probe == 2 || !inLwip(true))
             break;
         delay(DHCP_ARP_PROBE_MS);
     }
@@ -242,10 +272,7 @@ int HotspotDhcp::newLease(const uint8_t *mac)
         if (inUseByOther(addressOf(pick), mac))
         {
             event(EVENT_IN_USE, mac, addressOf(pick));
-            memset(leases[pick].mac, 0, 6);
-            leases[pick].used = true;
-            leases[pick].bound = true;
-            leases[pick].expiresMs = now + 600000;
+            setAside(pick, now);
             continue;
         }
         leases[pick].used = true;
@@ -268,20 +295,45 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
     if (!type || n != 1)
         return;
     const uint8_t *mac = msg + OFF_CHADDR;
+    static const uint8_t noMac[6] = {0, 0, 0, 0, 0, 0};
+    if (packet.interface() != TCPIP_ADAPTER_IF_AP || memcmp(mac, noMac, 6) == 0)
+        return; // a home network's DHCP (the station side), or no client MAC (set-aside entries have none)
     const uint8_t *serverId = findOption(msg, len, 54, &n);
     if (serverId && n == 4 && get32(serverId) != server)
         return; // talking to another server
+    // the reply goes to the frame's source (the client's radio; chaddr can be a device behind it)
+    uint8_t srcMac[6];
+    packet.remoteMac(srcMac);
+    const uint8_t *dstMac = memcmp(srcMac, noMac, 6) != 0 ? srcMac : mac;
 
-    int lease = findLease(mac);
     uint32_t now = millis();
+    // expired leases are cleared, not just treated as free: the clock wraps after 49 days,
+    // and an expired lease left in place would look valid again 24.8 days after it expired
+    for (int i = 0; i < DHCP_POOL_SIZE; i++)
+    {
+        if (leases[i].used && (int32_t)(now - leases[i].expiresMs) >= 0)
+        {
+            leases[i].used = leases[i].bound = false;
+            memset(leases[i].mac, 0, 6);
+        }
+    }
+    int lease = findLease(mac);
     switch (type[0])
     {
     case DISCOVER:
+        if (lease >= 0 && inUseByOther(addressOf(lease), mac))
+        {
+            // its remembered address was taken meanwhile (a device on a fixed address):
+            // set aside, and a new one below (offering it again would loop offer / refuse)
+            event(EVENT_IN_USE, mac, addressOf(lease));
+            setAside(lease, now);
+            lease = -1;
+        }
         if (lease < 0)
             lease = newLease(mac);
         if (lease >= 0)
         {
-            reply(msg, OFFER, addressOf(lease));
+            reply(msg, OFFER, addressOf(lease), dstMac);
             event(EVENT_OFFERED, mac, addressOf(lease));
         }
         break;
@@ -295,12 +347,19 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
         int wantedLease = leaseForAddress(wanted);
         bool freeForIt = wantedLease >= 0 && (!leases[wantedLease].used || wantedLease == lease ||
                                               (int32_t)(now - leases[wantedLease].expiresMs) >= 0);
-        if (!freeForIt || inUseByOther(wanted, mac))
+        bool taken = freeForIt && inUseByOther(wanted, mac);
+        if (!freeForIt || taken)
         {
             // not ours to give (an address from another network, another phone's, or one
             // another device is found using): a NAK makes it start over with a DISCOVER
-            // right away instead of timing out
-            reply(msg, NAK, 0);
+            // right away instead of timing out. A taken address is set aside, also when it
+            // was this client's own remembered one, so its DISCOVER gets a new address.
+            if (taken)
+            {
+                event(EVENT_IN_USE, mac, wanted);
+                setAside(wantedLease, now);
+            }
+            reply(msg, NAK, 0, dstMac);
             event(EVENT_REFUSED, mac, wanted);
             break;
         }
@@ -313,7 +372,7 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
         leases[wantedLease].bound = true;
         memcpy(leases[wantedLease].mac, mac, 6);
         leases[wantedLease].expiresMs = now + DHCP_LEASE_SECONDS * 1000UL;
-        reply(msg, ACK, wanted);
+        reply(msg, ACK, wanted, dstMac);
         event(EVENT_ASSIGNED, mac, wanted);
         break;
     }
@@ -327,14 +386,10 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
     case DECLINE:
         // the address is in use by something else: keep it away from everyone for 10 minutes
         if (lease >= 0)
-        {
-            memset(leases[lease].mac, 0, 6);
-            leases[lease].bound = true;
-            leases[lease].expiresMs = now + 600000;
-        }
+            setAside(lease, now);
         break;
     case INFORM:
-        reply(msg, ACK, 0);
+        reply(msg, ACK, 0, dstMac);
         break;
     }
     commit();
@@ -343,7 +398,7 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
 // Builds the reply and hands the whole Ethernet frame to the WiFi driver, addressed to the
 // phone's MAC (acknowledged and retransmitted, unlike a broadcast frame). The IP destination
 // is the broadcast address where RFC 2131 wants it (a NAK, the broadcast bit, no address yet).
-void HotspotDhcp::reply(const uint8_t *request, uint8_t type, uint32_t yiaddr)
+void HotspotDhcp::reply(const uint8_t *request, uint8_t type, uint32_t yiaddr, const uint8_t *dstMac)
 {
     static uint8_t frame[14 + 20 + 8 + 312];
     uint8_t *dhcp = frame + 14 + 20 + 8;
@@ -398,13 +453,14 @@ void HotspotDhcp::reply(const uint8_t *request, uint8_t type, uint32_t yiaddr)
     if (dhcpLen < 300)
         dhcpLen = 300; // BOOTP minimum; the rest is already zero
 
-    bool broadcast = type == NAK || (request[OFF_FLAGS] & BROADCAST_FLAG) || yiaddr == 0;
-    uint32_t dstIp = broadcast ? 0xFFFFFFFF : yiaddr;
+    uint32_t ciaddr = get32(request + OFF_CIADDR);
+    bool broadcast = type == NAK || (request[OFF_FLAGS] & BROADCAST_FLAG) || (yiaddr == 0 && ciaddr == 0);
+    uint32_t dstIp = broadcast ? 0xFFFFFFFF : (yiaddr ? yiaddr : ciaddr); // INFORM: to the address it has
     uint8_t apMac[6];
     WiFi.softAPmacAddress(apMac);
 
     // Ethernet
-    memcpy(frame, request + OFF_CHADDR, 6);
+    memcpy(frame, dstMac, 6);
     memcpy(frame + 6, apMac, 6);
     frame[12] = 0x08;
     frame[13] = 0x00;
@@ -421,15 +477,19 @@ void HotspotDhcp::reply(const uint8_t *request, uint8_t type, uint32_t yiaddr)
     ip[8] = 64;
     ip[9] = 17; // UDP
     put32(ip + 12, server);
-    put32(ip + 16, dstIp);
-    uint32_t sum = 0;
-    for (int i = 0; i < 20; i += 2)
-        sum += (ip[i] << 8) | ip[i + 1];
-    while (sum >> 16)
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    uint16_t check = ~sum;
-    ip[10] = check >> 8;
-    ip[11] = check;
+    auto setDestination = [&](uint32_t dst) {
+        put32(ip + 16, dst);
+        ip[10] = ip[11] = 0;
+        uint32_t sum = 0;
+        for (int i = 0; i < 20; i += 2)
+            sum += (ip[i] << 8) | ip[i + 1];
+        while (sum >> 16)
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        uint16_t check = ~sum;
+        ip[10] = check >> 8;
+        ip[11] = check;
+    };
+    setDestination(dstIp);
 
     // UDP (checksum 0 = none, allowed in IPv4)
     uint8_t *udpHdr = ip + 20;
@@ -442,11 +502,15 @@ void HotspotDhcp::reply(const uint8_t *request, uint8_t type, uint32_t yiaddr)
     int err = esp_wifi_internal_tx(WIFI_IF_AP, frame, 14 + ipLen);
     if (err != 0)
         event(EVENT_TX_FAILED, request + OFF_CHADDR, (uint32_t)err);
-    if (request[OFF_FLAGS] & BROADCAST_FLAG)
+    if (err != 0 || (request[OFF_FLAGS] & BROADCAST_FLAG))
     {
-        // it asked for broadcast replies (Windows does): a copy to every station as well, in
-        // case it ignores a frame to its own MAC before it has an address. The frame above is
-        // the one the driver acknowledges and retransmits; a duplicate is ignored (same xid).
+        // A copy to every station as well: when it asked for broadcast replies (Windows does)
+        // in case it ignores a frame to its own MAC before it has an address, and when the
+        // driver refused the frame (a station it doesn't count as associated yet). The frame
+        // above is the one the driver acknowledges and retransmits; a duplicate is ignored
+        // (same xid). An unconfigured client only takes an IP broadcast.
+        if (!broadcast)
+            setDestination(0xFFFFFFFF);
         memset(frame, 0xFF, 6);
         esp_wifi_internal_tx(WIFI_IF_AP, frame, 14 + ipLen);
     }
