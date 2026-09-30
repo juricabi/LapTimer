@@ -107,8 +107,8 @@ class LapTimer {
     bool isStepTestDone() { return stepTestDone; }
     uint8_t getStepTestSample(uint16_t i) { return stepTestData[i]; }
 
-    // Receiver off for a few seconds while the hotspot's transmit power settles (webserver.cpp,
-    // txPowerStep). A race keeps its receiver: holding is ignored while one runs.
+    // Receiver off while the hotspot's transmit power settles (20 s, TX_POWER_SETTLE_MS; see
+    // webserver.cpp, txPowerStep). A race keeps its receiver: holding is ignored while one runs.
     void holdReceiver(bool hold) { receiverHeld = hold; }
     bool isReceiverOff() { return rx->getFrequency() == POWER_DOWN_FREQ_MHZ; }
 

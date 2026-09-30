@@ -97,6 +97,9 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
 - WiFi network `LapTimer_xxxx 192.168.4.1`, password `laptimer`. The address is in the name.
 - Open `http://192.168.4.1`. If the phone says the WiFi has no internet, stay connected;
   if the page doesn't load, turn off mobile data.
+- When the hotspot starts, the receiver is off for 20 s while the transmit power settles (a
+  race started meanwhile gets it back at once). This stops the fading that dropped phones in
+  earlier versions: see [docs/hotspot.md](docs/hotspot.md).
 
 **Your WiFi**
 1. **Setup → WiFi networks**: add your network (Scan helps), then **Restart timer**.

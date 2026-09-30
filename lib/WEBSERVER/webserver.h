@@ -69,6 +69,7 @@ class Webserver {
     // hotspot radio (the diagnostics can change them until the next restart)
     uint8_t apWidthMhz = 20;
     bool apPowerSave = false;
+    volatile bool hotspotRequested = false; // /api/debug/hotspot, applied in handleWebUpdate
     // hotspot transmit power (txPowerStep)
     enum { TX_POWER_START, TX_POWER_SETTLING, TX_POWER_HELD } txPowerState = TX_POWER_START;
     uint32_t txPowerSinceMs = 0;

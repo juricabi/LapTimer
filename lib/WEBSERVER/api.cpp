@@ -49,16 +49,20 @@ struct ApEvent
     uint32_t ip;
 };
 static ApEvent apEvents[24];
-static volatile uint8_t apEventCount = 0;
+static volatile uint32_t apEventCount = 0;
+static portMUX_TYPE apEventLock = portMUX_INITIALIZER_UNLOCKED; // written from both cores
 
 static void logApEvent(uint8_t type, const uint8_t *mac, uint32_t ip)
 {
+    uint32_t ms = millis();
+    portENTER_CRITICAL(&apEventLock);
     ApEvent &e = apEvents[apEventCount % 24];
-    e.ms = millis();
+    e.ms = ms;
     e.type = type;
     memcpy(e.mac, mac ? mac : (const uint8_t *)"\0\0\0\0\0\0", 6);
     e.ip = ip;
     apEventCount++;
+    portEXIT_CRITICAL(&apEventLock);
 }
 
 void logHotspotAssigned(const uint8_t *mac, uint32_t ip)
@@ -66,7 +70,12 @@ void logHotspotAssigned(const uint8_t *mac, uint32_t ip)
     logApEvent(1, mac, ip);
 }
 extern volatile uint32_t core0RoundsPerSec;
-extern "C" uint8_t phy_set_most_tpw_disbg;
+#if CONFIG_IDF_TARGET_ESP32
+extern "C" uint8_t phy_set_most_tpw_disbg; // see webserver.cpp
+static int txPowerLoopOn() { return phy_set_most_tpw_disbg ? 0 : 1; }
+#else
+static int txPowerLoopOn() { return -1; } // not handled on this chip
+#endif
 
 static uint32_t paramU32(AsyncWebServerRequest *request, const char *name, uint32_t fallback)
 {
@@ -91,10 +100,12 @@ void Webserver::registerApi()
     server.on("/api/debug/aplog", HTTP_GET, [](AsyncWebServerRequest *request)
               {
         String body = String("{\"now\":") + millis() + ",\"events\":[";
-        uint8_t n = apEventCount;
-        for (uint8_t k = n > 24 ? n - 24 : 0; k < n; k++)
+        uint32_t n = apEventCount;
+        for (uint32_t k = n > 24 ? n - 24 : 0; k < n; k++)
         {
-            const ApEvent &e = apEvents[k % 24];
+            portENTER_CRITICAL(&apEventLock);
+            ApEvent e = apEvents[k % 24];
+            portEXIT_CRITICAL(&apEventLock);
             char item[96];
             snprintf(item, sizeof(item), "%s[%u,%u,\"%02x:%02x:%02x:%02x:%02x:%02x\",\"%u.%u.%u.%u\"]",
                      body.endsWith("[") ? "" : ",", e.ms, e.type, e.mac[0], e.mac[1], e.mac[2], e.mac[3], e.mac[4], e.mac[5],
@@ -238,7 +249,7 @@ void Webserver::registerApi()
                  "\"wifiMode\":%d,\"txPowerDbm\":%.2f,\"protoAp\":%u,\"protoSta\":%u,\"bwAp\":%d,\"ps\":%d,"
                  "\"channel\":%d,\"apClients\":%d,\"txLoop\":%d}",
                  timer->getSamplesPerSec(), core0RoundsPerSec, getCpuFrequencyMhz(),
-                 mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), phy_set_most_tpw_disbg ? 0 : 1);
+                 mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), txPowerLoopOn());
         request->send(200, "application/json", buf); });
 
     // Diagnostics: switch to the timer's own hotspot until the next restart (saved networks stay).
@@ -248,9 +259,7 @@ void Webserver::registerApi()
         apWidthMhz = paramU32(request, "bw", 20) == 40 ? 40 : 20;
         apPowerSave = paramU32(request, "ps", 0) != 0;
         sendOk(request);
-        changeMode = WIFI_AP;
-        changeTimeMs = millis(); // after WIFI_RECONNECT_TIMEOUT_MS, so the reply goes out first
-        wifiMode = WIFI_OFF; });
+        hotspotRequested = true; });
 
     // Diagnostics: receiver response when switching frequency.
     // ?from=5880&to=5800 starts a test; without parameters returns {done, intervalUs, rise, fall}
@@ -337,7 +346,6 @@ void Webserver::registerApi()
         wifiList->clear();
         sendOk(request); });
 
-    // WiFi scan for the home WiFi picker. ?start=1 starts a new scan.
     // Network scan for the WiFi picker. ?start=1 starts one; it runs one channel at a time in
     // handleWebUpdate (see WIFI_PAGE_SCAN_*), so phones on the hotspot keep their connection.
     server.on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest *request)

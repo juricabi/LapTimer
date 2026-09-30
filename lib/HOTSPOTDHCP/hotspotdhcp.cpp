@@ -97,7 +97,8 @@ int HotspotDhcp::findLease(const uint8_t *mac)
     return -1;
 }
 
-// A free address, else an expired one, else the one that expires first
+// A free address, else an expired one, else the offer that expires first; -1 when every
+// address is bound to a phone (no offer then: a phone keeps its address until it expires)
 int HotspotDhcp::newLease(const uint8_t *mac)
 {
     uint32_t now = millis();
@@ -114,14 +115,16 @@ int HotspotDhcp::newLease(const uint8_t *mac)
     }
     if (pick < 0)
     {
-        pick = 0;
-        for (int i = 1; i < DHCP_POOL_SIZE; i++)
+        for (int i = 0; i < DHCP_POOL_SIZE; i++)
         {
-            if ((int32_t)(leases[i].expiresMs - leases[pick].expiresMs) < 0)
+            if (!leases[i].bound && (pick < 0 || (int32_t)(leases[i].expiresMs - leases[pick].expiresMs) < 0))
                 pick = i;
         }
     }
+    if (pick < 0)
+        return -1;
     leases[pick].used = true;
+    leases[pick].bound = false;
     memcpy(leases[pick].mac, mac, 6);
     leases[pick].expiresMs = now + 60000; // an offer is held for a minute; the ACK extends it
     return pick;
@@ -149,7 +152,8 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
     case DISCOVER:
         if (lease < 0)
             lease = newLease(mac);
-        reply(msg, OFFER, addressOf(lease));
+        if (lease >= 0)
+            reply(msg, OFFER, addressOf(lease));
         break;
     case REQUEST:
     {
@@ -169,8 +173,12 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
             return;
         }
         if (lease >= 0 && lease != wantedLease)
+        {
             leases[lease].used = false; // it moved to another address
+            leases[lease].bound = false;
+        }
         leases[wantedLease].used = true;
+        leases[wantedLease].bound = true;
         memcpy(leases[wantedLease].mac, mac, 6);
         leases[wantedLease].expiresMs = now + DHCP_LEASE_SECONDS * 1000UL;
         reply(msg, ACK, wanted);
@@ -180,13 +188,17 @@ void HotspotDhcp::handle(AsyncUDPPacket &packet)
     }
     case RELEASE:
         if (lease >= 0)
+        {
             leases[lease].used = false;
+            leases[lease].bound = false;
+        }
         break;
     case DECLINE:
         // the address is in use by something else: keep it away from everyone for 10 minutes
         if (lease >= 0)
         {
             memset(leases[lease].mac, 0, 6);
+            leases[lease].bound = true;
             leases[lease].expiresMs = now + 600000;
         }
         break;

@@ -65,7 +65,7 @@ Every change goes through all steps; a step is done when its check passes.
 
 - **ESP32 async WiFi scan**: the library reports `WIFI_SCAN_FAILED` after 6 s (20 × 300 ms)
   while a full scan takes ~5.95 s, longer on the first boot after an update. Treat "failed"
-  within 12 s as still running (`webserver.cpp`, `api.cpp`).
+  within 12 s as still running (the boot scan in `webserver.cpp`).
 - **RX5808 lock time**: after every frequency change it reads nothing until locked, then the
   full RSSI at once: 36 ms typically, up to 44.5 ms over 150 switches, the same for a 5 or
   155 MHz jump, and ~1% don't lock within 100 ms. Channel changes and the channel scan wait
@@ -91,13 +91,15 @@ Every change goes through all steps; a step is done when its check passes.
   So `txPowerStep` (webserver.cpp), when the hotspot starts: receiver off (`holdReceiver`),
   loop on for `TX_POWER_SETTLE_MS` (20 s), then libphy's own flag `phy_set_most_tpw_disbg = 1`
   (the gain holds) and the receiver back on. A race keeps its receiver: the gain so far is held
-  and the settling runs again after the race.
+  and the settling runs again after the race. Classic ESP32 only (`#if CONFIG_IDF_TARGET_ESP32`):
+  the C3/S3 radio libraries don't have the flag and weren't measured.
   The PHY clears the flag whenever it applies a TX power (and resets the gain), which starts
   the settling again; `esp_wifi_set_max_tx_power` never sets it in this core, and libphy's
   `tx_pwctrl_track_num` only counts to 20 once per boot (no use as a settle signal).
   `/api/debug/load` `txLoop` shows the loop (0 = off). A station hides the fade (the radio
   sleeps between beacons, which starts the loop over). Measure with `tools/hotspot_signal.py`
-  (beacon dBm per scan); Windows' "Signal %" is smoothed and misleads.
+  (beacon dBm per scan); Windows' "Signal %" is smoothed and misleads. Full write-up with the
+  bisect table: `docs/hotspot.md`; re-check it after any framework update.
 - **Boot freeze**: `analogRead()` reconfigures the ADC on every call (pin mux, attenuation,
   touch) without a lock across cores. With the battery read on core 0 during the RSSI
   sampling on core 1, about every second boot froze silently (both cores stuck, no WiFi,

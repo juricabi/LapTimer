@@ -10,10 +10,12 @@
 
 static IPAddress netMsk(255, 255, 255, 0);
 static HotspotDhcp hotspotDhcp;
+#if CONFIG_IDF_TARGET_ESP32
 // ESP32 PHY (libphy): 1 = its background TX power loop is off and the transmitter keeps its
 // current gain. The PHY clears it whenever it applies a TX power (WiFi start, mode change),
-// and the gain then starts low again; see txPowerStep.
+// and the gain then starts low again; see txPowerStep. Only the classic ESP32's libphy has it.
 extern "C" uint8_t phy_set_most_tpw_disbg;
+#endif
 void logHotspotAssigned(const uint8_t *mac, uint32_t ip); // api.cpp (diagnostics)
 static IPAddress ipAddress;
 AsyncWebServer server(80);  // shared with api.cpp
@@ -98,7 +100,14 @@ void Webserver::pageScanStep(uint32_t nowMs)
         }
         if (esp_wifi_scan_start(&config, false) != ESP_OK)
         {
-            pageScanAtMs = nowMs + WIFI_PAGE_SCAN_PAUSE_MS; // busy: try this channel again shortly
+            // busy (e.g. the station is connecting): this channel again shortly, or skip it
+            pageScanAtMs = nowMs + WIFI_PAGE_SCAN_PAUSE_MS;
+            if (++pageScanTry >= WIFI_PAGE_SCAN_TRIES)
+            {
+                pageScanTry = 0;
+                if (++pageScanChannel > WIFI_PAGE_SCAN_CHANNELS)
+                    pageScanActive = false;
+            }
             return;
         }
         pageScanChannelRunning = true;
@@ -153,8 +162,10 @@ void Webserver::pageScanStep(uint32_t nowMs)
 // start (about one step a second, ~14 s from the start value to the target). So: receiver
 // off, loop on for TX_POWER_SETTLE_MS, then loop off (the gain holds) and the receiver back
 // on. Hotspot only: a station's radio sleeps between beacons, which starts the loop over.
+// Classic ESP32 only (the C3/S3 radio libraries differ; not measured there).
 void Webserver::txPowerStep(uint32_t nowMs)
 {
+#if CONFIG_IDF_TARGET_ESP32
     if (wifiMode != WIFI_AP)
         return;
     if (txPowerState == TX_POWER_SETTLING)
@@ -182,18 +193,37 @@ void Webserver::txPowerStep(uint32_t nowMs)
         return;
     }
     // hotspot just started, or the PHY applied a TX power again (the gain starts over)
-    if ((txPowerState == TX_POWER_START || !phy_set_most_tpw_disbg) && !timer->isRacing())
+    if (txPowerState == TX_POWER_START || !phy_set_most_tpw_disbg)
     {
+        if (timer->isRacing())
+        {
+            // no settling during a race: hold the gain as it is (with the receiver on, the
+            // loop would pull it down) and settle after the race
+            phy_set_most_tpw_disbg = 1;
+            txPowerState = TX_POWER_START;
+            return;
+        }
         phy_set_most_tpw_disbg = 0;
         timer->holdReceiver(true);
         txPowerSinceMs = nowMs;
         txPowerState = TX_POWER_SETTLING;
         DEBUG("Hotspot TX power settling\n");
     }
+#else
+    (void)nowMs;
+#endif
 }
 
 void Webserver::handleWebUpdate(uint32_t currentTimeMs)
 {
+    if (hotspotRequested)
+    {
+        // /api/debug/hotspot (applied here, on the core that runs this state machine)
+        hotspotRequested = false;
+        changeMode = WIFI_AP;
+        changeTimeMs = currentTimeMs; // after WIFI_RECONNECT_TIMEOUT_MS, so the reply goes out first
+        wifiMode = WIFI_OFF;
+    }
     pageScanStep(currentTimeMs);
     txPowerStep(currentTimeMs);
 

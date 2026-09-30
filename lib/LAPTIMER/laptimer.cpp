@@ -376,6 +376,12 @@ void LapTimer::spectrumStep(uint32_t nowMs)
 
 void LapTimer::update(uint32_t nowMs)
 {
+    if (nowMs - sampleCountStartMs >= 1000)
+    {
+        samplesPerSec = sampleCount; // 0 while the receiver is off or held
+        sampleCount = 0;
+        sampleCountStartMs = nowMs;
+    }
     runPendingCommand();
     runPendingEdit();
     if (spectrumRequested && isRacing())
@@ -435,12 +441,6 @@ void LapTimer::scan(uint32_t nowMs)
 void LapTimer::sample(uint8_t v, uint32_t nowMs)
 {
     sampleCount++;
-    if (nowMs - sampleCountStartMs >= 1000)
-    {
-        samplesPerSec = sampleCount;
-        sampleCount = 0;
-        sampleCountStartMs = nowMs;
-    }
     rssi = v;
     if (!stepHasSample || v > stepMax)
     {

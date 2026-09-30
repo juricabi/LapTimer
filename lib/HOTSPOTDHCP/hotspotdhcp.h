@@ -26,6 +26,7 @@ class HotspotDhcp {
         uint8_t mac[6];
         uint32_t expiresMs;
         bool used;
+        bool bound; // acknowledged (or declined): not given to anyone else before it expires
     };
     AsyncUDP udp;
     Lease leases[DHCP_POOL_SIZE];
