@@ -829,7 +829,10 @@ function clockText() {
     return formatClock(status.raceMs - elapsed); // time left
   }
   if (status.state === STATE.RUNNING) return formatClock(elapsed);
-  return formatClock(raceData ? pilotTotal(racePilot(raceData)) : 0); // last race
+  // a timed race counts down: before the start the clock shows the time it will start from
+  if (status.state === STATE.WAITING) return formatClock(status.mode === MODE.TIMED ? status.raceMs : 0);
+  if (status.state === STATE.IDLE && raceMode === MODE.TIMED) return formatClock((+ui.raceTime.value || 0) * 1000);
+  return formatClock(raceData ? pilotTotal(racePilot(raceData)) : 0); // last race (its total is in the stats too)
 }
 
 function statusText() {
@@ -887,7 +890,7 @@ function renderRaceControls() {
   const live = status && state !== STATE.IDLE;
   const mode = live ? status.mode : raceMode;
   let info = MODE_NAMES[mode];
-  if (mode === MODE.TIMED) info += " · " + formatMinSec(live ? Math.round(status.raceMs / 1000) : +ui.raceSec.value || 0);
+  if (mode === MODE.TIMED) info += " · " + formatMinSec(live ? Math.round(status.raceMs / 1000) : +ui.raceTime.value || 0);
   if (mode === MODE.LAPS) info += " · " + (live ? status.raceLaps : +ui.raceLaps.value || 0) + " laps";
   if (live ? status.cd : ui.countdown.checked) info += " · countdown";
   $("raceInfo").textContent = info;
