@@ -19,20 +19,16 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 - One pilot per timer, sampled continuously for full precision (see [timing precision](#timing-precision)).
 - Race modes: **practice** (unlimited), **timed** (finish on the first pass after the time is
   up) and **lap race** (finish after N laps).
-- **Countdown start** (3-2-1-go beeps) or the race starts on the first gate pass.
+- **Countdown start** (3-2-1-go beeps) or the race starts on the first gate pass
+  (see [Starting a race](#starting-a-race)).
 - Last lap, delta to best, best, average, best 3 consecutive and consistency.
 - **Race screen**: big numbers for a phone or tablet at the field, with a live current-lap timer.
 
 **Voice and sound**
-- The phone announces lap times in English, with deltas, best laps and the finish.
-- Voice commands: "start", "stop", "best time", "clear time". The page is plain `http://`
-  (the timer has no certificate), and Chrome allows the microphone only on trusted sites:
-  allow the timer's address once in `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
-  (e.g. `http://192.168.4.1`), relaunch, and accept the microphone prompt. The mic icon in
-  the top bar is green while listening. Chrome's speech recognition runs on Google's servers,
-  so the phone needs internet on the same network: your home WiFi, or the timer joined to your
-  phone's hotspot (on the timer's own hotspot there is none). Brave blocks the speech service,
-  so no voice commands there (announcements work everywhere).
+- The phone announces lap times in English, with deltas, best laps and the finish; each
+  phone chooses whether it speaks.
+- **Voice commands** in Chrome: "start", "stop", "best time", "clear time"; the phone
+  answers (see [Voice](#voice)).
 - Buzzer and LED on the timer for laps, countdown, time up, race finished and low battery.
 
 **Setup and calibration**
@@ -50,7 +46,8 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 - **Fix laps**: merge two laps split by a false pass, or split a lap where a pass was missed.
 
 **Connection**
-- Own hotspot, or up to 5 saved **home WiFi** networks (the strongest in range is used).
+- Own hotspot, or up to 5 saved **WiFi networks** (the strongest in range is used), such as
+  your home WiFi or your phone's hotspot at the field.
 - `http://laptimer.local` on your WiFi; firmware updates over WiFi from the page.
 - Settings save automatically and stay consistent across several open phones.
 
@@ -81,6 +78,12 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 
 A 3D-printable case for the LilyGO T-Energy board is in [`stl/`](stl/).
 
+**Power**: the timer draws about 0.10-0.15 A at 5 V (measured with a USB meter; the upper end
+on its own hotspot, whose radio can't rest between beacons). A 5 600 mAh power bank (3.7 V
+cells, about 20 Wh) runs it for about a day. Some power banks switch off below 50-100 mA as
+if a phone were full: leave it running on the bank for 15 minutes at home first, or use the
+bank's always-on or low-current mode.
+
 ## Install
 
 1. Install [PlatformIO](https://platformio.org/) (VS Code extension or CLI).
@@ -104,37 +107,88 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
 - WiFi network `LapTimer_xxxx 192.168.4.1`, password `laptimer`. The address is in the name.
 - Open `http://192.168.4.1`. If the phone says the WiFi has no internet, stay connected;
   if the page doesn't load, turn off mobile data.
-- Earlier versions' hotspot faded away on many pilot channels; why and how it was fixed:
+- There is no internet on it, so no voice commands (announcements work). Earlier versions'
+  hotspot faded away on many pilot channels; why and how it was fixed:
   [docs/hotspot.md](docs/hotspot.md).
 
-**Your WiFi**
-1. **Setup → WiFi networks**: add your network (Scan helps), then **Restart timer**.
-2. Open `http://laptimer.local`, or the timer's IP from your router. Android often doesn't
-   resolve `laptimer.local` (especially on its own hotspot): use the IP there.
+**Your WiFi, or your phone's hotspot**
+1. **Setup → WiFi networks**: add the network (Scan helps), then **Restart timer**.
+2. Open `http://laptimer.local`, or the timer's IP (**Setup → Timer** shows it; so do your
+   router and the phone's hotspot settings). Android often doesn't resolve `laptimer.local`:
+   use the IP there.
 3. At power-up it joins the strongest saved network in range (60 s to connect). If none is
    seen, it tries the newest one for 20 s (a hidden network, or a phone hotspot still starting),
-   then starts its own hotspot. **Forget all** returns to hotspot mode.
+   then starts its own hotspot.
+
+- Changes to the list, also removing the network in use, take effect at the next restart.
+  **Forget all** restarts into the hotspot.
+- If the connected network goes away, the timer keeps timing and saving races and rejoins it
+  when it's back (a short beep every minute until then). For its own hotspot instead, switch
+  it off and on.
+- At the field, the timer on your phone's hotspot gives voice commands: the phone shares its
+  mobile data. The phone needs signal.
 
 ## Use
 
 1. **Setup**: enter the pilot's name and channel, or tap a saved pilot. Settings save automatically.
 2. **Calibrate** at the gate: switch on **Auto-calibrate** and fly 3+ passes, then **Apply**.
-   By hand: **Enter** below the peaks of your passes, **Exit** just above the level while the
-   drone is away (a pass ends when the signal drops below Exit). Run a **channel scan** first
-   if others are flying.
+   By hand: **Enter** below the peaks of your passes and above what the timer reads with the
+   drone on the pad, **Exit** just above the level while the drone is away (a pass ends when
+   the signal drops below Exit). Run a **channel scan** first if others are flying.
 3. **Race**: press **Start** (or say "start"). Open the **Race screen** for big numbers.
-4. **History**: every race is saved. Open one to see all laps, **Fix laps**, or export CSV.
+4. **History**: every race with a pass is saved. Open one to see all laps, **Fix laps**, or
+   export CSV.
 
-Voice needs a normal browser tab (Chrome, Brave, Safari). Tap **Test voice** once after
-opening the page; phones only allow speech after a tap.
+### Starting a race
+
+- **Countdown** (Setup → Race → Countdown start): 3-2-1-go beeps. The race starts at GO, and
+  the first pass after it is the start pass. A drone waiting on the pad during the countdown
+  gets its start pass when it takes off.
+- **First pass**: after Start the timer waits, and the race begins at the first pass through
+  the gate. With Enter above the pad level this is simply the first gate crossing.
+- **Drone on the pad above Enter** (a pad close to the timer): after about 10 s with a steady
+  signal the timer treats it as parked, and the take-off through the gate starts the race,
+  provided the gate reads clearly stronger than the pad (5 or more above the pad level on the
+  calibration graph). A take-off within those 10 s counts the time on the pad as the start
+  pass, so lap 1 comes out too long; each rise of the signal on the pad (VTX warming up, the
+  drone moved) starts the 10 s again. Arm, set it down, wait a moment, then fly; or set Enter
+  above the pad level, which avoids all of this.
+
+### Voice
+
+- **Announcer** (Setup → Announcer, saved on the timer): what to announce (lap time, 2 or 3
+  consecutive laps, a beep on the phone, or nothing), the delta to your best lap, and the
+  speech rate. Every phone with Voice on speaks it. The timer's own buzzer is separate
+  (Setup → Alerts).
+- **This phone** (Setup → This phone, for each phone, not saved on the timer): **Voice**
+  (speaks lap times, race events and the answers to voice commands), **Voice commands**, and
+  **Test voice**. Phones allow speech only after a tap: tap Test voice once after opening the
+  page. Voice works in any normal browser tab (Chrome, Brave, Safari).
+- **Voice commands**: say "start" (or "go"), "stop", "best time" or "clear time". The
+  phone answers ("Race stopped", "Times cleared", "Nothing to clear", ...), the same as
+  when you press the buttons. They need:
+  - **Chrome**: Brave blocks the speech service.
+  - **Internet on the timer's network**: Chrome's speech recognition runs on Google's servers.
+    Your home WiFi, or the timer on your phone's hotspot; not the timer's own hotspot (mobile
+    data doesn't help: Android then stops reaching the timer).
+  - **The microphone allowed**: the page is plain `http://` (the timer has no certificate),
+    and Chrome gives the microphone only to trusted sites. Add the timer's address once in
+    `chrome://flags/#unsafely-treat-insecure-origin-as-secure` (for example
+    `http://192.168.4.1`; add every address you use), relaunch Chrome and allow the
+    microphone when asked.
+- **Mic icon** in the top bar: green is listening, red is a problem, grey is off or starting.
+  Tap it for the reason and what to do, with the addresses to copy. It recovers by itself
+  (back online, microphone back). Chrome closes a listening session after a few seconds of
+  silence and it reopens at once: a word said in that short gap is missed, so say it again.
 
 ## Timing precision
 
 The receiver stays on the pilot's channel and reads the signal thousands of times per second.
 A pass is timed at the middle of the signal peak (a drone that stays in range of the timer
-for more than 10 s is parked, not passing), so the timer itself adds about a
-millisecond. What remains is how sharp the peak is: put the timer right at the gate, keep
-the drone far away for the rest of the lap, and calibrate Enter/Exit from real passes.
+for more than 10 s is parked, not passing: see [Starting a race](#starting-a-race)), so the
+timer itself adds about a millisecond. What remains is how sharp the peak is: put the timer
+right at the gate, keep the drone far away for the rest of the lap, and calibrate Enter/Exit
+from real passes.
 How fast it reads, and a faster option kept for later: [docs/sampling.md](docs/sampling.md).
 
 Why one pilot: after every channel change the RX5808 needs 36-45 ms to lock (measured), so a
