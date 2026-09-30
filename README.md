@@ -127,6 +127,7 @@ The receiver stays on the pilot's channel and reads the signal thousands of time
 A pass is timed at the middle of the signal peak, so the timer itself adds about a
 millisecond. What remains is how sharp the peak is: put the timer right at the gate, keep
 the drone far away for the rest of the lap, and calibrate Enter/Exit from real passes.
+How fast it reads, and a faster option kept for later: [docs/sampling.md](docs/sampling.md).
 
 Why one pilot: after every channel change the RX5808 needs 36-45 ms to lock (measured), so a
 receiver shared between pilots reads each of them only every 100-200 ms, and a fast whoop
