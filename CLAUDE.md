@@ -80,26 +80,26 @@ Every change goes through all steps; a step is done when its check passes.
   after it; wake from power down with `setupRxModule()` only. Check the RSSI after a restart.
 - **Channels in two bands**: the timer stores only MHz, and 5880 is both F8 and R7. The page's
   `bandChannel(freq, preferBand)` keeps the band the picker shows, or switching band jumps.
-- **Hotspot fading** (every version up to v1.1.0): the tuned RX5808 (its synthesizer runs at
-  (f - 479) / 2, ~2.6-2.7 GHz) leaks into the ESP32's transmit power detector, and the PHY's
-  background power loop (`tx_pwctrl_background` in libphy) keeps turning the transmitter down:
-  ~30 dB over 2-10 minutes until the hotspot vanishes, then it recovers and fades again. Phones
-  drop, DHCP and scans fail, range is a few metres. Bisected with a bare softAP firmware on the
-  timer: steady alone, with the busy cores and nonstop ADC too; fading once the RX5808 is tuned;
-  steady again with the loop off. But the loop is also what raises the gain after a start
-  (~1 step/s, ~14 s): switched off at once the hotspot stays at -77..-81 dBm instead of ~-60.
-  So `txPowerStep` (webserver.cpp), when the hotspot starts: receiver off (`holdReceiver`),
-  loop on for `TX_POWER_SETTLE_MS` (20 s), then libphy's own flag `phy_set_most_tpw_disbg = 1`
-  (the gain holds) and the receiver back on. A race keeps its receiver: the gain so far is held
-  and the settling runs again after the race. Classic ESP32 only (`#if CONFIG_IDF_TARGET_ESP32`):
-  the C3/S3 radio libraries don't have the flag and weren't measured.
-  The PHY clears the flag whenever it applies a TX power (and resets the gain), which starts
-  the settling again; `esp_wifi_set_max_tx_power` never sets it in this core, and libphy's
-  `tx_pwctrl_track_num` only counts to 20 once per boot (no use as a settle signal).
-  `/api/debug/load` `txLoop` shows the loop (0 = off). A station hides the fade (the radio
-  sleeps between beacons, which starts the loop over). Measure with `tools/hotspot_signal.py`
-  (beacon dBm per scan); Windows' "Signal %" is smoothed and misleads. Full write-up with the
-  bisect table: `docs/hotspot.md`; re-check it after any framework update.
+- **Hotspot fading (not solved)**: the tuned RX5808 leaks into the ESP32's transmit power
+  detector, and the PHY's background power loop (`tx_pwctrl_background` in libphy) turns the
+  transmitter down ~30 dB over 2-10 minutes until the hotspot vanishes, recovers, fades again.
+  Bisected with a bare softAP firmware: steady alone, with busy cores and nonstop ADC too;
+  fading once the RX5808 is tuned; steady with the loop off. It depends on the pilot channel:
+  5800 fades on WiFi channels 1, 6 and 11; 5865 doesn't (rises to ~-60 dBm); powered down after
+  5800, ~-77. A station hides it (the radio sleeps between beacons, which restarts the loop).
+  Shipped: `txPowerStep` (webserver.cpp) turns the receiver off for 20 s at hotspot start, then
+  holds the loop (`phy_set_most_tpw_disbg = 1`) - no fade, but the held level varies from
+  -60 to -89 dBm at 1-2 m, depending on hidden libphy state (how long it ran as a station).
+  Dead ends, all unreliable: longer settle; resetting `tx_pwctrl_track_num` (big steps only
+  in the first 20 rounds per boot); full WiFi restart before settling (-86); parking the
+  receiver on 5865 while settling (-64, then -82); libphy's fixed-power mode, which
+  `esp_wifi_set_max_tx_power` reaches only below the rate target (~13.5 dBm; -82 dBm at
+  8.5 dBm). The radio caps requests at its highest rate target, 18 dBm. Experiments:
+  `git stash list`. Advice: station mode (phone hotspot) at the field; likely real fix: more
+  distance/shielding between the RX5808 and the ESP32's antenna. Measure with
+  `tools/hotspot_signal.py` (beacon dBm per scan; Windows' "Signal %" hides fading), check
+  `/api/debug/load` `txLoop`, and see `docs/hotspot.md`. Classic ESP32 only
+  (`#if CONFIG_IDF_TARGET_ESP32`: the C3/S3 libphy lacks the flag).
 - **Boot freeze**: `analogRead()` reconfigures the ADC on every call (pin mux, attenuation,
   touch) without a lock across cores. With the battery read on core 0 during the RSSI
   sampling on core 1, about every second boot froze silently (both cores stuck, no WiFi,
