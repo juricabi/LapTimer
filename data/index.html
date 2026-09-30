@@ -106,11 +106,12 @@
 
       <div class="card" data-needs-config>
         <h2>Announcer</h2>
+        <p class="hint" id="announcerNote">Spoken by every phone that has Voice on (This phone, below).</p>
         <label class="field">
           <span class="field-label">Announce</span>
           <select id="announcerSelect" autocomplete="off">
             <option value="none">Nothing</option>
-            <option value="beep">Beep</option>
+            <option value="beep">Beep on the phone</option>
             <option value="1lap">Lap time</option>
             <option value="2lap">2 consecutive laps</option>
             <option value="3lap">3 consecutive laps</option>
@@ -130,17 +131,22 @@
           </span>
           <span class="switch"><input type="checkbox" id="anDelta" /><span class="slider"></span></span>
         </label>
+      </div>
+
+      <div class="card">
+        <h2>This phone</h2>
+        <p class="hint">Sound and microphone of this phone (not saved on the timer).</p>
         <label class="switch-row">
           <span>
-            <span class="switch-title">Voice on this phone</span><br />
-            <span class="hint">Speaks lap times, race events and the answers to voice commands through this device</span>
+            <span class="switch-title">Voice</span><br />
+            <span class="hint">Speaks lap times, race events and the answers to voice commands</span>
           </span>
           <span class="switch"><input type="checkbox" id="voiceToggle" data-local checked /><span class="slider"></span></span>
         </label>
         <label class="switch-row">
           <span>
-            <span class="switch-title">Voice commands on this phone</span><br />
-            <span class="hint">"start", "stop", "best time", "clear time" through the microphone; this phone speaks the answer (Voice on this phone). Needs Chrome; tap the mic icon at the top for how to enable it.</span>
+            <span class="switch-title">Voice commands</span><br />
+            <span class="hint">"start", "stop", "best time", "clear time". Needs Chrome; the mic icon at the top shows the state and how to enable it.</span>
           </span>
           <span class="switch"><input type="checkbox" id="voiceCommands" data-local checked /><span class="slider"></span></span>
         </label>
@@ -299,7 +305,7 @@
     <div id="rsPilot" class="rs-pilot"></div>
   </div>
 
-  <script src="script.js?v=6920ccab"></script>
+  <script src="script.js?v=2c681d34"></script>
 </body>
 
 </html>

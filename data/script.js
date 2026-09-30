@@ -1833,7 +1833,29 @@ function disableAudioLoop() {
   audioEnabled = false;
 }
 
-ui.voiceToggle.addEventListener("change", () => (ui.voiceToggle.checked ? enableAudioLoop() : disableAudioLoop()));
+// The announcer is heard through this phone's Voice switch: say so where the announcer is set
+function renderAnnouncerNote() {
+  $("announcerNote").textContent = ui.voiceToggle.checked
+    ? "Spoken by every phone that has Voice on (This phone, below)."
+    : "Voice is off on this phone (This phone, below): nothing is heard here.";
+}
+// Voice is this phone's own choice, remembered in the browser (on unless switched off)
+try {
+  ui.voiceToggle.checked = localStorage.getItem("voiceOn") !== "0";
+} catch (e) {
+  /* private mode: stays on */
+}
+renderAnnouncerNote();
+ui.voiceToggle.addEventListener("change", () => {
+  if (ui.voiceToggle.checked) enableAudioLoop();
+  else disableAudioLoop();
+  try {
+    localStorage.setItem("voiceOn", ui.voiceToggle.checked ? "1" : "0");
+  } catch (e) {
+    /* private mode */
+  }
+  renderAnnouncerNote();
+});
 
 // Always announce in English, regardless of the phone's system language.
 // utterance.lang selects the language; forcing a voice object can make Android
@@ -2128,12 +2150,12 @@ function renderMicHelp() {
   const copy = (text) => `<code>${escapeHtml(text)}</code><button type="button" class="btn btn-ghost btn-small" data-copy="${escapeHtml(text)}">Copy</button>`;
   let html;
   if (!voiceCommandsWanted()) {
-    html = "<p>Voice commands are off on this phone. Switch them on in Setup → Announcer.</p>";
+    html = "<p>Voice commands are off on this phone. Switch them on in Setup → This phone.</p>";
   } else if (!speechRecognitionSupported) {
     html = "<p>This browser has no speech recognition. Voice commands work in Chrome.</p>";
   } else if (micState === "listening") {
     html = "<p>Listening. Say <b>start</b> (or go), <b>stop</b>, <b>best time</b> or <b>clear time</b>; this phone speaks the answer. The announcer's own voice is ignored. Chrome closes a session after a few seconds of silence and it is opened again at once: that short gap is Chrome's.</p>";
-    if (!audioEnabled) html += "<p class=\"hint\">Voice on this phone is off (Setup → Announcer), so the answers are silent.</p>";
+    if (!audioEnabled) html += "<p class=\"hint\">Voice is off (Setup → This phone), so the answers are silent.</p>";
   } else if (isBrave && micState === "error") {
     html = "<p>Brave blocks the speech service that Chrome uses, so voice commands can't work here. Announcements do. For voice commands open this page in Chrome.</p>";
   } else if (micError === "not-allowed" || micError === "service-not-allowed") {
