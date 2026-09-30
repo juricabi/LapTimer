@@ -46,6 +46,7 @@ void LapTimer::init(Config *config, RX5808 *rx5808, Buzzer *buzzer, Led *l)
 
     filter.setMeasurementNoise(rssi_filter_q * 0.01f);
     filter.setProcessNoise(rssi_filter_r * 0.0001f);
+    stepCycles = RSSI_STEP_US * getCpuFrequencyMhz();
     memset(history, 0, sizeof(history));
     resetLaps();
     state = RACE_IDLE;
@@ -378,8 +379,10 @@ void LapTimer::update(uint32_t nowMs)
 {
     if (nowMs - sampleCountStartMs >= 1000)
     {
-        samplesPerSec = sampleCount; // 0 while the receiver is off or held
+        samplesPerSec = sampleCount; // 0 while the receiver is off
         sampleCount = 0;
+        readsPerSec = readCount;
+        readCount = 0;
         sampleCountStartMs = nowMs;
     }
     runPendingCommand();
@@ -416,7 +419,7 @@ void LapTimer::update(uint32_t nowMs)
     updateRace(nowMs);
 }
 
-// Keeps the receiver on the pilot's channel and feeds every reading through the Kalman filter
+// Keeps the receiver on the pilot's channel and feeds the RSSI through the Kalman filter
 void LapTimer::scan(uint32_t nowMs)
 {
     // during a race the race's channel, otherwise the live setting
@@ -437,7 +440,23 @@ void LapTimer::scan(uint32_t nowMs)
     }
     if (freq == POWER_DOWN_FREQ_MHZ)
         return; // receiver off
-    sample(round(filter.filter(rx->readRssiRaw(), 0)), nowMs);
+    // Read until the next filter step is due (at least once), then filter the average: one
+    // step every RSSI_STEP_US however fast the reads are. After a pause (channel change)
+    // the schedule starts again from now.
+    uint32_t sum = 0;
+    uint32_t n = 0;
+    do
+    {
+        uint16_t raw = rx->readRssiAdc();
+        sum += raw > 2047 ? 2047 : raw; // the RSSI never goes above ~2047 (see readRssiRaw)
+        n++;
+    } while ((int32_t)(ESP.getCycleCount() - stepDueCycles) < 0);
+    uint32_t now = ESP.getCycleCount();
+    stepDueCycles += stepCycles;
+    if ((int32_t)(now - stepDueCycles) >= 0)
+        stepDueCycles = now + stepCycles;
+    readCount += n;
+    sample(round(filter.filter((sum / n) >> 3, 0)), nowMs);
 }
 
 void LapTimer::sample(uint8_t v, uint32_t nowMs)

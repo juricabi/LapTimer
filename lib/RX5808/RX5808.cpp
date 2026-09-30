@@ -4,6 +4,11 @@
 
 #include "debug.h"
 
+#if CONFIG_IDF_TARGET_ESP32
+#include "driver/adc.h"
+#include "soc/sens_struct.h"
+#endif
+
 RX5808::RX5808(uint8_t _rssiInputPin, uint8_t _rx5808DataPin, uint8_t _rx5808SelPin, uint8_t _rx5808ClkPin) {
     rssiInputPin = _rssiInputPin;
     rx5808DataPin = _rx5808DataPin;
@@ -16,6 +21,16 @@ void RX5808::init() {
     pinMode(rx5808DataPin, OUTPUT);
     pinMode(rx5808SelPin, OUTPUT);
     pinMode(rx5808ClkPin, OUTPUT);
+#if CONFIG_IDF_TARGET_ESP32
+    // analogRead() once sets up the pin, attenuation and width; the ADC then stays powered and
+    // readRssiAdc() starts conversions itself (CLAUDE.md, Sampling rate)
+    analogRead(rssiInputPin);
+    int8_t channel = digitalPinToAnalogChannel(rssiInputPin);
+    if (channel >= 0 && channel < 8) {  // ADC1 (ADC2 is shared with WiFi)
+        adc_power_acquire();
+        adcChannel = channel;
+    }
+#endif
     digitalWrite(rx5808SelPin, HIGH);
     digitalWrite(rx5808ClkPin, LOW);
     digitalWrite(rx5808DataPin, LOW);
@@ -86,18 +101,32 @@ void RX5808::setFrequency(uint16_t vtxFreq, bool verbose) {
     digitalWrite(rx5808DataPin, LOW);
 }
 
+// One conversion of the RSSI pin, 0-4095. On the classic ESP32 the ADC's registers are used
+// directly (the steps of the IDF's adc1_get_raw after the setup in init()), from IRAM:
+// analogRead() takes ~90 us, mostly setup repeated on every call and code run from flash, and
+// its speed changed from build to build with where that code landed in flash (6 500 to
+// 10 600 samples/s). Only core 1 uses the ADC (CLAUDE.md, Boot freeze).
+uint16_t IRAM_ATTR RX5808::readRssiAdc() {
+#if CONFIG_IDF_TARGET_ESP32
+    if (adcChannel >= 0) {
+        SENS.sar_read_ctrl.sar1_dig_force = 0;          // RTC controller, started by software
+        SENS.sar_meas_start1.meas1_start_force = 1;
+        SENS.sar_meas_start1.sar1_en_pad_force = 1;
+        SENS.sar_meas_start1.sar1_en_pad = 1 << adcChannel;
+        SENS.sar_meas_start1.meas1_start_sar = 0;
+        SENS.sar_meas_start1.meas1_start_sar = 1;
+        while (!SENS.sar_meas_start1.meas1_done_sar) {
+        }
+        return SENS.sar_meas_start1.meas1_data_sar;
+    }
+#endif
+    return analogRead(rssiInputPin);
+}
+
 // Read the RSSI value. The caller (LapTimer::scan) waits for the receiver to settle after tuning.
 uint8_t RX5808::readRssiRaw() {
-    volatile uint16_t rssi = 0;
-
-    // for (uint8_t i = 0; i < RSSI_READS; i++) {
-    //   rssi += map(analogRead(rssiInputPin), 0, analogRead(vbatPin), 0, 4095);
-    // }
-
-    // rssi = rssi / RSSI_READS; // average of RSSI_READS readings
-
     // reads 5V value as 0-4095, RX5808 is 3.3V powered so RSSI pin will never output the full range
-    rssi = analogRead(rssiInputPin);
+    uint16_t rssi = readRssiAdc();
     // clamp upper range to fit scaling
     if (rssi > 2047) rssi = 2047;
     // rescale to fit into a byte and remove some jitter TODO: experiment with exp or log

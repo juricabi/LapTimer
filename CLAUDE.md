@@ -128,9 +128,16 @@ Every change goes through all steps; a step is done when its check passes.
   `/api/debug/hotspot` switches to the hotspot until the next restart.
 - **Android and `.local`**: Android doesn't resolve mDNS names reliably, least of all on its
   own hotspot. `laptimer.local` works on laptops and iPhones; on Android use the IP.
-- **Sampling rate** is set by the ADC: one RSSI reading takes ~85-125 us depending on the WiFi
-  state, so ~7 000-10 000 samples/s. Compare firmware versions only A/B on the same timer
-  under the same conditions (`/api/debug/load` samplesPerSec); single readings mislead.
+- **Sampling rate**: `analogRead()` takes ~90 us (pin and ADC setup repeated on every call,
+  code run from flash), and its speed changed with where the linker placed code: 6 500 to
+  10 600 samples/s between builds, 11% from padding alone, not from heat or WiFi settings. On
+  the classic ESP32 `RX5808::readRssiAdc` starts the conversion through the ADC's registers
+  from IRAM (~13 us, ~78 000 reads/s; `init()` sets it up with one `analogRead()` and keeps the
+  ADC powered). `LapTimer::scan` averages the reads into one Kalman step every `RSSI_STEP_US`
+  (100 us), so the filter's timing (~7 ms time constant) is the same in every build.
+  `/api/debug/load` shows `samplesPerSec` (steps, 10 000) and `readsPerSec`. C3/S3 keep
+  `analogRead()` (their ADCs differ; untested) with the same step. Compare builds A/B on the
+  same timer.
 - **Captive portal**: tried and rejected — the sign-in window has no speech and blocks the
   normal browser. The hotspot uses private `192.168.4.1`, shown in the WiFi name, no DNS redirect.
 - **USB flashing** on the owner's board: auto-reset fails, so hold BOOT and tap EN; use

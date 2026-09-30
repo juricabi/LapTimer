@@ -19,6 +19,10 @@
 // over 150 switches 36 ms typically, 44.5 ms at most (timed from the end of the register
 // write; the wait here starts a little earlier). Too slow to share one receiver between
 // pilots: a fast pass would fall between the readings.
+// The RSSI is read as fast as the ADC allows; every RSSI_STEP_US the average of those
+// readings goes through the Kalman filter, so the filter's timing (~7 ms time constant) is
+// the same in every build (CLAUDE.md, Sampling rate)
+#define RSSI_STEP_US 100
 #define RECEIVER_WAIT_MAX_MS 5000 // power-up: receiver off until WiFi has started, at most this long
 #define RX_LOCK_MS 50
 // Still above exit this long after the peak: landed or hovering near the timer. If the
@@ -113,8 +117,9 @@ class LapTimer {
     // calibration (CLAUDE.md, Transmit power fade). The web server calls this once WiFi is up.
     void enableReceiver() { receiverEnabled = true; }
 
-    // Diagnostics: RSSI samples taken in the last full second
+    // Diagnostics: filter steps (RSSI samples) and ADC readings in the last full second
     uint32_t getSamplesPerSec() { return samplesPerSec; }
+    uint32_t getReadsPerSec() { return readsPerSec; }
 
     // RSSI history for the calibration graph
     uint32_t getHistorySeq() { return historySeq; }
@@ -170,6 +175,10 @@ class LapTimer {
     uint32_t sampleCount = 0;
     uint32_t sampleCountStartMs = 0;
     volatile uint32_t samplesPerSec = 0;
+    uint32_t readCount = 0;
+    volatile uint32_t readsPerSec = 0;
+    uint32_t stepCycles = 0;          // RSSI_STEP_US in CPU cycles
+    uint32_t stepDueCycles = 0;       // CPU cycle count when the next filter step is due
 
     // pass detection
     bool inPass = false;

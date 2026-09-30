@@ -9,7 +9,8 @@ class RX5808 {
     RX5808(uint8_t _rssiInputPin, uint8_t _rx5808DataPin, uint8_t _rx5808SelPin, uint8_t _rx5808ClkPin);
     void init();
     void setFrequency(uint16_t frequency, bool verbose = true);
-    uint8_t readRssiRaw();
+    uint8_t readRssiRaw();       // one reading, 0-255
+    uint16_t readRssiAdc();      // one reading, 12-bit ADC value (fast, see RX5808.cpp)
     uint16_t getFrequency() { return currentFrequency; }
 
    private:
@@ -17,6 +18,7 @@ class RX5808 {
     uint8_t rx5808ClkPin = 0;   // CLK (CH3) output line to RX5808 module
     uint8_t rx5808SelPin = 0;   // SEL (CH2) output line to RX5808 module
     uint8_t rssiInputPin = 0;   // RSSI input from RX5808
+    int8_t adcChannel = -1;     // ADC1 channel read directly (classic ESP32), -1: analogRead()
 
     uint16_t currentFrequency = 0;
 

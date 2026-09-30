@@ -251,10 +251,10 @@ void Webserver::registerApi()
         esp_wifi_get_ps(&ps);
         char buf[320];
         snprintf(buf, sizeof(buf),
-                 "{\"samplesPerSec\":%u,\"core0RoundsPerSec\":%u,\"cpuMhz\":%u,"
+                 "{\"samplesPerSec\":%u,\"readsPerSec\":%u,\"core0RoundsPerSec\":%u,\"cpuMhz\":%u,"
                  "\"wifiMode\":%d,\"txPowerDbm\":%.2f,\"protoAp\":%u,\"protoSta\":%u,\"bwAp\":%d,\"ps\":%d,"
                  "\"channel\":%d,\"apClients\":%d,\"txLoop\":%d,\"txGain\":%d,\"txAnaGain\":\"%08x\"}",
-                 timer->getSamplesPerSec(), core0RoundsPerSec, getCpuFrequencyMhz(),
+                 timer->getSamplesPerSec(), timer->getReadsPerSec(), core0RoundsPerSec, getCpuFrequencyMhz(),
                  mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), txPowerLoopOn(), txGainByte(), txAnaGain());
         request->send(200, "application/json", buf); });
 
