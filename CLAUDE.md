@@ -128,9 +128,13 @@ Every change goes through all steps; a step is done when its check passes.
   `/api/debug/hotspot` switches to the hotspot until the next restart.
 - **Android and `.local`**: Android doesn't resolve mDNS names reliably, least of all on its
   own hotspot. `laptimer.local` works on laptops and iPhones; on Android use the IP.
-- **Sampling rate** is set by the ADC: one RSSI reading takes ~85-125 us depending on the WiFi
-  state, so ~7 000-10 000 samples/s. Compare firmware versions only A/B on the same timer
-  under the same conditions (`/api/debug/load` samplesPerSec); single readings mislead.
+- **Sampling rate**: `analogRead()` takes ~90 us per RSSI reading (pin and ADC setup repeated
+  on every call, code run from flash), so 6 500-10 600 samples/s depending on where the linker
+  places code (padding alone moved it 11%), not on heat, WiFi or the transmit gain. Enough for
+  lap detection; the Kalman filter's time constant (~70 samples) follows it, ~7-11 ms. Compare
+  builds only A/B on the same timer (`/api/debug/load` samplesPerSec). Parked option, branch
+  `perf/fast-adc` (bench-tested, not flown): read the ADC's registers from IRAM (~13 us,
+  ~78 000/s) and average into one filter step every 100 us, the same in every build.
 - **Captive portal**: tried and rejected — the sign-in window has no speech and blocks the
   normal browser. The hotspot uses private `192.168.4.1`, shown in the WiFi name, no DNS redirect.
 - **USB flashing** on the owner's board: auto-reset fails, so hold BOOT and tap EN; use
