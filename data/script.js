@@ -1997,13 +1997,21 @@ function renderMicHelp() {
       : "<p>The microphone was refused. Tap the icon left of the address → Permissions → Microphone → Allow, then reload the page.</p>";
   } else if (micError === "network") {
     html = `<p>No connection to the speech service: Chrome sends speech to Google, and on the timer's hotspot the phone has no internet (mobile data doesn't help: Android then stops reaching the timer).</p>
-      <p>Voice commands work when the phone has internet on the same network: at home with the timer on your WiFi, or at the field with the timer joined to <b>your phone's hotspot</b> (Setup → WiFi networks, then open the timer's address). Retrying every few seconds.</p>`;
+      <p>Voice commands work when the phone has internet on the same network: at home with the timer on your WiFi, or at the field with the timer joined to <b>your phone's hotspot</b> (Setup → WiFi networks, then open the timer's address). Retrying now and then, with growing pauses.</p>
+      <p><button type="button" class="btn btn-ghost btn-small" data-mic-retry>Try again now</button></p>`;
   } else if (micError === "audio-capture") {
     html = "<p>No microphone found on this device.</p>";
   } else {
     html = "<p>Starting voice recognition… If it stays grey, tap the page once (browsers start the microphone only after a tap) or reload.</p>";
   }
   box.innerHTML = html;
+  for (const b of box.querySelectorAll("[data-mic-retry]")) {
+    b.addEventListener("click", () => {
+      stopVoiceRecognition();
+      startVoiceRecognition();
+      showButtonStatus(b, "Retrying…", 3000);
+    });
+  }
   for (const b of box.querySelectorAll("[data-copy]")) {
     b.addEventListener("click", () => {
       // navigator.clipboard needs https: select the text and copy it the old way
@@ -2075,30 +2083,47 @@ function startVoiceRecognition() {
     }
   };
   // Chrome ends the recognition after every error: a refused microphone would otherwise
-  // restart it in a tight loop (with Android's listening chime each time), so it stops there
-  // and waits a little after the other errors (no network, no audio)
+  // restart it in a tight loop (with Android's listening chime each time), so it stops there.
+  // After the other errors (no network, no audio) it retries with growing pauses, 3 s up to a
+  // minute, and the icon stays red until a restart has held for 5 s (a restart looks fine
+  // for a second before the next error arrives: the icon used to blink red and green).
+  const r = recognition;
   let lastError = null;
+  let errors = 0;
+  let okTimer = null;
   recognition.onerror = (e) => {
+    // Chrome ends a session after a while of silence with "no-speech" (and "aborted" on a
+    // stop): not failures, the session is simply started again
+    if (e.error === "no-speech" || e.error === "aborted") return;
     lastError = e.error;
     micError = e.error;
+    errors++;
+    clearTimeout(okTimer);
     setMicState("error");
   };
   recognition.onend = () => {
     if (lastError === "not-allowed" || lastError === "service-not-allowed") return;
+    const afterError = !!lastError;
+    const delay = afterError ? Math.min(60000, 3000 * 2 ** Math.min(errors - 1, 4)) : 0;
+    lastError = null;
     const restart = () => {
+      if (recognition !== r) return; // switched off meanwhile
       try {
-        recognition.start(); // keep listening
-        if (!lastError) {
-          micError = null;
-          setMicState("listening");
-        }
+        r.start(); // keep listening
       } catch (e) {
         console.warn("Failed to restart recognition", e);
+        return;
       }
+      if (!afterError) setMicState("listening");
+      else
+        okTimer = setTimeout(() => {
+          errors = 0;
+          micError = null;
+          setMicState("listening");
+        }, 5000);
     };
-    if (lastError) setTimeout(restart, 3000);
+    if (delay) setTimeout(restart, delay);
     else restart();
-    lastError = null;
   };
   try {
     recognition.start();
