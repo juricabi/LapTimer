@@ -15,36 +15,44 @@ static RaceHistory history;
 static WifiList wifiList;
 static BatteryMonitor monitor;
 
+volatile uint32_t core0RoundsPerSec = 0;  // diagnostics (/api/debug/load): service rounds per second
+
+// Everything except the ADC reads (RSSI and battery, see loop()): on core 0, or between the
+// samples on a single-core chip
+static void serviceRound(uint32_t currentTimeMs) {
+    static uint32_t rounds = 0, roundsStartMs = 0;
+    if (++rounds, currentTimeMs - roundsStartMs >= 1000) {
+        core0RoundsPerSec = rounds;
+        rounds = 0;
+        roundsStartMs = currentTimeMs;
+    }
+    buzzer.handleBuzzer(currentTimeMs);
+    led.handleLed(currentTimeMs);
+    ws.handleWebUpdate(currentTimeMs);
+    config.handleEeprom(currentTimeMs, !timer.isRacing());
+    monitor.checkBatteryState(currentTimeMs, config.getAlarmThreshold());
+    if (timer.savePending) {
+        history.save(timer);
+    }
+    buzzer.handleBuzzer(currentTimeMs);
+    led.handleLed(currentTimeMs);
+}
+
+#if !CONFIG_FREERTOS_UNICORE
 static TaskHandle_t xTimerTask = NULL;
 
-volatile uint32_t core0RoundsPerSec = 0;  // diagnostics (/api/debug/load)
-
-// Core 0: everything except the ADC reads (RSSI and battery, see loop())
 static void parallelTask(void *pvArgs) {
-    uint32_t rounds = 0, roundsStartMs = 0;
     for (;;) {
-        uint32_t currentTimeMs = millis();
-        if (++rounds, currentTimeMs - roundsStartMs >= 1000) {
-            core0RoundsPerSec = rounds;
-            rounds = 0;
-            roundsStartMs = currentTimeMs;
-        }
-        buzzer.handleBuzzer(currentTimeMs);
-        led.handleLed(currentTimeMs);
-        ws.handleWebUpdate(currentTimeMs);
-        config.handleEeprom(currentTimeMs, !timer.isRacing());
-        monitor.checkBatteryState(currentTimeMs, config.getAlarmThreshold());
-        if (timer.savePending) {
-            history.save(timer);
-        }
-        buzzer.handleBuzzer(currentTimeMs);
-        led.handleLed(currentTimeMs);
+        serviceRound(millis());
     }
 }
+#endif
 
 static void initParallelTask() {
     disableCore0WDT();
+#if !CONFIG_FREERTOS_UNICORE
     xTaskCreatePinnedToCore(parallelTask, "parallelTask", 8192, NULL, 0, &xTimerTask, 0);
+#endif
 }
 
 void setup() {
@@ -69,5 +77,15 @@ void loop() {
     uint32_t nowMs = millis();
     timer.update(nowMs);
     monitor.sampleAdc(nowMs);
+#if CONFIG_FREERTOS_UNICORE
+    // One core (ESP32-C3): Arduino's loop task leaves lower-priority tasks only 5 ms every
+    // 2 s, so a separate service task would starve. The service work runs here instead,
+    // once per millisecond between the samples.
+    static uint32_t lastServiceMs = 0;
+    if (nowMs != lastServiceMs) {
+        lastServiceMs = nowMs;
+        serviceRound(nowMs);
+    }
+#endif
     ElegantOTA.loop();
 }
