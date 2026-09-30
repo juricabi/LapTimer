@@ -16,10 +16,12 @@ class Buzzer {
     void beep(uint32_t timeMs);
 
    private:
-    buzzer_state_e buzzerState = BUZZER_IDLE;
+    // beep() runs on the timing core, handleBuzzer() on the other: the time is stored
+    // before the state (see beep), and both are volatile
+    volatile buzzer_state_e buzzerState = BUZZER_IDLE;
     uint8_t buzzerPin;
     uint8_t initialState = LOW;
-    uint32_t beepTimeMs;
-    uint32_t startTimeMs;
+    volatile uint32_t beepTimeMs = 0;
+    volatile uint32_t startTimeMs = 0;
     Config* config; // Pointer to Config object
 };

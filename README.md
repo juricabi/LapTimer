@@ -34,12 +34,12 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 - Band and channel picker: A, B, E, F, R and L. L band (5362-5621 MHz) is below the RX5808's
   specified range, so reception there isn't guaranteed.
 - **Calibration graph** with 25 ms resolution, and **auto-calibration**: fly 3+ passes and it
-  suggests Enter/Exit from the real passes (found by the minimum lap time) and the signal
-  level between them, or says what to change when the passes don't stand out.
+  suggests Enter/Exit from the real passes (the peaks that stand out, at least a minimum lap
+  apart) and the signal level between them, or says what to change when they don't stand out.
 - **Channel scan** to see which channels are busy before choosing.
 
 **After the race**
-- Every race is saved on the timer (last 30) with **CSV export**.
+- Every race with a pass is saved on the timer (last 30) with **CSV export**.
 - **Fix laps**: merge two laps split by a false pass, or split a lap where a pass was missed.
 
 **Connection**
@@ -137,8 +137,8 @@ RotorHazard.
 ## Development
 
 See [CLAUDE.md](CLAUDE.md) for how the project is built, tested and released, and
-[`tools/`](tools/) for the simulated timer, WiFi upload, device test, RSSI/pass logger and boot
-log scripts.
+[`tools/`](tools/) for the simulated timer, WiFi upload, device test, RSSI/pass logger, boot
+log and hotspot signal scripts.
 
 ## License
 

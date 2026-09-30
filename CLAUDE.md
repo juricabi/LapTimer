@@ -22,7 +22,7 @@ Every change goes through all steps; a step is done when its check passes.
    gate).
 5. **Review** — for larger batches run a code review of `main...<branch>` and fix what holds up.
 6. **Commit and push** the branch. A release: merge to `main`, tag, GitHub release with
-   `firmware.bin` and `littlefs.bin` attached.
+   `laptimer-vX.Y.Z-firmware.bin` and `laptimer-vX.Y.Z-littlefs.bin` attached.
 
 ## Rules
 
@@ -34,11 +34,14 @@ Every change goes through all steps; a step is done when its check passes.
   rely on this.
 - **Race data** changes only on the timing core in `LapTimer::update`. The web server (core 0,
   pinned with `CONFIG_ASYNC_TCP_RUNNING_CORE=0`; unpinned it preempted RSSI sampling) queues
-  commands with `requestStart/requestStop/requestClear/requestEdit`.
+  commands with `requestStart/requestStop/requestClear/requestEdit`. Values shared between the
+  cores are `volatile`, and a request stores its data before its flag (the compiler otherwise
+  reorders plain stores past a volatile one; the buzzer once switched a fresh beep off that way).
 - **Timing core stalls**: web replies are built in memory (`sendJson`, `String`), never with
   `AsyncResponseStream` (drained byte by byte, O(n^2)). Flash writes stall both cores, so
-  settings reach EEPROM only outside a race, saved pilots are refused during a race (409, the
-  page sends them afterwards) and a new race starts only after the last one is saved.
+  settings reach EEPROM only outside a race; saved pilots, lap fixes, clearing the history and
+  WiFi list changes are refused during a race (409 `racing`; the page sends saved pilots
+  afterwards), and a new race starts only after the last one is saved.
 - **Settings from the page** are applied to a copy, checked (exit < enter, race limits, UTF-8
   names cut at a whole character) and then published: the timing core reads them at any moment.
 - **Multi-device**: `POST /config` replies `{base, rev}`; a page adopts `rev` only if `base` is
@@ -78,6 +81,8 @@ Every change goes through all steps; a step is done when its check passes.
 - **RX5808 reset**: after a reset (register 0xF) it ignores writes for 20-50 ms and stays deaf
   until the power register is written again. Reset only at start-up with `RX5808_RESET_MS`
   after it; wake from power down with `setupRxModule()` only. Check the RSSI after a restart.
+  In its reset state all blocks are on: `init()` leaves it there (`RESET_STATE_FREQ_MHZ`), and
+  the first `scan()` after WiFi started tunes it or, with the receiver set to off, powers it down.
 - **Channels in two bands**: the timer stores only MHz, and 5880 is both F8 and R7. The page's
   `bandChannel(freq, preferBand)` keeps the band the picker shows, or switching band jumps.
 - **Transmit power fade** (classic ESP32): the tuned RX5808 (oscillator at (f-479)/2, ~2.65
@@ -136,8 +141,8 @@ Every change goes through all steps; a step is done when its check passes.
   IRAM averaged into a fixed 100 us filter step; branch `perf/fast-adc`, not flown).
 - **Captive portal**: tried and rejected — the sign-in window has no speech and blocks the
   normal browser. The hotspot uses private `192.168.4.1`, shown in the WiFi name, no DNS redirect.
-- **USB flashing** on the owner's board: auto-reset fails, so hold BOOT and tap EN; use
-  115200 baud (460800 dropped mid-write). Prefer WiFi updates. Opening the serial port (e.g.
+- **USB flashing** on the owner's board: auto-reset fails, so hold BOOT and tap EN; set
+  `upload_speed = 115200` in `targets/PhobosLT.ini` (its 460800 dropped mid-write). Prefer WiFi updates. Opening the serial port (e.g.
   `boot_log.py` without `--reset`) can still restart the board: don't mistake that for a crash.
 - **Browser tests**: a background tab runs timers about once a second, so scripted tests there
   look slow or "frozen". Screenshots of a background tab can show a stale frame.

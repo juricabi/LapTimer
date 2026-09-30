@@ -15,8 +15,8 @@ Same timer, same conditions (`/api/debug/load` → `samplesPerSec`):
 
 | Build | Samples/s |
 |---|---|
-| v1.1.0, re-release of the morning of 2026-09-30 (`ae181de`) | 8 400-8 750 |
-| v1.1.0 (`4ee4de8`) | 6 390-6 540 |
+| the build before the transmit-gain fix (`ae181de`, 2026-09-30 morning) | 8 400-8 750 |
+| v1.1.0 as released (`4ee4de8`) | 6 390-6 540 |
 | the same code with a few lines of diagnostics added | 10 600 |
 | that build with 2 000 unused instructions added (padding) | 9 420 |
 

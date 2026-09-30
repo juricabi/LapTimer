@@ -1,6 +1,7 @@
 #include <stdint.h>
 
 #define POWER_DOWN_FREQ_MHZ 1111  // signal to power down the module
+#define RESET_STATE_FREQ_MHZ 0    // getFrequency() after init(): reset state, nothing written yet
 #define RX5808_BIT_DELAY_US 10    // SPI bit-bang half period; the RTC6715 is fine with much less than the original 300 us
 #define RX5808_RESET_MS 60        // the RX5808 ignores writes for 20-50 ms after a reset
 

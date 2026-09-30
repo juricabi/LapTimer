@@ -422,7 +422,7 @@ void LapTimer::scan(uint32_t nowMs)
     // during a race the race's channel, otherwise the live setting
     uint16_t freq = isRacing() ? raceFreq : conf->getFrequency();
     if (!receiverEnabled && (int32_t)(nowMs - RECEIVER_WAIT_MAX_MS) < 0)
-        freq = POWER_DOWN_FREQ_MHZ; // power-up: WiFi hasn't calibrated its transmitter yet
+        return; // power-up: the module stays in its reset state until WiFi has started
     if (rx->getFrequency() != freq)
     {
         rx->setFrequency(freq);
@@ -538,7 +538,9 @@ void LapTimer::onPass(uint32_t passMs)
         // Start pass, relative to the race start. It can be slightly before the start
         // (drone on the gate during the countdown), so clamp at 0.
         int32_t sinceStart = (int32_t)(passMs - raceStartMs);
-        laps[index] = sinceStart > 0 ? sinceStart : 0;
+        if (sinceStart < 0)
+            passMs = raceStartMs; // the next lap is timed from the start too
+        laps[index] = passMs - raceStartMs;
         hasPassed = true;
     }
     else

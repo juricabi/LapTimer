@@ -192,9 +192,15 @@ void Webserver::registerApi()
             history->sendList(request); });
 
     // Lap correction: {id, pilot, op: 0 merge with next / 1 split, lap, expect}.
-    // expect = the lap's value as the page shows it; 409 if the race changed meanwhile.
+    // expect = the lap's value as the page shows it; 409 stale if the race changed meanwhile.
+    // Not during a race (409 racing): it rewrites files, and a flash write stalls RSSI sampling.
     server.addHandler(new AsyncCallbackJsonWebHandler("/api/races/edit", [this](AsyncWebServerRequest *request, JsonVariant &json)
                                                       {
+        if (timer->isRacing())
+        {
+            request->send(409, "application/json", "{\"status\":\"racing\"}");
+            return;
+        }
         uint32_t id = json["id"] | 0;
         uint8_t pilot = json["pilot"] | 0;
         uint8_t op = json["op"] | 255;
@@ -295,6 +301,11 @@ void Webserver::registerApi()
 
     server.on("/api/races/clear", HTTP_POST, [this](AsyncWebServerRequest *request)
               {
+        if (timer->isRacing())
+        {
+            request->send(409, "application/json", "{\"status\":\"racing\"}");
+            return;
+        }
         history->clear();
         sendOk(request); });
 
@@ -332,7 +343,8 @@ void Webserver::registerApi()
         bool ok = history->removeProfile(name);
         request->send(ok ? 200 : 507, "application/json", ok ? "{\"status\":\"OK\"}" : "{\"status\":\"full\"}"); }));
 
-    // Saved WiFi networks (names only; passwords never leave the timer)
+    // Saved WiFi networks (names only; passwords never leave the timer). Changes are refused
+    // during a race (409 racing): they are written to flash.
     server.on("/api/wifi/saved", HTTP_GET, [this](AsyncWebServerRequest *request)
               {
         JsonDocument doc;
@@ -345,17 +357,32 @@ void Webserver::registerApi()
 
     server.addHandler(new AsyncCallbackJsonWebHandler("/api/wifi/saved/add", [this](AsyncWebServerRequest *request, JsonVariant &json)
                                                       {
+        if (timer->isRacing())
+        {
+            request->send(409, "application/json", "{\"status\":\"racing\"}");
+            return;
+        }
         bool ok = wifiList->add(json["ssid"] | "", json["pwd"] | "");
         request->send(ok ? 200 : 400, "application/json",
                       ok ? "{\"status\":\"OK\"}" : "{\"status\":\"invalid\"}"); }));
 
     server.addHandler(new AsyncCallbackJsonWebHandler("/api/wifi/saved/remove", [this](AsyncWebServerRequest *request, JsonVariant &json)
                                                       {
+        if (timer->isRacing())
+        {
+            request->send(409, "application/json", "{\"status\":\"racing\"}");
+            return;
+        }
         wifiList->remove(json["ssid"] | "");
         sendOk(request); }));
 
     server.on("/api/wifi/saved/clear", HTTP_POST, [this](AsyncWebServerRequest *request)
               {
+        if (timer->isRacing())
+        {
+            request->send(409, "application/json", "{\"status\":\"racing\"}");
+            return;
+        }
         wifiList->clear();
         sendOk(request); });
 
@@ -363,7 +390,7 @@ void Webserver::registerApi()
     // handleWebUpdate (see WIFI_PAGE_SCAN_*), so phones on the hotspot keep their connection.
     server.on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest *request)
               {
-        if (request->hasParam("start"))
+        if (request->hasParam("start") && !pageScanActive)
             pageScanRequested = true;
         if (pageScanRequested || pageScanActive)
         {

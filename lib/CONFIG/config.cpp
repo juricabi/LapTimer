@@ -1,5 +1,7 @@
 #include "config.h"
 
+#include "RX5808.h" // POWER_DOWN_FREQ_MHZ
+
 #include <EEPROM.h>
 
 #include "debug.h"
@@ -168,6 +170,10 @@ void Config::fromJson(JsonObject source)
     changed |= updateField(source, "countdown", conf.countdown);
 
     // keep values in sane ranges
+    if (conf.frequency != POWER_DOWN_FREQ_MHZ && (conf.frequency < 5000 || conf.frequency > 5999))
+        conf.frequency = this->conf.frequency; // outside the 5.8 GHz band: keep the old one
+    if (conf.minLap < 1)
+        conf.minLap = 1; // 100 ms: a pass counts once
     if (conf.raceMode > RACE_LAPS)
         conf.raceMode = RACE_PRACTICE;
     if (conf.raceSeconds < 10)

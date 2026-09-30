@@ -11,13 +11,15 @@ void Led::init(uint8_t pin, bool inverted) {
 
 void Led::on(uint32_t timeMs) {
     if (timeMs > 0) {
-        ledState = LED_ON;
-        onTimeMs = timeMs;
+        // time first, state last: handleLed() on the other core reads them in that order
         checkTimeMs = millis();
+        onTimeMs = timeMs;
+        digitalWrite(ledPin, !initialState);
+        ledState = LED_ON;
     } else {
         ledState = LED_IDLE;
+        digitalWrite(ledPin, !initialState);
     }
-    digitalWrite(ledPin, !initialState);
 }
 
 void Led::off() {
@@ -32,10 +34,10 @@ void Led::blink(uint32_t onMs, uint32_t offMs) {
     } else {
         offTimeMs = onTimeMs;
     }
-    ledState = LED_BLINKING;
     checkTimeMs = millis();
     currentState = !initialState;
     digitalWrite(ledPin, currentState);
+    ledState = LED_BLINKING;
 }
 
 void Led::handleLed(uint32_t currentTimeMs) {

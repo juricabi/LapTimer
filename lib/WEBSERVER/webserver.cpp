@@ -86,13 +86,13 @@ void Webserver::pageScanStep(uint32_t nowMs)
 {
     if (pageScanRequested && !staScanning)
     {
-        pageScanRequested = false;
         foundCount = 0;
         pageScanChannel = 1;
         pageScanTry = 0;
         pageScanChannelRunning = false;
         pageScanAtMs = nowMs;
-        pageScanActive = true;
+        pageScanActive = true;     // before the request clears: /api/wifi/scan always sees one of them
+        pageScanRequested = false;
         WiFi.scanDelete();
     }
     if (!pageScanActive)
@@ -181,6 +181,7 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
     {
         // /api/debug/hotspot (applied here, on the core that runs this state machine)
         hotspotRequested = false;
+        staScanning = false; // a boot scan still running must not join a network under the hotspot
         changeMode = WIFI_AP;
         changeTimeMs = currentTimeMs; // after WIFI_RECONNECT_TIMEOUT_MS, so the reply goes out first
         wifiMode = WIFI_OFF;
@@ -357,7 +358,7 @@ static void handleRoot(AsyncWebServerRequest *request)
     if (!response)
     {
         // web files missing (only the firmware was flashed, or the file system is damaged)
-        request->send(500, "text/plain", "LapTimer: the web files are missing. Upload littlefs.bin (see README).");
+        request->send(500, "text/plain", "LapTimer: the web files are missing. Upload the web files (littlefs.bin) on the update page.");
         return;
     }
     response->addHeader("Cache-Control", "no-cache");
@@ -499,7 +500,7 @@ Battery Voltage:\t%0.1fv";
         conf->fromJson(jsonObj);
         // Older pages send the home WiFi with the settings: keep it in the saved networks
         const char *ssid = jsonObj["ssid"] | "";
-        if (ssid[0] != 0 && strcmp(ssid, "undefined") != 0)
+        if (ssid[0] != 0 && strcmp(ssid, "undefined") != 0 && !timer->isRacing()) // a flash write
             wifiList->add(ssid, jsonObj["pwd"] | "");
         char reply[64];
         snprintf(reply, sizeof(reply), "{\"status\":\"OK\",\"base\":%u,\"rev\":%u}", base, conf->getRevision());

@@ -219,7 +219,7 @@ class LapTimer {
     enum { CMD_NONE, CMD_START, CMD_STOP, CMD_CLEAR };
     volatile uint8_t pendingCommand = CMD_NONE;
     volatile uint32_t pendingEpoch = 0;
+    volatile uint8_t editOp = 0;   // stored before editPending (all volatile: order kept)
+    volatile int editIndex = 0;
     volatile bool editPending = false;
-    uint8_t editOp = 0;
-    int editIndex = 0;
 };

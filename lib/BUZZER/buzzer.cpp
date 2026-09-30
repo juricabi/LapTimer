@@ -17,10 +17,12 @@ void Buzzer::beep(uint32_t timeMs)
         return;
     }
 
+    // time first, state last: handleBuzzer() on the other core reads them in that order
+    uint32_t now = millis();
+    startTimeMs = now;
     beepTimeMs = timeMs;
-    buzzerState = BUZZER_BEEPING;
-    startTimeMs = millis();
     digitalWrite(buzzerPin, !initialState);
+    buzzerState = BUZZER_BEEPING;
 }
 
 void Buzzer::handleBuzzer(uint32_t currentTimeMs)

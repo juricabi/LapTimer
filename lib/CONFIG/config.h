@@ -4,17 +4,17 @@
 #pragma once
 /*
 ## Pinout ##
-| ESP32 | RX5880 |
+| ESP32 | RX5808 |
 | :------------- |:-------------|
 | 33 | RSSI |
 | GND | GND |
 | 19 | CH1 |
 | 22 | CH2 |
 | 23 | CH3 |
-| 3V3 | +5V |
+| 3V3 | VCC |
 
 * **Led** goes to pin 21 and GND
-* The optional **Buzzer** goes to pin 25 or 27 and GND
+* The optional **Buzzer** goes to pin 27 and GND
 
 */
 

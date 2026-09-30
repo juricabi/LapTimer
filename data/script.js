@@ -202,6 +202,7 @@ ui.pilotName.addEventListener("input", () => {
   renderSavedPilots();
 });
 ui.pilotName.addEventListener("change", rememberPilot);
+ui.pilotName.addEventListener("blur", rememberPilot); // Enter/"Done" keeps the focus in the field
 
 function onFreqChange() {
   pilot.freq = FREQ_TABLE[+ui.pilotBand.value][+ui.pilotChannel.value];
@@ -473,6 +474,7 @@ for (const el of document.querySelectorAll("[data-save-state]")) {
 window.addEventListener("pagehide", () => {
   if (!saveTimer || !configLoaded) return;
   clearTimeout(saveTimer);
+  saveTimer = null; // the page may come back from the back/forward cache
   navigator.sendBeacon("/config", new Blob([JSON.stringify(changedSettings().diff)], { type: "application/json" }));
 });
 
@@ -638,7 +640,12 @@ async function loadSavedNetworks() {
     const remove = el("button", "btn btn-ghost btn-small", "Remove");
     remove.addEventListener("click", async () => {
       if (!confirm(`Forget "${name}"?`)) return;
-      await postJson("/api/wifi/saved/remove", { ssid: name }).catch(() => {});
+      try {
+        await postJson("/api/wifi/saved/remove", { ssid: name });
+      } catch (e) {
+        if (e.status === 409) showButtonStatus(remove, "After the race");
+        return;
+      }
       loadSavedNetworks();
     });
     row.appendChild(remove);
@@ -661,7 +668,7 @@ $("addWifiButton").addEventListener("click", async (e) => {
     showButtonStatus(button, "Saved ✓ · used after a restart", 4000);
     loadSavedNetworks();
   } catch (err) {
-    showButtonStatus(button, "Could not save");
+    showButtonStatus(button, err.status === 409 ? "Not during a race" : "Could not save");
   }
 });
 
@@ -674,7 +681,7 @@ $("forgetWifiButton").addEventListener("click", async (e) => {
     await postJson("/api/wifi/saved/clear");
   } catch (err) {
     button.disabled = false;
-    showButtonStatus(button, "Failed, try again");
+    showButtonStatus(button, err.status === 409 ? "Not during a race" : "Failed, try again");
     return;
   }
   fetch("/restart", { method: "POST" }).catch(() => {});
@@ -852,6 +859,11 @@ setInterval(() => {
   }
 }, 50);
 
+function raceIsRunning() {
+  const state = status ? status.state : STATE.IDLE;
+  return state === STATE.COUNTDOWN || state === STATE.WAITING || state === STATE.RUNNING;
+}
+
 function renderRaceControls() {
   const state = status ? status.state : STATE.IDLE;
   const racing = state === STATE.COUNTDOWN || state === STATE.WAITING || state === STATE.RUNNING;
@@ -871,11 +883,13 @@ function renderRaceControls() {
   statusEl.textContent = text;
   statusEl.className = "race-status" + (cls ? " " + cls : "");
   $("rsStatus").textContent = text;
-  const mode = status ? status.mode : raceMode;
+  // the running (or finished) race's mode; while idle the mode the next race will use
+  const live = status && state !== STATE.IDLE;
+  const mode = live ? status.mode : raceMode;
   let info = MODE_NAMES[mode];
-  if (status && mode === MODE.TIMED) info += " · " + formatMinSec(Math.round(status.raceMs / 1000));
-  if (status && mode === MODE.LAPS) info += " · " + status.raceLaps + " laps";
-  if (status && status.cd) info += " · countdown";
+  if (mode === MODE.TIMED) info += " · " + formatMinSec(live ? Math.round(status.raceMs / 1000) : +ui.raceSec.value || 0);
+  if (mode === MODE.LAPS) info += " · " + (live ? status.raceLaps : +ui.raceLaps.value || 0) + " laps";
+  if (live ? status.cd : ui.countdown.checked) info += " · countdown";
   $("raceInfo").textContent = info;
 }
 
@@ -970,7 +984,7 @@ function announceLap(p, n) {
   const type = ui.announcer.value;
 
   if (type === "beep") {
-    beep(100, 330, "square");
+    if (audioEnabled) beep(100, 330, "square");
     return;
   }
   if (type === "1lap") {
@@ -1041,6 +1055,8 @@ function renderRacePilot(r) {
 // another phone started it): the timer's state decides.
 async function startRace() {
   const button = $("startRaceButton");
+  if (button.disabled) return;
+  button.disabled = true; // until the next status render (a second tap said "Get ready" again)
   for (let attempt = 0; attempt < 8; attempt++) {
     const t = Math.floor(Date.now() / 1000);
     const r = await fetchTimeout("/timer/start?t=" + t, { method: "POST" }).catch(() => null);
@@ -1367,9 +1383,11 @@ function renderAutoCal() {
       "Fly closer to the gate, lower the VTX power, or keep the drone farther away between passes.";
     return;
   }
-  box.innerHTML = `Passes found: <b>${result.passes}</b> · between passes ${result.high} · weakest pass ${result.ref}<br>
+  const html = `Passes found: <b>${result.passes}</b> · between passes ${result.high} · weakest pass ${result.ref}<br>
     Suggested: <b>Enter ${result.enter}</b>, <b>Exit ${result.exit}</b>
     <button class="btn btn-ghost btn-block" id="applyAutoCal" style="margin-top:8px">Apply</button>`;
+  if (box.innerHTML === html) return; // rewritten only on a change: the Apply button is in it (tap lost otherwise)
+  box.innerHTML = html;
   $("applyAutoCal").addEventListener("click", () => {
     pilot.enter = result.enter;
     pilot.exit = result.exit;
@@ -1423,6 +1441,7 @@ $("spectrumButton").addEventListener("click", async (e) => {
   } catch (err) {
     showButtonStatus(button, "Scan failed");
   } finally {
+    if (spec.data && spec.data.running) spec.data.running = false; // scan cut short: stop the frame loop
     spectrumScanning = false;
     renderRaceControls();
     if (!(status && status.state >= STATE.COUNTDOWN && status.state <= STATE.RUNNING)) button.disabled = false;
@@ -1661,7 +1680,10 @@ function renderHistoryDetail(container, race, editing, summary) {
   });
   const buttons = el("div", "button-row");
   const editButton = el("button", "btn btn-ghost", editing ? "Done" : "Fix laps");
-  editButton.addEventListener("click", () => renderHistoryDetail(container, race, !editing, summary));
+  editButton.addEventListener("click", () => {
+    if (!editing && raceIsRunning()) showButtonStatus(editButton, "After the race");
+    else renderHistoryDetail(container, race, !editing, summary);
+  });
   const exportButton = el("button", "btn btn-ghost", "Export CSV");
   exportButton.addEventListener("click", () => downloadCsv([race], "laptimer-race-" + race.id + ".csv"));
   buttons.append(editButton, exportButton);
@@ -1679,7 +1701,9 @@ async function editLap(race, pilotIndex, op, lap, container, summary) {
   try {
     await postJson("/api/races/edit", { id: race.id, pilot: pilotIndex, op, lap, expect: race.pilots[pilotIndex].laps[lap] });
   } catch (e) {
-    note = e.status === 409 ? "The laps changed meanwhile. Here they are now; check and try again." : "Could not change this lap. Is a race running?";
+    note = e.status === 409 && raceIsRunning() ? "Not during a race: try again after it."
+      : e.status === 409 ? "The laps changed meanwhile. Here they are now; check and try again."
+      : "Could not change this lap.";
   }
   try {
     const full = await fetchJson("/api/races?id=" + race.id);
@@ -1749,12 +1773,16 @@ $("exportAllButton").addEventListener("click", async (e) => {
 });
 
 $("clearHistoryButton").addEventListener("click", async (e) => {
+  if (raceIsRunning()) {
+    showButtonStatus(e.target, "After the race");
+    return;
+  }
   if (!confirm("Delete all saved races?")) return;
   try {
     await postJson("/api/races/clear");
     loadHistory();
   } catch (err) {
-    showButtonStatus(e.target, "Failed");
+    showButtonStatus(e.target, err.status === 409 ? "After the race" : "Failed");
   }
 });
 
@@ -1935,13 +1963,27 @@ function startVoiceRecognition() {
       break;
     }
   };
-  recognition.onerror = () => setMicState("error");
+  // Chrome ends the recognition after every error: a refused microphone would otherwise
+  // restart it in a tight loop (with Android's listening chime each time), so it stops there
+  // and waits a little after the other errors (no network, no audio)
+  let lastError = null;
+  recognition.onerror = (e) => {
+    lastError = e.error;
+    setMicState("error");
+  };
   recognition.onend = () => {
-    try {
-      recognition.start(); // keep listening
-    } catch (e) {
-      console.warn("Failed to restart recognition", e);
-    }
+    if (lastError === "not-allowed" || lastError === "service-not-allowed") return;
+    const restart = () => {
+      try {
+        recognition.start(); // keep listening
+        if (!lastError) setMicState("listening");
+      } catch (e) {
+        console.warn("Failed to restart recognition", e);
+      }
+    };
+    if (lastError) setTimeout(restart, 3000);
+    else restart();
+    lastError = null;
   };
   try {
     recognition.start();

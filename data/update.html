@@ -105,9 +105,10 @@
       let tries = 0;
       const check = () => {
         tries++;
+        const again = () => (tries < 60 ? setTimeout(check, 1500) : show("The timer did not come back. Reload this page."));
         fetch("/api/info", { cache: "no-store" })
-          .then((r) => (r.ok ? (location.href = "/") : setTimeout(check, 1500)))
-          .catch(() => (tries < 60 ? setTimeout(check, 1500) : show("The timer did not come back. Reload this page.")));
+          .then((r) => (r.ok ? (location.href = "/") : again()))
+          .catch(again);
       };
       setTimeout(check, 4000);
     }

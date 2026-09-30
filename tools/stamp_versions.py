@@ -1,4 +1,4 @@
-"""PlatformIO pre-script: stamps ?v=<content hash> on style.css / script.js in the HTML pages.
+"""PlatformIO pre-script: stamps ?v=<content hash> on style.css / script.js / smoothie.js in the HTML pages.
 
 Browsers cache style.css and script.js for a day; the version changes exactly when a file's
 content changes, so a new build is always picked up and nothing needs bumping by hand.
@@ -16,7 +16,7 @@ except NameError:
     ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
 DATA = os.path.join(ROOT, "data")
-ASSETS = ("script.js", "style.css")
+ASSETS = ("script.js", "style.css", "smoothie.js")
 PAGES = ("index.html", "update.html")
 
 
@@ -27,7 +27,7 @@ def content_hash(name):
 
 def stamp():
     versions = {name: content_hash(name) for name in ASSETS}
-    pattern = re.compile(r"(script\.js|style\.css)\?v=[0-9A-Za-z]+")
+    pattern = re.compile(r"(script\.js|style\.css|smoothie\.js)\?v=[0-9A-Za-z]+")
     for page in PAGES:
         path = os.path.join(DATA, page)
         with open(path, encoding="utf-8") as f:

@@ -7,7 +7,7 @@
 //
 // The ESP32's built-in server sends every OFFER/ACK as a broadcast. WiFi doesn't acknowledge
 // or retransmit broadcast frames, and the first reply after a phone joined was often lost:
-// a phone then got its address only on a later retry, 5-40 s on, or Android gave up with
+// a phone then got its address only on a later retry, 3-40 s on, or Android gave up with
 // "failed to obtain IP address" (measured with a packet capture). This server replies by
 // unicast to the phone's MAC, as RFC 2131 4.1 asks when the broadcast bit is clear. The reply
 // frame goes straight to the WiFi driver, which acknowledges and retransmits it.

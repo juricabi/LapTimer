@@ -330,6 +330,8 @@ class H(SimpleHTTPRequestHandler):
                 R["pilot"] = None
                 return self._json({"status": "OK"})
             if u.path == "/api/races/edit":
+                if R["state"] in RACING:  # no flash writes during a race
+                    return self._json({"status": "racing"}, 409)
                 d = json.loads(body or b"{}")
                 race = RACES.get(d.get("id", 0))
                 pilot, op, lap = d.get("pilot", 0), d.get("op", 255), d.get("lap", -1)
@@ -351,9 +353,13 @@ class H(SimpleHTTPRequestHandler):
                     S["edits"] += 1
                 return self._json({"status": "OK"})
             if u.path == "/api/races/clear":
+                if R["state"] in RACING:
+                    return self._json({"status": "racing"}, 409)
                 RACES.clear()
                 S["savedId"] = S["savedRace"] = 0
                 return self._json({"status": "OK"})
+            if u.path in ("/api/wifi/saved/add", "/api/wifi/saved/remove", "/api/wifi/saved/clear") and R["state"] in RACING:
+                return self._json({"status": "racing"}, 409)
             if u.path == "/api/wifi/saved/add":
                 d = json.loads(body)
                 if d["ssid"] in SAVED:
