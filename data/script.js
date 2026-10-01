@@ -116,12 +116,13 @@ function formatTarget(ms) {
   return ms ? String(+(ms / 1000).toFixed(2)) : "";
 }
 
-// "12,5" or "12.5 s" → 12500; "" → 0 (off); null when it isn't a target the timer accepts
+// "12,5" or "12.5 s" → 12500; "" or "0" → 0 (off); null when it isn't a target the timer accepts
 function parseTarget(text) {
   const t = text.trim().replace(",", ".").replace(/\s*s$/i, "");
   if (!t) return 0;
   if (!/^\d+(\.\d*)?$|^\.\d+$/.test(t)) return null;
   const ms = Math.round(parseFloat(t) * 100) * 10;
+  if (ms === 0) return 0;
   return ms >= TARGET_MIN_MS && ms <= TARGET_MAX_MS ? ms : null;
 }
 
@@ -244,8 +245,7 @@ ui.targetLap.addEventListener("change", () => {
   if (ms !== null && ms !== pilot.target) {
     pilot.target = ms;
     pilotTouched = true; // remembered with the saved pilot once the timer has it
-    if (raceData) renderRacePilot(raceData);
-    renderRaceControls(); // the target under the clock
+    renderRaceViews();
   }
   ui.targetLap.value = formatTarget(pilot.target);
 });
@@ -255,6 +255,8 @@ const TARGET_HINT = $("targetHint").textContent;
 function renderPilot() {
   ui.pilotName.value = pilot.name || "";
   ui.targetLap.value = formatTarget(pilot.target);
+  $("targetHint").classList.remove("warn"); // a refused value was replaced by a valid one
+  $("targetHint").textContent = TARGET_HINT;
   const bc = bandChannel(pilot.freq, +ui.pilotBand.value);
   ui.pilotBand.value = bc ? bc.band : 4;
   ui.pilotChannel.value = bc ? bc.channel : 0;
@@ -263,6 +265,21 @@ function renderPilot() {
   renderSavedPilots();
   renderCalibPilot();
   renderCalibration();
+  renderRaceViews(); // before a race the Race tab shows this pilot and target
+}
+
+// The Race tab and race screen drawn again after a settings change (this phone, another
+// phone, a saved pilot tapped): before a race they show the pilot and target from the
+// settings; a started race keeps its own
+function renderRaceViews() {
+  if (raceData) {
+    if (raceData.state === STATE.IDLE && !racePilot(raceData).laps.length) {
+      raceData.pilots = [{ name: pilot.name, freq: pilot.freq, laps: [], fin: false }];
+    }
+    renderRacePilot(raceData);
+    renderRaceScreen(raceData);
+  }
+  renderRaceControls();
 }
 
 // Saved pilots as chips: tap one to fly as them, × forgets one
@@ -2574,7 +2591,13 @@ function canShareFile(file) {
     return false;
   }
 }
-const shareMenu = canShareFile(new File([""], "race.png", { type: "image/png" }));
+const shareMenu = (() => {
+  try {
+    return canShareFile(new File([""], "race.png", { type: "image/png" }));
+  } catch (e) {
+    return false; // no File constructor: an old browser, no share menu either
+  }
+})();
 // Chrome, Brave, Edge (they have the flags page); not iOS, Samsung Internet, Opera, in-app views
 const hasSecureFlag = /Chrome\//.test(navigator.userAgent) && !/SamsungBrowser|OPR\/|YaBrowser|UCBrowser|; wv\)/.test(navigator.userAgent);
 
