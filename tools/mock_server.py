@@ -5,33 +5,43 @@ Run: python tools/mock_server.py, then open http://127.0.0.1:8765/
 Keep it in step with lib/WEBSERVER/api.cpp when the API changes.
 
 Test helpers (mock only, GET):
+  /mock/reset             everything back to the start: settings, saved pilots, WiFi list, races,
+                          boot, and the helpers below (for tests that need a known state)
   /mock/reboot            new boot id, settings revision back to 1, race ids from 0
   /mock/fail?config=N     the next N GET /config fail (500)
   /mock/fail?save=N       the next N POST /config fail (500)
+  /mock/offline?on=1|0    the timer can't be reached: every API request answers 503
   /mock/passes?on=0|1     stop / resume the simulated gate passes
+  /mock/lap?s=2.0         simulated lap length in seconds (default 4.4; shorter for quick tests)
   /mock/full              the pilot's lap memory is full (finished + "full")
+  /mock/saveerr?on=1|0    the last race could not be saved (status saveErr)
+  /mock/info?mode=hotspot the timer runs its own hotspot (default wifi)
+  /mock/vbat?v=37         battery voltage in tenths of a volt
   /mock/oldrace           adds a race saved by the multi-pilot firmware (two pilots)
   /mock/log               the last settings changes (POST /config bodies)
-  /mock/page_race_test.js tools/page_race_test.js, for the browser console (see that file)
+  /mock/page_test.js      tools/page_test.js, for the browser console (see that file)
 """
-import argparse, json, math, os, random, threading, time
+import argparse, copy, json, math, os, random, threading, time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 LOCK = threading.Lock()
 
-CONFIG = {
+DEFAULT_CONFIG = {
     "freq": 5800, "minLap": 50, "alarm": 0, "anType": 2, "anRate": 10, "anDelta": True, "anTarget": False, "buzzerOn": True,
     "enterRssi": 120, "exitRssi": 100, "name": "Maverick",
     "raceMode": 0, "raceSec": 60, "raceLaps": 5, "countdown": False, "target": 0,
 }
-SAVED = ["Home WiFi", "Field hotspot"]
-PROFILES = [
+DEFAULT_SAVED = ["Home WiFi", "Field hotspot"]
+DEFAULT_PROFILES = [
     {"name": "Maverick", "freq": 5800, "enter": 120, "exit": 100},
     {"name": "Iceman", "freq": 5658, "enter": 125, "exit": 104, "target": 4300},
     {"name": "Rooster", "freq": 5917, "enter": 118, "exit": 98},
 ]
+CONFIG = copy.deepcopy(DEFAULT_CONFIG)
+SAVED = list(DEFAULT_SAVED)
+PROFILES = copy.deepcopy(DEFAULT_PROFILES)
 MAX_PROFILES_SIZE = 4096  # bytes of JSON, as in the firmware
 RACE_NAME_MAX_BYTES = 32
 TARGET_LAP_MIN_MS, TARGET_LAP_MAX_MS = 3000, 600000
@@ -39,12 +49,22 @@ MAX_LAPS = 200
 LAP_BASE = 4.4  # seconds per simulated lap (fast for testing)
 CONFIG_LOG = []  # last POST /config bodies, for /mock/log
 T0 = time.time()
-S = {"rev": 1, "boot": random.randint(1, 2**31 - 1), "prof": 1, "edits": 0, "failConfig": 0, "failSave": 0,
-     "savedId": 0, "savedRace": 0, "passes": True}
 
-# the current (or last) race; "pilot" is None before the first race
-R = {"state": 0, "race": 0, "mode": 0, "cd": False, "raceMs": 60000, "raceLaps": 5, "start": 0,
-     "timeUp": False, "date": 0, "pilot": None}
+
+def initial_state():
+    return {"rev": 1, "boot": random.randint(1, 2**31 - 1), "prof": 1, "edits": 0, "failConfig": 0, "failSave": 0,
+            "savedId": 0, "savedRace": 0, "passes": True, "lap": LAP_BASE, "offline": False, "saveErr": 0,
+            "mode": "wifi", "vbat": 41}
+
+
+def initial_race():
+    """The current (or last) race; "pilot" is None before the first race."""
+    return {"state": 0, "race": 0, "mode": 0, "cd": False, "raceMs": 60000, "raceLaps": 5, "start": 0,
+            "timeUp": False, "date": 0, "pilot": None}
+
+
+S = initial_state()
+R = initial_race()
 RACING = (1, 2, 3)
 
 
@@ -73,6 +93,30 @@ def seed_races():
 RACES = seed_races()
 
 
+def reset_all():
+    """/mock/reset: the state the mock starts with."""
+    CONFIG.clear()
+    CONFIG.update(copy.deepcopy(DEFAULT_CONFIG))
+    SAVED[:] = DEFAULT_SAVED
+    PROFILES[:] = copy.deepcopy(DEFAULT_PROFILES)
+    RACES.clear()
+    RACES.update(seed_races())
+    CONFIG_LOG.clear()
+    S.clear()
+    S.update(initial_state())
+    R.clear()
+    R.update(initial_race())
+
+
+def scan_running():
+    return time.time() - R.get("specAt", 0) < 6.5
+
+
+def offline_api(path):
+    """/mock/offline: the timer's own requests fail (the page files are still served)."""
+    return S["offline"] and path.startswith(("/api/", "/config", "/timer/", "/restart", "/ota/"))
+
+
 def now_ms():
     return int((time.time() - T0) * 1000)
 
@@ -88,17 +132,26 @@ def clamp_target(ms):
     return 0 if ms == 0 else min(TARGET_LAP_MAX_MS, max(TARGET_LAP_MIN_MS, ms))
 
 
+RSSI_SLIDER_MIN = 50
+
+
 def fix_thresholds(entry, enter_key, exit_key):
-    """Exit stays below enter (as fixThresholds in the firmware)."""
-    entry[enter_key] = max(1, int(entry[enter_key]))
+    """Exit stays below enter, both within the page's sliders (as fixThresholds in the firmware)."""
+    entry[enter_key] = max(RSSI_SLIDER_MIN + 1, min(255, int(entry[enter_key])))
+    entry[exit_key] = max(RSSI_SLIDER_MIN, min(255, int(entry[exit_key])))
     if entry[exit_key] >= entry[enter_key]:
         entry[exit_key] = entry[enter_key] - 1
 
 
+def within(value, low, high):
+    return max(low, min(high, int(value)))
+
+
 def rssi(t):
     """Fake RSSI with a peak on every simulated pass."""
-    phase = (t / 1000.0) % LAP_BASE
-    return int(70 + 80 * math.exp(-((phase - LAP_BASE / 2) ** 2) / 0.02) + random.uniform(-3, 3))
+    lap = S["lap"]
+    phase = (t / 1000.0) % lap
+    return int(70 + 80 * math.exp(-((phase - lap / 2) ** 2) / 0.02) + random.uniform(-3, 3))
 
 
 def simulate():
@@ -119,6 +172,10 @@ def simulate():
         if R["mode"] == 1 and R["timeUp"] and not p["laps"]:
             R["state"] = 4  # time up before the first pass: the race ends, nothing to save
             return
+        if R["mode"] != 0 and p["fin"]:  # finished (or lap memory full): a timed/lap race ends
+            R["state"] = 4
+            save_race()
+            return
         if p["fin"] or not S["passes"]:
             return
         if not p["laps"]:
@@ -126,11 +183,11 @@ def simulate():
                 p["laps"], p["last"] = [700], R["start"] + 700
             return
         if "next" not in p:
-            p["next"] = int(LAP_BASE * 1000 + random.uniform(-500, 500))
+            p["next"] = int(S["lap"] * 1000 + random.uniform(-500, 500) * S["lap"] / LAP_BASE)
         if t - p["last"] >= p["next"]:
             p["laps"].append(p["next"])
             p["last"] += p["next"]
-            p["next"] = int(LAP_BASE * 1000 + random.uniform(-500, 500))
+            p["next"] = int(S["lap"] * 1000 + random.uniform(-500, 500) * S["lap"] / LAP_BASE)
             pass_at = p["last"] - R["start"]
             if len(p["laps"]) >= MAX_LAPS:
                 p["fin"] = p["full"] = True
@@ -188,8 +245,12 @@ def apply_config(data):
             new[k] = cut_utf8(v) if k == "name" else v
     if new["raceMode"] not in (0, 1, 2):
         new["raceMode"] = 0
-    new["raceSec"] = max(10, int(new["raceSec"]))
-    new["raceLaps"] = max(1, int(new["raceLaps"]))
+    # within the page's control ranges (as the firmware)
+    new["raceSec"] = within(new["raceSec"], 30, 600)
+    new["raceLaps"] = within(new["raceLaps"], 1, 30)
+    new["minLap"] = within(new["minLap"], 10, 200)
+    new["anRate"] = within(new["anRate"], 1, 20)
+    new["alarm"] = within(new["alarm"], 0, 42)
     new["target"] = clamp_target(new["target"])
     if new["anDelta"] and new["anTarget"]:  # best lap or target, never both: the one switched on now wins
         if data.get("anTarget"):
@@ -227,7 +288,27 @@ class H(SimpleHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         t = now_ms()
+        if offline_api(u.path):
+            return self._json({"status": "offline"}, 503)
         with LOCK:
+            if u.path == "/mock/reset":
+                reset_all()
+                return self._json({"status": "OK"})
+            if u.path == "/mock/offline":
+                S["offline"] = q.get("on", ["1"])[0] == "1"
+                return self._json({"status": "OK"})
+            if u.path == "/mock/lap":
+                S["lap"] = max(0.5, float(q.get("s", [str(LAP_BASE)])[0]))
+                return self._json({"status": "OK"})
+            if u.path == "/mock/saveerr":
+                S["saveErr"] = 1 if q.get("on", ["1"])[0] == "1" else 0
+                return self._json({"status": "OK"})
+            if u.path == "/mock/info":
+                S["mode"] = "hotspot" if q.get("mode", ["wifi"])[0] == "hotspot" else "wifi"
+                return self._json({"status": "OK"})
+            if u.path == "/mock/vbat":
+                S["vbat"] = int(q.get("v", ["41"])[0])
+                return self._json({"status": "OK"})
             if u.path == "/mock/reboot":
                 S.update({"rev": 1, "boot": random.randint(1, 2**31 - 1), "prof": 1, "edits": 0,
                           "savedId": 0, "savedRace": 0})
@@ -242,8 +323,8 @@ class H(SimpleHTTPRequestHandler):
                 return self._json({"status": "OK"})
             if u.path == "/mock/log":
                 return self._json(CONFIG_LOG)
-            if u.path == "/mock/page_race_test.js":
-                with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_race_test.js"), "rb") as f:
+            if u.path == "/mock/page_test.js":
+                with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_test.js"), "rb") as f:
                     body = f.read()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/javascript")
@@ -268,8 +349,8 @@ class H(SimpleHTTPRequestHandler):
                 elapsed = t - R["start"] if R["state"] in (1, 3) else 0
                 return self._json({"state": R["state"], "mode": R["mode"], "cd": int(R["cd"]), "race": R["race"],
                                    "elapsed": elapsed, "raceMs": R["raceMs"], "raceLaps": R["raceLaps"],
-                                   "timeUp": int(R["timeUp"]), "vbat": 41, "saveErr": 0,
-                                   "savedId": S["savedId"], "savedRace": S["savedRace"], "spectrum": 0,
+                                   "timeUp": int(R["timeUp"]), "vbat": S["vbat"], "saveErr": S["saveErr"],
+                                   "savedId": S["savedId"], "savedRace": S["savedRace"], "spectrum": int(scan_running()),
                                    "edits": S["edits"], "cfg": S["rev"], "boot": S["boot"], "prof": S["prof"],
                                    "rssi": rssi(t), "laps": len(p["laps"]), "fin": int(p["fin"])})
             if u.path == "/api/race":
@@ -315,11 +396,12 @@ class H(SimpleHTTPRequestHandler):
                     if R["state"] in RACING:
                         return self._json({"status": "busy"}, 409)
                     R["specAt"] = time.time()
+                    R["specCancelled"] = False
                     return self._json({"status": "OK"})
                 elapsed = time.time() - R.get("specAt", 0)
                 total = 61 * 2  # SPECTRUM_POINTS x SPECTRUM_SWEEPS, ~6.5 s
-                done = min(total, int(elapsed / 6.5 * total))
-                running = done < total
+                done = 0 if R.get("specCancelled") else min(total, int(elapsed / 6.5 * total))
+                running = done < total and not R.get("specCancelled")
                 peaks = [(5800, 75), (5880, 55), (5740, 30)]
                 vals = [max([55 + random.randint(0, 6)] + [int(55 + h * math.exp(-((5645 + k * 5 - f) ** 2) / 150)) for f, h in peaks])
                         if (done >= 61 or k < done) else 0 for k in range(61)]
@@ -335,7 +417,10 @@ class H(SimpleHTTPRequestHandler):
             if u.path == "/ota/start":  # update.html / ElegantOTA: a GET, then POST /ota/upload
                 return self._json({"status": "OK"})
             if u.path == "/api/info":
-                return self._json({"version": "1.1.0-dev", "mode": "wifi", "ip": "192.168.1.50", "ssid": "Home WiFi",
+                if S["mode"] == "hotspot":
+                    return self._json({"version": "1.2.0-dev", "mode": "hotspot", "ip": "192.168.4.1",
+                                       "ssid": "LapTimer_BD58 192.168.4.1", "host": "laptimer.local"})
+                return self._json({"version": "1.2.0-dev", "mode": "wifi", "ip": "192.168.1.50", "ssid": "Home WiFi",
                                    "host": "laptimer.local", "signal": -55})
         return super().do_GET()
 
@@ -343,6 +428,8 @@ class H(SimpleHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n)
         u = urlparse(self.path)
+        if offline_api(u.path):
+            return self._json({"status": "offline"}, 503)
         if u.path in ("/ota/start", "/ota/upload"):  # update.html: the upload is accepted and dropped
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
@@ -366,6 +453,9 @@ class H(SimpleHTTPRequestHandler):
             if u.path == "/timer/start":
                 if R["state"] in RACING:
                     return self._json({"status": "busy"}, 409)
+                if scan_running():  # a race start cancels a channel scan (as the firmware: progress 0)
+                    R["specCancelled"] = True
+                R["specAt"] = 0
                 R.update({"race": R["race"] + 1, "mode": CONFIG["raceMode"], "cd": CONFIG["countdown"],
                           "raceMs": CONFIG["raceSec"] * 1000, "raceLaps": CONFIG["raceLaps"], "timeUp": False,
                           "date": int(q.get("t", ["0"])[0]), "target": CONFIG["target"],

@@ -430,10 +430,7 @@ int RaceHistory::saveProfile(const char *name, const char *prevName, uint16_t fr
     copyUtf8(clean, name ? name : "", sizeof(clean));
     if (clean[0] == 0)
         return 400;
-    if (enter < 1)
-        enter = 1;
-    if (exit >= enter)
-        exit = enter - 1;
+    fixThresholds(enter, exit); // as for the settings
     HistoryLock lock(mutex);
     JsonDocument doc;
     loadProfiles(doc);

@@ -12,9 +12,11 @@ Every change goes through all steps; a step is done when its check passes.
    Done: both print SUCCESS, and every file in `data/` is non-empty.
 2. **Look** (web changes) — `python tools/mock_server.py`, open `http://127.0.0.1:8765/` at
    390 px width, check light and dark theme and every tab the change touches. Keep the mock's
-   endpoints in step with `lib/WEBSERVER/api.cpp`. For race display changes also run
-   `tools/page_race_test.js` (a race shows its own settings, never later ones; how to run it
-   is at its top). Done: no console errors, layout fits, page test all PASS.
+   endpoints in step with `lib/WEBSERVER/api.cpp`. Then the page test suite, headless:
+   `node tools/run_page_test.js [sections]` (`tools/page_test.js`: layout at 390 px in both
+   themes, Setup, Race, a race keeping its settings, Calibrate, History, connection loss and
+   restart, mic help, update page; each section starts from `/mock/reset`). A new page feature
+   gets its checks there. Done: no console errors, layout fits, every check PASS.
 3. **Deploy** — `python tools/ota_upload.py <timer-ip> fw fs` (firmware first). The IP is much
    faster than `laptimer.local` on Windows. Done: "back online" after each file, and "web files
    verified" after `fs` (the tool fetches every file of `data/` and compares sizes).
@@ -51,6 +53,13 @@ Every change goes through all steps; a step is done when its check passes.
   afterwards), and a new race starts only after the last one is saved.
 - **Settings from the page** are applied to a copy, checked (exit < enter, race limits, UTF-8
   names cut at a whole character) and then published: the timing core reads them at any moment.
+  Every value stays within the page's control ranges (race 30-600 s, 1-30 laps, min lap 1-20 s,
+  speech rate 0.1-2, alarm 0-4.2 V, Enter 51-255 / Exit 50-254, also for saved pilots): another
+  phone, an older page or the API can't set a value a slider would show differently.
+- **Connection**: after 5 s without an answer to `/api/status` (`STATUS_LOST_MS`) the page says
+  "No connection to the timer" under the clock and "Offline" in the top bar; the race clock keeps
+  running (the race does too). Start gives up after two unanswered tries ("No answer"); only a
+  409 (still saving the last race) is retried longer.
 - **Multi-device**: `POST /config` replies `{base, rev}`; a page adopts `rev` only if `base` is
   the revision it knew, otherwise it reloads. `/api/status` carries `boot` (random per start)
   and `prof` (saved-pilot revision). Saved pilots change one at a time
@@ -59,7 +68,12 @@ Every change goes through all steps; a step is done when its check passes.
   new one, a web-files update): opening, renaming, fixing or exporting it says so above the
   list (`raceGone`, checked with a 404 on `/api/races?id=`) and the list reloads.
 - **Race wins over a channel scan**: starting a race cancels a scan; a scan is refused during
-  a race, the countdown or a queued start.
+  a race, the countdown or a queued start. A cancelled scan reports "not running" with progress
+  0: the page then asks for the status at once ("Stopped: a race started"), as its last poll
+  can be from just before the start; otherwise it showed the cut-off scan as complete.
+- **Auto-calibration** takes the level "between passes" from readings at least 1.5 s from every
+  pass, or a third of the time between passes when laps are shorter: with laps under 3 s nothing
+  was 1.5 s from a pass and it said "Passes don't stand out yet" for ever.
 - **Cache busting** is automatic: `tools/stamp_versions.py` runs before every PlatformIO build
   and stamps `?v=<content hash>` on `style.css` / `script.js` in `index.html` and `update.html`.
   Those two pages are served uncached, the CSS/JS cached for a day. Keep new assets in the
@@ -218,7 +232,14 @@ Every change goes through all steps; a step is done when its check passes.
   `upload_speed = 115200` in `targets/PhobosLT.ini` (its 460800 dropped mid-write). Prefer WiFi updates. Opening the serial port (e.g.
   `boot_log.py` without `--reset`) can still restart the board: don't mistake that for a crash.
 - **Browser tests**: a background tab runs timers about once a second, so scripted tests there
-  look slow or "frozen". Screenshots of a background tab can show a stale frame. Chrome keeps a
+  look slow or "frozen"; a tab hidden or covered for minutes is slowed to about once a minute
+  (the page test suite crawled in the owner's covered Chrome window): run it headless with
+  `tools/run_page_test.js`, which also emulates the dark theme. Read the clock as
+  `clockText()`, not `#timer`: the screen copy is refreshed by a 50 ms timer. After starting a
+  race, wait for `raceData.race === status.race`: the page shows the previous race until
+  `/api/race` answers. Reloading a test file into the same page fails silently (its `const`s
+  exist): load the page again. On Windows kill a headless Chrome with `taskkill /T` (its child
+  processes stay otherwise). Screenshots of a background tab can show a stale frame. Chrome keeps a
   page zoom per address, so resizing the window didn't give a 390 px page: load the app in a
   390 × 844 `<iframe>` on the same origin (e.g. over `/mock/log`). The console tool doesn't see
   the iframe's messages: collect `error`/`unhandledrejection` with listeners. Light theme with

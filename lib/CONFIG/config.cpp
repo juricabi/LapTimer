@@ -159,13 +159,25 @@ uint32_t clampTargetLapMs(uint32_t ms)
     return ms < TARGET_LAP_MIN_MS ? TARGET_LAP_MIN_MS : ms > TARGET_LAP_MAX_MS ? TARGET_LAP_MAX_MS : ms;
 }
 
-// Exit must stay below enter, or every reading between them would open and close a pass
-static void fixThresholds(uint8_t &enter, uint8_t &exit)
+// Exit must stay below enter, or every reading between them would open and close a pass.
+// Both stay within the page's sliders (RSSI_SLIDER_MIN-255), so the page shows what is used.
+void fixThresholds(uint8_t &enter, uint8_t &exit)
 {
-    if (enter < 1)
-        enter = 1;
+    if (enter < RSSI_SLIDER_MIN + 1)
+        enter = RSSI_SLIDER_MIN + 1;
+    if (exit < RSSI_SLIDER_MIN)
+        exit = RSSI_SLIDER_MIN;
     if (exit >= enter)
         exit = enter - 1;
+}
+
+template <typename T>
+static void keepWithin(T &value, T low, T high)
+{
+    if (value < low)
+        value = low;
+    else if (value > high)
+        value = high;
 }
 
 // Changes are made on a copy and checked before they are published: the timing core
@@ -201,17 +213,17 @@ void Config::fromJson(JsonObject source)
     changed |= updateField(source, "countdown", conf.countdown);
     changed |= updateField(source, "target", conf.targetLapMs);
 
-    // keep values in sane ranges
+    // keep values within the ranges of the page's controls: another phone, an older page or the
+    // API can't set a value the page would show differently (a slider can't show 10 s or 40 laps)
     if (conf.frequency != POWER_DOWN_FREQ_MHZ && (conf.frequency < 5000 || conf.frequency > 5999))
         conf.frequency = this->conf.frequency; // outside the 5.8 GHz band: keep the old one
-    if (conf.minLap < 1)
-        conf.minLap = 1; // 100 ms: a pass counts once
+    keepWithin<uint8_t>(conf.minLap, 10, 200);          // 1-20 s
     if (conf.raceMode > RACE_LAPS)
         conf.raceMode = RACE_PRACTICE;
-    if (conf.raceSeconds < 10)
-        conf.raceSeconds = 10;
-    if (conf.raceLaps < 1)
-        conf.raceLaps = 1;
+    keepWithin<uint16_t>(conf.raceSeconds, 30, 600);    // 0:30-10:00
+    keepWithin<uint8_t>(conf.raceLaps, 1, 30);
+    keepWithin<uint8_t>(conf.announcerRate, 1, 20);     // 0.1-2.0
+    keepWithin<uint8_t>(conf.alarm, 0, 42);             // off-4.2 V
     conf.targetLapMs = clampTargetLapMs(conf.targetLapMs);
     fixThresholds(conf.enterRssi, conf.exitRssi);
 

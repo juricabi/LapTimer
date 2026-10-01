@@ -120,6 +120,10 @@ void copyUtf8(char *dst, const char *src, size_t size);
 // 0 stays off; anything else is kept within TARGET_LAP_MIN_MS..TARGET_LAP_MAX_MS
 uint32_t clampTargetLapMs(uint32_t ms);
 
+// Enter/Exit as the page's sliders allow: exit below enter, both RSSI_SLIDER_MIN-255
+#define RSSI_SLIDER_MIN 50
+void fixThresholds(uint8_t &enter, uint8_t &exit);
+
 class Config
 {
 public:

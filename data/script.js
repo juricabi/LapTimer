@@ -743,7 +743,7 @@ async function loadSavedNetworks() {
       try {
         await postJson("/api/wifi/saved/remove", { ssid: name });
       } catch (e) {
-        if (e.status === 409) showButtonStatus(remove, "After the race");
+        showButtonStatus(remove, e.status === 409 ? "After the race" : "Failed");
         return;
       }
       loadSavedNetworks();
@@ -829,6 +829,27 @@ function openTab(tab) {
 
 let status = null; // latest /api/status
 let statusAtMs = 0; // local time when it arrived
+// No answer from the timer for this long: the page says so (polls come every 250-600 ms and
+// give up after 4 s, so one slow answer doesn't count)
+const STATUS_LOST_MS = 5000;
+
+function connectionLost() {
+  return !!status && Date.now() - statusAtMs > STATUS_LOST_MS;
+}
+
+// The battery chip in the top bar shows "Offline" while the timer can't be reached
+let shownLost = false;
+function renderConnection() {
+  const lost = connectionLost();
+  if (lost === shownLost) return;
+  shownLost = lost;
+  const chip = $("bvolt");
+  chip.classList.toggle("chip-offline", lost);
+  chip.title = lost ? "No connection to the timer" : "Battery voltage";
+  if (lost) chip.textContent = "Offline";
+  else if (status) chip.textContent = (status.vbat / 10).toFixed(1) + "V";
+  renderRaceControls();
+}
 let raceData = null; // latest /api/race
 let seenRaceId = null; // race whose laps have been announced
 let seenLaps = 0; // lap entries already announced
@@ -874,6 +895,7 @@ function handleStatus(s) {
   const previous = status;
   status = s;
   statusAtMs = Date.now();
+  renderConnection(); // back after being unreachable
 
   $("bvolt").textContent = (s.vbat / 10).toFixed(1) + "V";
   if (currentTab === "calib" && !rssiPaused && !s.spectrum) $("rssiNow").textContent = s.rssi;
@@ -888,6 +910,8 @@ function handleStatus(s) {
       profilesRev = null;
       if (configLoaded && !configLoading) loadConfig().catch(() => {});
       loadProfiles();
+      loadSavedNetworks(); // the WiFi list and the connection may have changed with the restart
+      loadInfo();
       fetchRace();
     }
   }
@@ -939,6 +963,7 @@ function clockText() {
 
 function statusText() {
   if (!status) return ["Connecting…", ""];
+  if (connectionLost()) return ["No connection to the timer", "waiting"];
   switch (status.state) {
     case STATE.COUNTDOWN:
       return ["Get ready", "waiting"];
@@ -956,6 +981,7 @@ function statusText() {
 }
 
 setInterval(() => {
+  renderConnection();
   const text = clockText();
   if (currentTab === "race") timerEl.textContent = text;
   if (!$("raceScreen").hidden) {
@@ -1245,6 +1271,7 @@ async function startRace() {
   if (button.disabled) return;
   button.disabled = true; // until the next status render (a second tap said "Get ready" again)
   await flushSettings();
+  let noAnswer = 0;
   for (let attempt = 0; attempt < 8; attempt++) {
     const t = Math.floor(Date.now() / 1000);
     const r = await fetchTimeout("/timer/start?t=" + t, { method: "POST" }).catch(() => null);
@@ -1255,10 +1282,19 @@ async function startRace() {
       pollOnce();
       return;
     }
+    // busy (409: still saving the last race) is worth a few retries; no answer twice is not
+    if (!r || r.status >= 500) {
+      if (++noAnswer >= 2) break;
+    }
     await sleep(250);
   }
-  showButtonStatus(button, "Timer busy, try again");
-  queueSpeak("The timer is busy, try again");
+  if (noAnswer >= 2) {
+    showButtonStatus(button, "No answer, try again");
+    queueSpeak("No answer from the timer");
+  } else {
+    showButtonStatus(button, "Timer busy, try again");
+    queueSpeak("The timer is busy, try again");
+  }
   pollOnce();
 }
 
@@ -1403,17 +1439,22 @@ function renderCalibration() {
 
 // While dragging, the values and the graph lines follow the finger; the timer gets the
 // result once, when the slider is let go
+// Exit stays below Enter, both within the sliders' range: Enter goes down to 51 (Exit 50),
+// Exit up to 254 (Enter 255); otherwise the slider would show a value the page doesn't send
+const RSSI_MIN = +enterInput.min;
+const RSSI_MAX = +enterInput.max;
+
 enterInput.addEventListener("input", () => {
-  pilot.enter = +enterInput.value;
+  pilot.enter = Math.max(RSSI_MIN + 1, +enterInput.value);
   pilotTouched = true;
-  if (pilot.exit >= pilot.enter) pilot.exit = Math.max(0, pilot.enter - 1);
+  if (pilot.exit >= pilot.enter) pilot.exit = pilot.enter - 1;
   renderCalibration();
 });
 
 exitInput.addEventListener("input", () => {
-  pilot.exit = +exitInput.value;
+  pilot.exit = Math.min(RSSI_MAX - 1, +exitInput.value);
   pilotTouched = true;
-  if (pilot.exit >= pilot.enter) pilot.enter = Math.min(255, pilot.exit + 1);
+  if (pilot.exit >= pilot.enter) pilot.enter = pilot.exit + 1;
   renderCalibration();
 });
 
@@ -1562,8 +1603,11 @@ function analyseAutoCal(samples, minLapMs) {
   }
   const passes = candidates.filter((i) => samples[i] > cut);
   if (passes.length < 3 || gap < 6) return { passes: gap < 6 ? 0 : passes.length };
-  // The highest normal level between passes, and the weakest pass
-  const clear = 1500 / AUTOCAL_STEP_MS;
+  // The highest normal level between passes, and the weakest pass. "Between" is at least 1.5 s
+  // from every pass, or a third of the time between passes when laps are shorter (a small track:
+  // with 1.5 s laps nothing is 1.5 s from a pass, and the passes never "stood out")
+  const spacing = passes.slice(1).map((p, k) => p - passes[k]).sort((a, b) => a - b);
+  const clear = Math.min(1500 / AUTOCAL_STEP_MS, Math.floor(spacing[Math.floor(spacing.length / 2)] / 3));
   const between = samples.filter((v, i) => passes.every((p) => Math.abs(i - p) > clear)).sort((a, b) => a - b);
   if (!between.length) return { passes: passes.length };
   const high = between[Math.floor((between.length - 1) * 0.98)];
@@ -1626,8 +1670,8 @@ $("spectrumButton").addEventListener("click", async (e) => {
   showButtonStatus(button, "Scanning… (about 7 s)", 0);
   try {
     const start = await fetchTimeout("/api/spectrum?start=1");
-    if (start.status === 409) {
-      showButtonStatus(button, "Not possible during a race");
+    if (!start.ok) {
+      showButtonStatus(button, start.status === 409 ? "Not possible during a race" : "Scan failed");
       return;
     }
     // follow the scan as it runs (~6.5 s); the chart eases towards each new reading
@@ -1642,7 +1686,11 @@ $("spectrumButton").addEventListener("click", async (e) => {
         spectrumUpdate(data);
       }
     }
-    const raceStarted = status && status.state >= STATE.COUNTDOWN && status.state <= STATE.RUNNING;
+    // A race start cancels the scan on the timer, so a scan that ends early may be one: ask the
+    // timer now (the last status poll can be from just before the start), else a cut-off scan
+    // would be shown as complete
+    const cutShort = data.total && data.done < data.total;
+    const raceStarted = cutShort ? await raceIsOn() : isRacing();
     if (raceStarted) {
       showButtonStatus(button, "Stopped: a race started", 4000);
       return;
@@ -3017,6 +3065,7 @@ $("voiceCommands").addEventListener("change", () => {
   }
   if (voiceCommandsOn) startVoiceRecognition();
   else stopVoiceRecognition();
+  if (!$("micHelp").hidden) renderMicHelp(); // the card says what the switch now means
 });
 
 function clearMicTimers() {

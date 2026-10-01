@@ -218,6 +218,10 @@ See [CLAUDE.md](CLAUDE.md) for how the project is built, tested and released, an
 [`tools/`](tools/) for the simulated timer, WiFi upload, device test, RSSI/pass logger, boot
 log and hotspot signal scripts.
 
+Tests: `python tools/mock_server.py`, then `node tools/run_page_test.js` checks the web page
+in a headless Chrome (every tab, both themes at phone width, two phones, connection loss), and
+`python tools/device_test.py <timer-ip>` checks the timer's API (also against the mock).
+
 ## License
 
 MIT, see [LICENSE](LICENSE). Based on PhobosLT by phobos- and PhobosLT_pooling by nikbg3.
