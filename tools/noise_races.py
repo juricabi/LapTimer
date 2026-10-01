@@ -4,7 +4,8 @@ and the race image. Enter/Exit go just inside the RSSI noise, so noise counts as
 the history, named "Test · ...", until History -> Delete all (or the next web-files upload,
 which deletes the history: record them after it).
 
-Usage: python tools/noise_races.py <host>      e.g. 192.168.2.221 (takes about 6 minutes)
+Usage: python tools/noise_races.py <host>        e.g. 192.168.2.221 (takes about 6 minutes)
+       python tools/noise_races.py <host> --one  only the practice with a target (about 1 minute)
 
 Races: a practice with a target, a timed race with countdown and target, a lap race without
 a target (shown by its date), a long practice with a "crash" (three laps merged, as if passes
@@ -92,6 +93,8 @@ print(f"Noise {noise[0]}-{noise[1]}: Enter {enter}, Exit {exit_} (yours: {origin
 base = {"enterRssi": enter, "exitRssi": exit_, "countdown": False, "target": 0}
 try:
     race("Test · practice", {**base, "raceMode": 0, "target": 7000}, seconds=70)
+    if "--one" in sys.argv[2:]:
+        raise SystemExit(0)  # the settings are restored below
     race("Test · timed 1:00", {**base, "raceMode": 1, "raceSec": 60, "countdown": True, "target": 7500})
     race(None, {**base, "raceMode": 2, "raceLaps": 5})
     race("Test · long practice, crash", {**base, "raceMode": 0, "target": 7000}, seconds=150, merge_at=5)
