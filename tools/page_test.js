@@ -1149,6 +1149,20 @@ PAGE_TEST.calibrate = async (T) => {
   const lowCal = T.v(`analyseAutoCal(${JSON.stringify(low)}, 1000)`);
   T.check("auto-calibration on a low floor: Enter/Exit within the sliders", lowCal.enter >= 51 && lowCal.exit >= 50 && lowCal.exit < lowCal.enter,
     lowCal);
+  // short laps (a pass every 2.4 s, minimum lap 2 s, as the mock's passes): suggested wherever
+  // the readings end. Every ±1 s window around a reading between passes reached a pass, so only
+  // the passes were candidates, all about as high: "0 found" for half of each lap
+  const shortLaps = (n) => Array.from({ length: n }, (_, i) => {
+    const k = (i % 96) - 48; // readings from the middle of the pass (25 ms each)
+    return Math.round(70 + 80 * Math.exp(-(k * k) / 32) + ((i * 7) % 7) - 3);
+  });
+  const missed = [];
+  for (let n = 400; n < 496; n += 4) {
+    if (T.v(`analyseAutoCal(${JSON.stringify(shortLaps(n))}, 2000)`).enter === undefined) missed.push(n);
+  }
+  T.check("auto-calibration with 2.4 s laps: Enter/Exit suggested wherever the readings end", missed.length === 0, missed);
+  const quiet = Array.from({ length: 600 }, (_, i) => 70 + ((i * 7) % 7) - 3);
+  T.check("... and no passes found in readings without a drone", T.v(`analyseAutoCal(${JSON.stringify(quiet)}, 2000)`).enter === undefined);
 
   // channel scan
   T.$("#spectrumButton").click();

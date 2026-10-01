@@ -1734,8 +1734,11 @@ function analyseAutoCal(samples, minLapMs) {
     }
     if (highest) candidates.push(i);
   }
-  // Passes: the candidates above the biggest gap between neighbouring heights
-  const heights = candidates.map((i) => samples[i]).sort((a, b) => a - b);
+  // Passes: the candidates above the biggest gap between neighbouring heights. The typical
+  // reading (the median) is one of the heights: with laps shorter than about 2.5 windows no
+  // reading between passes is a candidate, and the passes alone (all about as high) had no gap
+  const typical = [...samples].sort((a, b) => a - b)[Math.floor(samples.length / 2)];
+  const heights = [typical, ...candidates.map((i) => samples[i])].sort((a, b) => a - b);
   let gap = 0;
   let cut = Infinity;
   for (let k = 1; k < heights.length; k++) {
