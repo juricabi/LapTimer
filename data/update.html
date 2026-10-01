@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0f172a" />
   <title>LapTimer update</title>
   <link rel="icon" type="image/png" href="favicon.ico" />
-  <link rel="stylesheet" type="text/css" href="style.css?v=3fcdaf0b" />
+  <link rel="stylesheet" type="text/css" href="style.css?v=b8594d5d" />
 </head>
 
 <body>
@@ -68,8 +68,16 @@
       $("progress").hidden = false;
       bar.style.width = "0";
 
+      // Not during a race: the flash write stalls the timing and the restart loses the race.
       // ElegantOTA: mode "fs" = filesystem, anything else = firmware
-      fetch("/ota/start?mode=" + (isFs ? "fs" : "fr"))
+      fetch("/api/status", { cache: "no-store" })
+        .then((r) => r.json().catch(() => ({})))
+        .then((s) => {
+          if (s.state >= 1 && s.state <= 3) throw new Error("racing");
+          return fetch("/ota/start?mode=" + (isFs ? "fs" : "fr"));
+        }, () => {
+          throw new Error("no connection");
+        })
         .then((r) => {
           if (!r.ok) throw new Error("start failed");
           const form = new FormData();
@@ -91,7 +99,11 @@
           xhr.onerror = () => failed("Upload failed. Check the connection and try again.");
           xhr.send(form);
         })
-        .catch(() => failed("The timer did not accept the update."));
+        .catch((err) => {
+          if (err.message === "racing") failed("A race is running: stop it first, then update.");
+          else if (err.message === "no connection" || err instanceof TypeError) failed("No connection to the timer. Check the WiFi and try again.");
+          else failed("The timer did not accept the update.");
+        });
     });
 
     function failed(text) {

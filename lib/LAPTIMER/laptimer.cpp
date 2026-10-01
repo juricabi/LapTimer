@@ -454,10 +454,11 @@ void LapTimer::sample(uint8_t v, uint32_t nowMs)
     }
 
     // Live thresholds, so calibrating during a race works. If another pilot was picked
-    // during the race (the next one getting ready), keep the flying pilot's thresholds.
+    // during the race (the next one getting ready: another name or channel), keep the flying
+    // pilot's thresholds: on the same channel the next pilot's Enter/Exit were used.
     uint8_t enter = conf->getEnterRssi();
     uint8_t exit = conf->getExitRssi();
-    if (isRacing() && conf->getFrequency() != raceFreq)
+    if (isRacing() && (conf->getFrequency() != raceFreq || strcmp(conf->getPilotName(), raceName) != 0))
     {
         enter = raceEnter;
         exit = raceExit;

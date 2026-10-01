@@ -10,6 +10,8 @@ Test helpers (mock only, GET):
   /mock/reboot            new boot id, settings revision back to 1, race ids from 0
   /mock/fail?config=N     the next N GET /config fail (500)
   /mock/fail?save=N       the next N POST /config fail (500)
+  /mock/slow?config=MS    every POST /config takes MS before it is applied (a save still on its way)
+  /mock/busy?start=N      the next N /timer/start answer 409 (still saving the last race)
   /mock/offline?on=1|0    the timer can't be reached: every API request answers 503
   /mock/passes?on=0|1     stop / resume the simulated gate passes
   /mock/lap?s=2.0         simulated lap length in seconds (default 4.4; shorter for quick tests)
@@ -43,6 +45,7 @@ CONFIG = copy.deepcopy(DEFAULT_CONFIG)
 SAVED = list(DEFAULT_SAVED)
 PROFILES = copy.deepcopy(DEFAULT_PROFILES)
 MAX_PROFILES_SIZE = 4096  # bytes of JSON, as in the firmware
+MAX_WIFI_NETWORKS = 5  # a sixth forgets the oldest
 RACE_NAME_MAX_BYTES = 32
 TARGET_LAP_MIN_MS, TARGET_LAP_MAX_MS = 3000, 600000
 MAX_LAPS = 200
@@ -54,7 +57,7 @@ T0 = time.time()
 def initial_state():
     return {"rev": 1, "boot": random.randint(1, 2**31 - 1), "prof": 1, "edits": 0, "failConfig": 0, "failSave": 0,
             "savedId": 0, "savedRace": 0, "passes": True, "lap": LAP_BASE, "offline": False, "saveErr": 0,
-            "mode": "wifi", "vbat": 41}
+            "mode": "wifi", "vbat": 41, "slowConfig": 0, "busyStart": 0}
 
 
 def initial_race():
@@ -237,6 +240,14 @@ def apply_lap_edit(laps, op, index):
     return False
 
 
+def wifi_entry_ok(ssid, pwd):
+    """As the firmware: a name of 1-32 bytes; a password empty (open network), 8-63 bytes, or 64 hex digits."""
+    if not 1 <= len(ssid.encode()) <= 32:
+        return False
+    n = len(pwd.encode())
+    return n == 0 or 8 <= n <= 63 or (n == 64 and all(c in "0123456789abcdefABCDEF" for c in pwd))
+
+
 def apply_config(data):
     """Config::fromJson: only keys that are present, then the same checks as the firmware."""
     new = dict(CONFIG)
@@ -318,6 +329,12 @@ class H(SimpleHTTPRequestHandler):
                 S["failConfig"] = int(q.get("config", ["0"])[0])
                 S["failSave"] = int(q.get("save", ["0"])[0])
                 return self._json({"status": "OK"})
+            if u.path == "/mock/slow":
+                S["slowConfig"] = int(q.get("config", ["0"])[0])
+                return self._json({"status": "OK"})
+            if u.path == "/mock/busy":
+                S["busyStart"] = int(q.get("start", ["0"])[0])
+                return self._json({"status": "OK"})
             if u.path == "/mock/passes":
                 S["passes"] = q.get("on", ["1"])[0] == "1"
                 return self._json({"status": "OK"})
@@ -390,7 +407,8 @@ class H(SimpleHTTPRequestHandler):
                 return self._json({"scanning": False, "networks": [
                     {"ssid": "Home WiFi", "rssi": -48, "open": False},
                     {"ssid": "Neighbour", "rssi": -61, "open": False},
-                    {"ssid": "Cafe guest", "rssi": -80, "open": True}]})
+                    {"ssid": "Cafe guest", "rssi": -80, "open": True},
+                    {"ssid": "Z" * 32, "rssi": -90, "open": False}]})  # the longest name, unbroken
             if u.path == "/api/spectrum":
                 if "start" in q:
                     if R["state"] in RACING:
@@ -407,7 +425,8 @@ class H(SimpleHTTPRequestHandler):
                         if (done >= 61 or k < done) else 0 for k in range(61)]
                 return self._json({"running": running, "done": done, "total": total, "start": 5645, "step": 5, "rssi": vals})
             if u.path == "/api/wifi/saved":
-                return self._json({"networks": SAVED, "connected": SAVED[0] if SAVED else "", "max": 5})
+                connected = SAVED[0] if SAVED and S["mode"] == "wifi" else ""  # none on its own hotspot
+                return self._json({"networks": SAVED, "connected": connected, "max": MAX_WIFI_NETWORKS})
             if u.path == "/api/debug/load":
                 return self._json({"samplesPerSec": 8400, "core0RoundsPerSec": 100000, "cpuMhz": 240, "wifiMode": 1,
                                    "txPowerDbm": 19.5, "protoAp": 7, "protoSta": 7, "bwAp": 2, "ps": 1, "channel": 1,
@@ -439,6 +458,8 @@ class H(SimpleHTTPRequestHandler):
         if u.path in ("/api/debug/hotspot", "/api/debug/txgain"):
             return self._json({"status": "OK"})
         q = parse_qs(u.query)
+        if u.path == "/config" and S["slowConfig"]:
+            time.sleep(S["slowConfig"] / 1000)  # on its way: another request can be handled first
         with LOCK:
             if u.path == "/config":
                 if S["failSave"] > 0:
@@ -452,6 +473,9 @@ class H(SimpleHTTPRequestHandler):
                 return self._json({"status": "OK", "base": base, "rev": S["rev"]})
             if u.path == "/timer/start":
                 if R["state"] in RACING:
+                    return self._json({"status": "busy"}, 409)
+                if S["busyStart"] > 0:  # the last race is still being saved
+                    S["busyStart"] -= 1
                     return self._json({"status": "busy"}, 409)
                 if scan_running():  # a race start cancels a channel scan (as the firmware: progress 0)
                     R["specCancelled"] = True
@@ -524,10 +548,14 @@ class H(SimpleHTTPRequestHandler):
             if u.path in ("/api/wifi/saved/add", "/api/wifi/saved/remove", "/api/wifi/saved/clear") and R["state"] in RACING:
                 return self._json({"status": "racing"}, 409)
             if u.path == "/api/wifi/saved/add":
-                d = json.loads(body)
-                if d["ssid"] in SAVED:
-                    SAVED.remove(d["ssid"])
-                SAVED.insert(0, d["ssid"])
+                d = json.loads(body or b"{}")
+                ssid, pwd = d.get("ssid") or "", d.get("pwd") or ""
+                if not wifi_entry_ok(ssid, pwd):
+                    return self._json({"status": "invalid"}, 400)
+                if ssid in SAVED:
+                    SAVED.remove(ssid)
+                SAVED.insert(0, ssid)
+                del SAVED[MAX_WIFI_NETWORKS:]  # full: the oldest is forgotten
                 return self._json({"status": "OK"})
             if u.path == "/api/wifi/saved/remove":
                 d = json.loads(body)
@@ -562,6 +590,8 @@ class H(SimpleHTTPRequestHandler):
                 S["prof"] += 1
                 return self._json({"status": "OK"})
             if u.path in ("/restart",):
+                if R["state"] in RACING:  # a restart would lose the race
+                    return self._json({"status": "racing"}, 409)
                 return self._json({"status": "OK"})
         return self._json({"status": "not found"}, 404)
 

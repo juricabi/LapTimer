@@ -59,7 +59,15 @@ Every change goes through all steps; a step is done when its check passes.
 - **Connection**: after 5 s without an answer to `/api/status` (`STATUS_LOST_MS`) the page says
   "No connection to the timer" under the clock and "Offline" in the top bar; the race clock keeps
   running (the race does too). Start gives up after two unanswered tries ("No answer"); only a
-  409 (still saving the last race) is retried longer.
+  409 (still saving the last race) is retried longer, and Start stays off meanwhile (`starting`:
+  a second tap said "Get ready" twice). Start first sends a settings change that is waiting,
+  on its way or failed (`flushSettings` waits for `savingNow`, then saves any diff): a start on
+  a second connection could overtake the save. With no channel (a new timer: 1111, receiver
+  off) Start is refused with the reason. A failed `/api/race` is fetched again with the next
+  status (the one after the last pass left the old laps on screen). The WiFi list, the timer
+  info and History load again once the timer answers (they were loaded once, or showed "No
+  saved races yet"). A restart during a race lost it: `/restart` answers 409 then, and a
+  restart the page notices mid-race shows `#raceLostNote`.
 - **Multi-device**: `POST /config` replies `{base, rev}`; a page adopts `rev` only if `base` is
   the revision it knew, otherwise it reloads. `/api/status` carries `boot` (random per start)
   and `prof` (saved-pilot revision). Saved pilots change one at a time
@@ -102,8 +110,15 @@ Every change goes through all steps; a step is done when its check passes.
   `anDelta`/`anTarget` (settings v5; an upgrade keeps `anDelta`, target off). They never are
   both on: the page sends one, `fromJson` turns the other off (the one switched on wins).
   It is independent of "Announce each lap" (Beep + Target: a beep, then "minus 0.30"), and
-  live like the other announcer settings.
-- **WiFi passwords** stay on the timer; `/config` and `/api/wifi/saved` return names only.
+  live like the other announcer settings. Laps that arrive together (no connection for a
+  while, the phone asleep) say only the newest, and a lap's callouts not spoken yet when the
+  next lap comes are dropped (`queueSpeak(text, "lap")`): with short laps the queue grew and
+  the callouts fell further behind. Voice off stops the speech and empties the queue.
+- **WiFi passwords** stay on the timer; `/config` and `/api/wifi/saved` return names only. With a
+  password the ESP32 joins only WPA2 networks, so the timer (and the page, with the reason)
+  takes none (open), 8-63 characters or 64 hex digits; picking an open network in the scan
+  clears the password. The list holds 5 and a sixth forgets the oldest (maybe the one in use):
+  the page asks first, naming it.
 - **UI**: design tokens in `style.css` with contrast ratios noted beside them — text ≥ 4.5:1,
   controls ≥ 3:1, touch targets ≥ 44 px; plain CSS/JS, no new libraries.
 - **Lap chart and share image**: `lapChartSvg` builds one SVG string for both. Its colours go
@@ -252,15 +267,34 @@ Every change goes through all steps; a step is done when its check passes.
   the iframe's messages: collect `error`/`unhandledrejection` with listeners. Light theme with
   a dark OS: delete the `prefers-color-scheme` rule from the stylesheet via CSSOM. Screenshots
   timed out about every second call: retry. `mock_server.py --host 0.0.0.0` serves phones.
+  `T.post()` gives the HTTP status as `code` (a reply's own `status` field overwrote it). The
+  mock's `/mock/slow?config=` and `/mock/busy?start=` make a save still on its way and a busy
+  start. The race screen adds a history entry for Back; ✕ steps back over it, and that step
+  lands later (`raceScreenOwnBack`: opened again meanwhile, the entry is added again).
 - **Saved races without a drone**: `python tools/noise_races.py <timer-ip>` sets Enter/Exit just
   inside the RSSI noise (floor 50-53: 52/51), so noise counts passes, records five test races
   (practice, timed, laps, a long one with a merged "crash" lap, one lap; named "Test · ...")
-  and restores all settings. Race thresholds are taken at the start, so changing them during a
-  race does nothing. `device_test.py` needs a saved race for its rename checks. Record them
+  and restores all settings. Enter/Exit apply live during a race (calibrating), unless another
+  pilot was picked meanwhile (name or channel: the next one getting ready); then the race's own
+  (on the same channel the next pilot's were used and laps stopped). `--thresholds` tests both
+  on the timer. `device_test.py` needs a saved race for its rename checks. Record them
   after the last web-files upload: an `fs` upload deletes the history (it happened once).
 - **Scripted file edits**: write the edit script to a file and run it — shell heredocs mangle
   `\n` escapes and Windows paths. Read a file fully before opening it for writing
   (`open(p, "w")` truncates first; that once emptied `data/update.html`).
+
+## Known gaps (audit 2026-10-01, not fixed)
+
+- A hidden network is tried only if it is the newest saved one (`webserver.cpp`, no saved
+  network seen in the scan). The scan keeps 24 results in channel order, not the strongest.
+- The WiFi list is written to NVS as count, then list: a power cut between them loses it.
+- Settings are published to the timing core as a plain struct copy: a sample can see a new
+  Enter with an old Exit (one sample). Old stored values aren't checked at load.
+- A lap fix checks only the tapped lap (`expect`); a merge also uses the next lap.
+- A dropped firmware upload can make the next one fail (ElegantOTA/Updater state); the
+  web-files image isn't checked with a hash. Restart, Forget all and uploads need no login.
+- History doesn't show another phone's rename or fix until it is opened again.
+- No wake lock: the phone's screen sleeps on the race screen (Wake Lock needs a secure origin).
 
 ## Owner preferences
 

@@ -6,6 +6,10 @@ which deletes the history: record them after it).
 
 Usage: python tools/noise_races.py <host>        e.g. 192.168.2.221 (takes about 6 minutes)
        python tools/noise_races.py <host> --one  only the practice with a target (about 1 minute)
+       python tools/noise_races.py <host> --thresholds
+           a test (about 2 minutes, saves one race): another pilot picked on the same channel
+           during a race leaves the flying pilot's Enter/Exit alone, while the flying pilot's
+           own change applies at once (calibrating during a race)
 
 Races: a practice with a target, a timed race with countdown and target, a lap race without
 a target (shown by its date), a long practice with a "crash" (three laps merged, as if passes
@@ -91,6 +95,41 @@ def race(name, settings, seconds=None, merge_at=None, laps_max=None):
     return saved_id
 
 
+def thresholds_test(base):
+    """Laps counted in 30 s after another pilot (Enter 250) is picked, then after the flying
+    pilot's own Enter goes to 250: some, then none. Returns True when both hold."""
+    name = "Test · thresholds"
+    req("/config", {**base, "raceMode": 0, "name": name})
+    time.sleep(1.5)
+    req(f"/timer/start?t={int(time.time())}", {})
+    race_id = status()["race"]
+    for _ in range(90):  # the start pass and a lap from the noise
+        if status()["laps"] >= 2:
+            break
+        time.sleep(1)
+
+    def laps_in(settings, seconds=30):
+        req("/config", settings)
+        time.sleep(1)
+        n0 = status()["laps"]
+        time.sleep(seconds)
+        return status()["laps"] - n0
+
+    other = laps_in({"name": "Other pilot", "enterRssi": 250, "exitRssi": 249})
+    own = laps_in({"name": name, "enterRssi": 250, "exitRssi": 249})
+    req("/timer/stop", {})
+    for _ in range(40):
+        s = status()
+        if s["savedRace"] == race_id:
+            req("/api/races/rename", {"id": s["savedId"], "name": name})
+            break
+        time.sleep(0.25)
+    ok_other, ok_own = other > 0, own == 0
+    print(("PASS" if ok_other else "FAIL") + f" another pilot picked (same channel, Enter 250): laps still counted ({other} in 30 s)")
+    print(("PASS" if ok_own else "FAIL") + f" the flying pilot's own Enter 250: applies at once ({own} laps in 30 s)")
+    return ok_other and ok_own
+
+
 s = status()
 if s["state"] in (1, 2, 3):
     sys.exit("A race is running: stop it first.")
@@ -109,6 +148,9 @@ try:
         break
     if not base:
         raise SystemExit("No channel is noisy enough here to make passes from noise: fly a lap instead.")
+    if "--thresholds" in sys.argv[2:]:
+        passed = thresholds_test(base)
+        raise SystemExit(0 if passed else 1)  # the settings are restored below
     race("Test · practice", {**base, "raceMode": 0, "target": 7000}, seconds=70)
     if "--one" in sys.argv[2:]:
         raise SystemExit(0)  # the settings are restored below

@@ -224,6 +224,7 @@ void Config::fromJson(JsonObject source)
     keepWithin<uint8_t>(conf.raceLaps, 1, 30);
     keepWithin<uint8_t>(conf.announcerRate, 1, 20);     // 0.1-2.0
     keepWithin<uint8_t>(conf.alarm, 0, 42);             // off-4.2 V
+    keepWithin<uint8_t>(conf.announcerType, 0, 4);      // Nothing, Beep, 1-3 laps (the page's five)
     conf.targetLapMs = clampTargetLapMs(conf.targetLapMs);
     fixThresholds(conf.enterRssi, conf.exitRssi);
 

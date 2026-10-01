@@ -358,7 +358,7 @@ static void handleRoot(AsyncWebServerRequest *request)
     if (!response)
     {
         // web files missing (only the firmware was flashed, or the file system is damaged)
-        request->send(500, "text/plain", "LapTimer: the web files are missing. Upload the web files (littlefs.bin) on the update page.");
+        request->send(500, "text/plain", "LapTimer: the web files are missing. Upload the web files (littlefs.bin) at /update, the built-in update page.");
         return;
     }
     response->addHeader("Cache-Control", "no-cache");
@@ -473,6 +473,12 @@ Battery Voltage:\t%0.1fv";
 
     server.on("/restart", HTTP_POST, [this](AsyncWebServerRequest *request)
               {
+        // A race in progress is only in memory: a restart would lose it
+        if (timer->isRacing())
+        {
+            request->send(409, "application/json", "{\"status\":\"racing\"}");
+            return;
+        }
         // Save pending settings now: they are normally written up to 1 s later,
         // so a restart right after Save could otherwise lose them
         conf->write();

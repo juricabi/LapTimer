@@ -338,8 +338,16 @@ void Webserver::registerApi()
             request->send(409, "application/json", "{\"status\":\"racing\"}");
             return;
         }
-        int code = history->saveProfile(json["name"] | "", json["prev"] | "", json["freq"] | 0,
-                                        json["enter"] | 0, json["exit"] | 0, json["target"] | 0U);
+        // a channel in the 5.8 GHz band; thresholds clamped before they become bytes (400 was 144)
+        int freq = json["freq"] | 0;
+        if (freq < 5000 || freq > 5999)
+        {
+            request->send(400, "application/json", "{\"status\":\"invalid\"}");
+            return;
+        }
+        int code = history->saveProfile(json["name"] | "", json["prev"] | "", freq,
+                                        constrain(json["enter"] | 0, 0, 255), constrain(json["exit"] | 0, 0, 255),
+                                        json["target"] | 0U);
         request->send(code, "application/json",
                       code == 200 ? "{\"status\":\"OK\"}" : code == 507 ? "{\"status\":\"full\"}" : "{\"status\":\"invalid\"}"); }));
 

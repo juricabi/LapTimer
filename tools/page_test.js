@@ -13,7 +13,8 @@
 // section starts from /mock/reset. Nothing reaches the PC: confirm() answers OK and is recorded,
 // downloads, copied text and speech are caught, voice commands are off (no microphone request).
 
-const PAGE_TEST_SECTIONS = ["layout", "setup", "race", "raceSettings", "calibrate", "history", "connection", "voice", "update"];
+const PAGE_TEST_SECTIONS = ["layout", "setup", "race", "raceSettings", "raceEdges", "calibrate", "history", "historyEdges", "connection", "voice",
+  "update"];
 
 async function pageTest(only) {
   const T = pageTestHarness();
@@ -75,7 +76,7 @@ function pageTestHarness() {
   T.get = (url) => fetch(url).then((r) => r.json());
   T.post = (url, body) =>
     fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }).then((r) =>
-      r.json().catch(() => ({})).then((j) => ({ status: r.status, ...j })));
+      r.json().catch(() => ({})).then((j) => ({ status: r.status, ...j, code: r.status }))); // code: the HTTP status
   T.mock = (path) => fetch("/mock/" + path).then((r) => r.json());
   T.otherPhone = (settings) => T.post("/config", settings); // a second phone saving settings
   T.config = () => T.get("/config");
@@ -115,6 +116,7 @@ function pageTestHarness() {
       return T.confirmAnswer !== false;
     };
     w.alert = (text) => T.dialogs.push(text);
+    T.realQueueSpeak = w.queueSpeak;
     w.queueSpeak = (text) => T.spoken.push(text);
     w.downloadBlob = (blob, name) => T.downloads.push({ blob, name });
     w.copyText = (text) => {
@@ -312,6 +314,23 @@ PAGE_TEST.setup = async (T) => {
   await T.otherPhone({ freq: 1111 }); // receiver off: no channel
   await T.until(() => T.text("#pilotFreq") === "Off");
   T.check("no channel: 'Off' and the hint", T.text("#pilotFreq") === "Off" && T.shown("#pilotHint"));
+  // (a new timer starts like this.) A picker fires no change for the option it already shows:
+  // showing R1 there, R1 couldn't be picked. It shows no channel, so any pick is a change.
+  T.check("no channel: the channel picker shows none", T.$("#pilotChannel").selectedIndex === -1, T.$("#pilotChannel").selectedIndex);
+  T.check("no channel: the Race tab says so (not '1111')", T.text("#racePilot .race-pilot-head .muted") === "no channel",
+    T.text("#racePilot .race-pilot-head .muted"));
+  await T.w.startRace();
+  await T.sleep(300);
+  T.check("Start with no channel: refused, says why", !T.v("isRacing()") && T.text("#startRaceButton") === "No channel: pick one in Setup" &&
+    T.spoken.at(-1) === "No channel. Pick one in Setup", [T.v("isRacing()"), T.text("#startRaceButton"), T.spoken.at(-1)]);
+  if (T.v("isRacing()")) {
+    await T.w.stopRace();
+    await T.idle();
+  }
+  T.setValue("#pilotChannel", "0");
+  await T.saved();
+  T.check("then picking Channel 1: R1 5658", (await T.config()).freq === 5658 && T.text("#pilotFreq") === "5658" && !T.shown("#pilotHint"),
+    T.text("#pilotFreq"));
 
   // saved pilots: tap one to fly as them, × to forget
   T.$$("#savedPilots .chip-name").find((b) => b.textContent.startsWith("Iceman")).click();
@@ -377,7 +396,7 @@ PAGE_TEST.setup = async (T) => {
   // saved pilots full: the timer refuses, the page says so
   for (let i = 0; i < 80; i++) {
     const r = await T.post("/api/profiles/save", { name: "Filler pilot " + i, freq: 5800, enter: 120, exit: 100 });
-    if (r.status === 507) break;
+    if (r.code === 507) break;
   }
   await T.until(() => T.$$("#savedPilots .chip-name").length > 20, 4000);
   T.setValue(name, "One too many");
@@ -460,6 +479,16 @@ PAGE_TEST.setup = async (T) => {
     localStorage.getItem("voiceOn") === "0" && T.text("#announcerNote").startsWith("Voice is off on this phone"), T.text("#announcerNote"));
   T.toggle("#voiceToggle", true);
   T.check("Voice on again", localStorage.getItem("voiceOn") === "1" && T.text("#announcerNote").startsWith("Spoken by every phone"));
+  // Voice off silences at once: what was still waiting isn't said when it's switched on again
+  let cancelled = 0;
+  T.w.speechSynthesis.cancel = () => cancelled++;
+  T.v("speakQueue.push('Lap 5', 'minus 0.20')");
+  const waiting = T.v("speakQueue.length");
+  T.toggle("#voiceToggle", false);
+  T.check("Voice off: speech stops, announcements still waiting are dropped", T.v("speakQueue.length") === 0 && cancelled === 1,
+    [waiting, T.v("speakQueue.length"), cancelled]);
+  delete T.w.speechSynthesis.cancel;
+  T.toggle("#voiceToggle", true);
   T.toggle("#voiceCommands", true);
   T.check("Voice commands kept on this phone", localStorage.getItem("voiceCommands") === "1");
   T.toggle("#voiceCommands", false);
@@ -514,6 +543,55 @@ PAGE_TEST.setup = async (T) => {
   await T.until(() => T.$$("#savedNetworks .saved-row").length === 3);
   T.check("network saved: listed, fields cleared", T.$$("#savedNetworks .saved-name").some((e) => e.textContent === "Cafe guest") &&
     T.$("#ssid").value === "" && T.$("#pwd").value === "");
+
+  // a long unbroken name (32 bytes) in the scan: its row keeps the signal visible
+  const long = T.$$("#wifiScanResults button").find((b) => b.textContent.startsWith("ZZZZ"));
+  T.$("#wifiScanResults").hidden = false;
+  const lr = long.getBoundingClientRect();
+  const sr = long.querySelector(".signal").getBoundingClientRect();
+  T.check("scan: a 32-byte name doesn't push the signal out of its row", sr.width > 0 && sr.right <= lr.right + 0.5, [sr.right, lr.right]);
+  T.$("#wifiScanResults").hidden = true;
+  // picking an open network clears a password typed before: with a password the timer joins
+  // only WPA2 networks, so an open one saved with one would never be joined
+  T.$("#pwd").value = "leftover";
+  T.$("#wifiScanResults").hidden = false;
+  T.$$("#wifiScanResults button").find((b) => b.textContent.startsWith("Cafe guest")).click();
+  T.check("picking an open network clears the password", T.$("#ssid").value === "Cafe guest" && T.$("#pwd").value === "", T.$("#pwd").value);
+  // names and passwords the timer can't use are refused with the reason, before anything is sent
+  const tryAdd = async (ssid, pwd) => {
+    T.$("#ssid").value = ssid;
+    T.$("#pwd").value = pwd;
+    T.$("#addWifiButton").click();
+    await T.sleep(500);
+    return T.text("#addWifiButton");
+  };
+  const savedNames = async () => (await T.get("/api/wifi/saved")).networks;
+  let said = await tryAdd("Short pass", "1234567");
+  T.check("a password under 8 characters is refused, says why", said === "Password: 8-63 characters, or none", said);
+  said = await tryAdd("Long pass", "x".repeat(64));
+  T.check("64 characters only as 64 hex digits", said === "Password: 8-63 characters, or none", said);
+  said = await tryAdd("ŠĐČĆŽšđčćžŠĐČĆŽšđ", "12345678");
+  T.check("a name over 32 bytes (17 letters like Š) is refused, says why", said === "Network name too long", said);
+  T.check("none of them reached the timer", (await savedNames()).length === 3, await savedNames());
+  T.check("the timer refuses them too (an older page)",
+    (await T.post("/api/wifi/saved/add", { ssid: "Short pass", pwd: "1234567" })).code === 400 &&
+    (await T.post("/api/wifi/saved/add", { ssid: "Hex", pwd: "0123456789abcdef".repeat(4) })).code === 200);
+  await T.post("/api/wifi/saved/remove", { ssid: "Hex" });
+  // a full list (5): saving another forgets the oldest, so the page asks first and names it
+  await T.post("/api/wifi/saved/add", { ssid: "Net A", pwd: "" });
+  await T.post("/api/wifi/saved/add", { ssid: "Net B", pwd: "" });
+  await T.w.loadSavedNetworks();
+  const asked = T.dialogs.length;
+  T.confirmAnswer = false;
+  await tryAdd("Net C", "");
+  T.confirmAnswer = true;
+  T.check("list full: asks first, naming the network that would be forgotten; Cancel saves nothing",
+    T.dialogs.length === asked + 1 && T.dialogs.at(-1).includes('"Field hotspot"') && !(await savedNames()).includes("Net C"), [T.dialogs.at(-1), await savedNames()]);
+  T.$("#ssid").value = "";
+  T.$("#pwd").value = "";
+  await T.post("/api/wifi/saved/remove", { ssid: "Net A" });
+  await T.post("/api/wifi/saved/remove", { ssid: "Net B" });
+  await T.w.loadSavedNetworks();
   const removeOf = (n) => T.$$("#savedNetworks .saved-row").find((r) => r.querySelector(".saved-name").textContent === n).querySelector("button");
   removeOf("Field hotspot").click();
   await T.until(() => T.$$("#savedNetworks .saved-row").length === 2);
@@ -524,9 +602,26 @@ PAGE_TEST.setup = async (T) => {
   failing.click();
   T.check("Remove that fails says so", await T.until(() => failing.textContent === "Failed", 6000), failing.textContent);
   await T.mock("offline?on=0");
+  // a restart during a race would lose the race: refused
+  await T.post("/timer/start");
+  await T.until(() => T.v("isRacing()"), 5000);
+  T.$("#restartEspButton").click();
+  T.check("Restart during a race: refused, says so", await T.until(() => T.text("#restartEspButton") === "After the race", 4000),
+    T.text("#restartEspButton"));
+  await T.post("/timer/stop");
+  await T.idle();
   T.$("#restartEspButton").click();
   T.check("Restart asks first, then restarts", T.dialogs.includes("Restart the timer?") &&
     (await T.until(() => T.text("#restartEspButton") === "Restarting…", 5000)));
+  // Forget all whose restart doesn't get through: said so, not "restarting into the hotspot"
+  const fetchBefore = T.w.fetch;
+  T.w.fetch = (url, opts) => (String(url).startsWith("/restart") ? Promise.reject(new TypeError("Failed to fetch")) : fetchBefore(url, opts));
+  T.$("#forgetWifiButton").click();
+  T.check("Forget all, restart not through: the list is cleared, Restart asked for, no hotspot note",
+    (await T.until(() => T.text("#forgetWifiButton") === "Cleared: tap Restart timer", 5000)) && !T.shown("#wifiForgotten") &&
+    !T.$("#forgetWifiButton").disabled, T.text("#forgetWifiButton"));
+  T.w.fetch = fetchBefore;
+  await T.post("/api/wifi/saved/add", { ssid: "Home WiFi", pwd: "" });
   T.$("#forgetWifiButton").click();
   T.check("Forget all asks first, then shows how to join the hotspot",
     T.dialogs.some((t) => t.startsWith("Forget all saved WiFi networks")) && (await T.until(() => T.shown("#wifiForgotten"), 5000)) &&
@@ -838,6 +933,170 @@ PAGE_TEST.raceSettings = async (T) => {
   await T.sleep(400);
   T.check("after Clear: next race is the new settings (practice, no target)", line() === "Practice" && card() === "Rooster R8 5917" &&
     deltaLabel() === "Delta", [line(), card(), deltaLabel()]);
+
+  // Start while the save of a change is still on its way (sent, no reply yet): the race takes the
+  // change, not the old setting (Start went out on a second connection and could arrive first)
+  await T.mock("slow?config=1500");
+  await T.tab("config");
+  T.$('#raceMode [data-value="2"]').click(); // Laps
+  await T.sleep(900); // the 600 ms save has gone out
+  T.check("(the save is on its way)", T.v("savingNow") === true);
+  await T.w.startRace();
+  await T.until(() => T.v("isRacing()"), 6000);
+  T.check("Start during a save on its way: the race has the new mode", T.v("status.mode") === 2, T.v("status.mode"));
+  await T.mock("slow?config=0");
+  await T.w.stopRace();
+  await T.idle();
+  T.check("no script errors", T.errors.length === 0, T.errors);
+};
+
+// ── Race tab edge cases: lost replies, double taps, Back, a restart, voice commands ──
+PAGE_TEST.raceEdges = async (T) => {
+  await T.mock("lap?s=1.5");
+  await T.open();
+  await T.tab("race");
+  const plainFetch = T.w.fetch;
+  const failRace = (on) => {
+    T.w.fetch = on ? (url, o) => (String(url) === "/api/race" ? Promise.reject(new TypeError("Failed to fetch")) : plainFetch(url, o)) : plainFetch;
+  };
+
+  // the race fetch after the last pass fails: it is made again (the card kept the old laps)
+  await T.otherPhone({ raceMode: 2, raceLaps: 2, countdown: false });
+  await T.until(() => T.v("raceMode") === 2);
+  await T.w.startRace();
+  await T.until(() => T.v("status.state") === 3, 6000);
+  failRace(true);
+  await T.until(() => T.v("status.state") === 4, 15000);
+  await T.sleep(800);
+  failRace(false);
+  T.check("a race fetch that failed at the finish is made again: the card shows every lap",
+    await T.until(() => T.raceShown() && T.laps() === 3, 3000), [T.v("raceData && raceData.race"), T.v("status.race")]);
+  await T.w.clearRace();
+  await T.idle();
+
+  // Start while a start is still being sent (the timer busy saving): one start, said once
+  await T.otherPhone({ raceMode: 0 });
+  await T.until(() => T.v("raceMode") === 0);
+  await T.mock("busy?start=3");
+  T.spoken.length = 0;
+  const first = T.w.startRace();
+  await T.sleep(500);
+  const offMeanwhile = T.$("#startRaceButton").disabled;
+  await T.w.startRace(); // a second tap, or "start", meanwhile
+  await first;
+  await T.until(() => T.v("isRacing()"), 4000);
+  await T.sleep(300);
+  const said = T.spoken.filter((t) => t === "Waiting for the first pass" || t === "Get ready" || t.startsWith("The timer is busy"));
+  T.check("while a start is being sent, Start stays off and a second Start does nothing", offMeanwhile && said.length === 1,
+    [offMeanwhile, said]);
+
+  // laps that arrive together (no connection for a while, the phone asleep): only the newest is said
+  await T.otherPhone({ anType: 2, anDelta: false, anTarget: false });
+  await T.until(() => T.v("ui.announcer.value") === "1lap");
+  await T.until(() => T.laps() >= 2, 8000);
+  failRace(true);
+  await T.sleep(4000); // two or three laps
+  await T.mock("passes?on=0"); // no new lap while the late ones are taken in
+  T.spoken.length = 0;
+  failRace(false);
+  await T.until(() => T.spoken.length > 0, 3000);
+  await T.sleep(600);
+  await T.mock("passes?on=1");
+  const lapCalls = T.spoken.filter((t) => /^(Maverick )?lap \d+/.test(t));
+  T.check("laps that arrive together: only the newest is said", lapCalls.length === 1 && lapCalls[0].includes("lap " + (T.laps() - 1)),
+    [lapCalls, T.laps()]);
+  // a callout not yet spoken when the next lap comes is dropped (short laps, long callouts)
+  T.v("audioEnabled = false");
+  await T.sleep(250); // the speech loop ends
+  const stub = T.w.queueSpeak;
+  T.w.queueSpeak = T.realQueueSpeak;
+  T.v("audioEnabled = true; speakQueue = []");
+  T.v("announceLap({ name: '', laps: [0, 4400, 4300] }, 1, 0); announceLap({ name: '', laps: [0, 4400, 4300] }, 2, 0)");
+  const queued = T.v("speakQueue.map((i) => i.text || i)");
+  T.check("a newer lap replaces callouts not yet spoken", queued.join() === "lap 2, 4.30,Best lap", queued);
+  T.w.queueSpeak = stub;
+  T.v("speakQueue = []; audioEnabled = false");
+  await T.sleep(250);
+  T.v("enableAudioLoop()");
+
+  // the countdown clock never shows a negative number (a status reply late by seconds)
+  await T.w.stopRace();
+  await T.idle();
+  await T.otherPhone({ countdown: true });
+  await T.until(() => T.$("#countdown").checked);
+  await T.w.startRace();
+  await T.until(() => T.v("status.state") === 1, 4000);
+  const shownLate = T.v("statusAtMs -= 6000; clockText()");
+  T.check("countdown with a late status: 'GO', not a negative number", shownLate === "GO", shownLate);
+  await T.w.stopRace();
+  await T.idle();
+
+  // Start with a settings change whose save failed (waiting for its retry): the race has it
+  await T.tab("config");
+  await T.mock("fail?save=1");
+  T.toggle("#countdown", false);
+  await T.until(() => T.saveState() === "error", 4000);
+  await T.w.startRace();
+  await T.until(() => T.v("isRacing()"), 6000);
+  T.check("Start after a failed save: the race has the change (no countdown)", !T.v("status.cd"), T.v("status.cd"));
+  await T.w.stopRace();
+  await T.idle();
+
+  // the race screen: the phone's Back button closes it (it left the timer's page)
+  await T.tab("race");
+  const before = T.w.history.length;
+  T.$("#raceScreenButton").click();
+  const added = T.w.history.length === before + 1;
+  if (added) T.w.history.back();
+  else T.$("#rsClose").click();
+  T.check("race screen: Back closes it and stays on the page", added && (await T.until(() => !T.shown("#raceScreen"), 2000)) &&
+    T.w.location.pathname === "/", [added, T.shown("#raceScreen")]);
+  const entries = T.w.history.length;
+  T.$("#raceScreenButton").click();
+  T.$("#rsClose").click();
+  await T.sleep(400);
+  T.check("race screen: ✕ closes it, Back then isn't needed twice", !T.shown("#raceScreen") && (!T.w.history.state || !T.w.history.state.raceScreen),
+    [T.w.history.length, entries, T.w.history.state]);
+  // closed and opened again at once (✕'s step back lands after the new opening)
+  T.$("#raceScreenButton").click();
+  T.$("#rsClose").click();
+  T.$("#raceScreenButton").click();
+  await T.sleep(500);
+  const stillOpen = T.shown("#raceScreen");
+  T.w.history.back();
+  T.check("race screen closed and opened again at once: stays open, Back then closes it",
+    stillOpen && (await T.until(() => !T.shown("#raceScreen"), 2000)) && T.w.location.pathname === "/", stillOpen);
+
+  // a timed race with no pass ends with nothing saved; Clear then makes way for the next race
+  await T.otherPhone({ raceMode: 1, raceSec: 30, countdown: true });
+  await T.mock("passes?on=0");
+  await T.w.startRace();
+  await T.until(() => T.v("status.state") === 4, 40000);
+  await T.w.clearRace();
+  T.check("a finished race without laps can be cleared", await T.until(() => T.v("status.state") === 0, 3000), T.v("status.state"));
+  await T.mock("passes?on=1");
+
+  // the timer restarts during a race: the race is lost, and the page says so
+  await T.otherPhone({ raceMode: 0, countdown: false });
+  await T.w.startRace();
+  await T.until(() => T.v("isRacing()"), 4000);
+  T.spoken.length = 0;
+  await T.mock("reboot");
+  T.check("timer restarted during a race: the page says the race was lost", (await T.until(() => T.shown("#raceLostNote"), 4000)) &&
+    T.spoken.some((t) => t.startsWith("The timer restarted")), T.spoken.slice(-3));
+  await T.w.startRace();
+  T.check("... until the next start", await T.until(() => !T.shown("#raceLostNote"), 3000));
+  await T.w.stopRace();
+  await T.idle();
+
+  // voice commands: "clear best time" clears (it said the best time)
+  const did = [];
+  const keep = { speakBestTime: T.w.speakBestTime, clearRace: T.w.clearRace };
+  T.w.speakBestTime = () => did.push("best");
+  T.w.clearRace = () => did.push("clear");
+  for (const words of ["best time", "clear best time", "clear time"]) if (T.w.voiceCommand) T.w.voiceCommand(words);
+  Object.assign(T.w, keep);
+  T.check("voice commands: 'clear best time' clears, 'best time' says it", did.join() === "best,clear,clear", did);
   T.check("no script errors", T.errors.length === 0, T.errors);
 };
 
@@ -883,6 +1142,13 @@ PAGE_TEST.calibrate = async (T) => {
   T.check("Apply saves the suggestion", suggested && cfg.enterRssi === +suggested[1] && cfg.exitRssi === +suggested[2], [suggested && suggested[0], cfg.enterRssi, cfg.exitRssi]);
   T.toggle("#autoCal", false);
   T.check("auto-calibration off: no result shown", !T.shown("#autoCalResult"));
+  // a receiver with a low floor (40 between passes, passes 120): the suggestion stays within
+  // the sliders (Exit 50 or more), or Apply sends a value the timer and the slider change
+  const low = [];
+  for (let i = 0; i < 1200; i++) low.push(i % 200 === 100 ? 120 : 40 + ((i * 7) % 5)); // a pass every 5 s, noise 40-44
+  const lowCal = T.v(`analyseAutoCal(${JSON.stringify(low)}, 1000)`);
+  T.check("auto-calibration on a low floor: Enter/Exit within the sliders", lowCal.enter >= 51 && lowCal.exit >= 50 && lowCal.exit < lowCal.enter,
+    lowCal);
 
   // channel scan
   T.$("#spectrumButton").click();
@@ -891,6 +1157,12 @@ PAGE_TEST.calibrate = async (T) => {
   T.check("scan done: 'Scan again', chart with labels and the pilot's channel", await T.until(() => T.text("#spectrumButton") === "Scan again", 15000) &&
     T.shown("#spectrum svg") && T.$$(".spectrum-labels span").length > 5 && T.text(".spectrum-pilots span") === "F4", T.text(".spectrum-pilots"));
   T.check("live RSSI back after the scan", await T.until(() => !T.shown("#rssiPaused"), 3000));
+  // another channel picked after the scan (to get away from a busy one): the chart marks it
+  await T.otherPhone({ freq: 5740 });
+  T.check("the scan chart marks the channel picked after the scan", await T.until(() => T.text(".spectrum-pilots span") === "F1", 4000),
+    T.text(".spectrum-pilots"));
+  await T.otherPhone({ freq: 5800 });
+  await T.until(() => T.text(".spectrum-pilots span") === "F4", 4000);
   // a scan started on another phone pauses this one's live RSSI too
   await T.get("/api/spectrum?start=1");
   T.check("another phone's scan: live RSSI paused, then back", await T.until(() => T.shown("#rssiPaused"), 3000) &&
@@ -924,6 +1196,8 @@ PAGE_TEST.history = async (T) => {
   const titles = items().map((i) => T.text(i.querySelector(".history-title")));
   T.check("six races, newest first, a named one shows its name and date", items().length === 6 && titles[2] === "Evening session at the field" &&
     !!items()[2].querySelector(".history-sub") && !items()[0].querySelector(".history-sub"), titles);
+  const gaps = items().slice(1).map((item, k) => item.getBoundingClientRect().top - items()[k].getBoundingClientRect().bottom);
+  T.check("race cards have space between them", gaps.every((g) => g >= 8), gaps);
   T.check("summary: mode and pilot line", T.text(items()[0].querySelector(".history-meta")) === "Lap race" &&
     T.text(items()[0].querySelector(".history-pilots")) === "Maverick · 5 laps · best 3.92", T.text(items()[0].querySelector(".history-pilots")));
 
@@ -1084,9 +1358,82 @@ PAGE_TEST.history = async (T) => {
   T.check("no script errors", T.errors.length === 0, T.errors);
 };
 
+// ── History edge cases: no connection, a race saved meanwhile, refused fixes, charts ──
+PAGE_TEST.historyEdges = async (T) => {
+  await T.mock("lap?s=1.5");
+  // History opened while the timer can't be reached: said so (not "No saved races yet")
+  await T.open();
+  await T.mock("offline?on=1");
+  await T.tab("history");
+  await T.sleep(1500);
+  T.check("History unreachable: says so, not 'No saved races yet'", T.shown("#historyNote") && /connection/i.test(T.text("#historyNote")) &&
+    !T.shown("#historyEmpty"), [T.text("#historyNote"), T.shown("#historyEmpty")]);
+  await T.mock("offline?on=0");
+  T.check("... and the races come once it answers", await T.until(() => T.$$(".history-item").length === 6 && !T.shown("#historyNote"), 8000));
+
+  // a race saved while History is open is listed (an open race stays open)
+  const items = () => T.$$(".history-item");
+  items()[2].querySelector(".history-summary").click();
+  await T.until(() => items()[2].querySelector(".history-detail table"));
+  await T.otherPhone({ raceMode: 2, raceLaps: 1, countdown: false });
+  await T.post("/timer/start");
+  T.check("a race saved while History is open appears at the top", await T.until(() => items().length === 7, 12000), items().length);
+  T.check("... and the race that was open stays open", T.shown(items()[3].querySelector(".history-detail")) &&
+    !!items()[3].querySelector(".history-detail table"));
+
+  // a fix refused because a race has just started (the page hasn't heard yet): said so
+  const item = items()[0];
+  item.querySelector(".history-summary").click();
+  await T.until(() => item.querySelector(".history-detail .button-row"));
+  T.button("Fix laps", item).click();
+  await T.until(() => item.querySelector(".lap-actions button"));
+  await T.otherPhone({ raceMode: 0 });
+  await T.post("/timer/start");
+  T.v("status.state = 0"); // this page's last status is from before the start
+  item.querySelector(".lap-actions button").click();
+  T.check("a fix refused because a race just started: 'Not during a race'", await T.until(() =>
+    /Not during a race/.test(T.text(item.querySelector(".history-detail .note.warn")) || ""), 4000),
+    T.text(item.querySelector(".history-detail .note.warn")));
+  await T.post("/timer/stop");
+
+  // "Fix laps" tapped while the timer can't be reached: not opened in fix mode later by itself
+  await T.open();
+  await T.mock("offline?on=1");
+  T.v("editRaceId = 6; openTab('history')");
+  await T.sleep(800);
+  await T.tab("race");
+  await T.mock("offline?on=0");
+  await T.sleep(500);
+  await T.tab("history");
+  await T.until(() => T.$$(".history-item").length >= 6, 6000);
+  await T.sleep(600);
+  T.check("Fix laps asked for while unreachable doesn't open fix mode later", !T.$(".history-detail .lap-actions"));
+
+  // a race of only the start pass: says so (an empty table before)
+  const box = T.d.createElement("div");
+  T.w.renderHistoryDetail(box, { id: 99, mode: 0, pilots: [{ name: "Solo", freq: 5800, laps: [2100] }] }, false);
+  T.check("a race with only the start pass: 'No laps'", /No laps/.test(box.textContent) && !box.querySelector("table"), box.textContent);
+
+  // the chart's scale: never below 0 s, a few grid lines also for a huge lap
+  const colors = { lap: "#000", best: "#000", band: "#000", target: "#000", grid: "#000", text: "#000", bg: "#fff" };
+  const svg = T.w.lapChartSvg([10000, 600000], { width: 320, height: 170 }, colors);
+  const labels = [...svg.matchAll(/<text[^>]*text-anchor="end"[^>]*>(-?[\d.]+)<\/text>/g)].map((m) => Number(m[1])); // the time grid
+  T.check("chart of a 10 s and a 600 s lap: no negative times, at most 6 grid labels", labels.length >= 2 && labels.length <= 6 &&
+    labels.every((v) => v >= 0), labels);
+  T.check("no script errors", T.errors.length === 0, T.errors);
+};
+
 // ── Connection: unreachable, settings failing to load, a timer restart ──
 PAGE_TEST.connection = async (T) => {
   await T.mock("lap?s=1.5");
+  // opened while the timer doesn't answer: the WiFi list and the timer info come once it does
+  await T.mock("offline?on=1");
+  await T.open("/", false);
+  await T.sleep(2000);
+  await T.mock("offline?on=0");
+  T.check("opened unreachable: saved networks and timer info load once it answers",
+    await T.until(() => T.$$("#savedNetworks .saved-row").length === 2 && T.text("#infoVersion") === "1.2.0-dev", 10000),
+    [T.$$("#savedNetworks .saved-row").length, T.text("#infoVersion")]);
   await T.open();
   await T.tab("race");
   // the timer can't be reached
@@ -1204,5 +1551,28 @@ PAGE_TEST.update = async (T) => {
   T.check("the timer refuses or can't be reached: said so, Upload on again", await T.until(() => T.text("#result") === "The timer did not accept the update.", 5000) &&
     !T.$("#upload").disabled, T.text("#result"));
   await T.mock("offline?on=0");
+  // during a race: refused before anything is sent (the flash write and the restart lose the race)
+  await T.post("/timer/start");
+  await T.open("/update.html");
+  const w3 = T.w;
+  const sent = [];
+  const fetch3 = w3.fetch.bind(w3);
+  w3.fetch = (url, opts) => {
+    sent.push(String(url));
+    return fetch3(url, opts);
+  };
+  const dt3 = new w3.DataTransfer();
+  dt3.items.add(new w3.File([new Uint8Array(16)], "laptimer-v1.2.0-firmware.bin"));
+  T.$("#file").files = dt3.files;
+  T.$("#file").dispatchEvent(new w3.Event("change", { bubbles: true }));
+  T.$("#upload").click();
+  T.check("update during a race: refused, nothing sent", await T.until(() => T.text("#result") === "A race is running: stop it first, then update.", 4000) &&
+    !sent.some((u) => u.includes("/ota/")) && !T.$("#upload").disabled, [T.text("#result"), sent]);
+  await T.post("/timer/stop");
+  // no connection at all (not a refusal): said so
+  w3.fetch = () => Promise.reject(new TypeError("Failed to fetch"));
+  T.$("#upload").click();
+  T.check("update with no connection: says so (not 'did not accept')",
+    await T.until(() => T.text("#result") === "No connection to the timer. Check the WiFi and try again.", 4000), T.text("#result"));
   T.check("no script errors", T.errors.length === 0, T.errors);
 };

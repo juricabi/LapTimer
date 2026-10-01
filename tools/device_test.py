@@ -43,6 +43,7 @@ def wait_scan_done(limit=10):
 
 
 TEST_PILOT = "Device Test Pilot"
+WIFI_TEST = "device_test"  # a WiFi entry it tries (and removes)
 _, original = req("/config")
 try:
     # settings: partial updates keep everything else, revision counts changes
@@ -91,6 +92,10 @@ try:
     req("/config", {"target": 45000})
     req("/config", {"countdown": not original["countdown"]})
     check("other settings leave the pace target alone", req("/config")[1].get("target") == 45000)
+    req("/config", {"anType": 7})
+    an_type = req("/config")[1]["anType"]
+    check("announce type kept within the page's five choices", 0 <= an_type <= 4, an_type)
+    req("/config", {"anType": original["anType"]})
     req("/config", {k: original[k] for k in original})
 
     # race vs channel scan, in every order
@@ -146,6 +151,18 @@ try:
     check("saved pilots refused while racing (flash write)", st == 409, st)
     st, _ = req("/api/races/rename", {"id": 1, "name": "During the race"})
     check("race rename refused while racing (flash write)", st == 409, st)
+    boot0 = status()["boot"]
+    st, _ = req("/restart", {})
+    time.sleep(1.5)
+    if st == 200:  # restarted (older firmware): wait until it is back
+        for _ in range(40):
+            try:
+                if status()["boot"] != boot0:
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+    check("restart refused while racing (the race would be lost)", st == 409 and status()["boot"] == boot0, st)
     req("/timer/stop", {})
     time.sleep(0.3)
     got = race_view()
@@ -201,6 +218,13 @@ try:
         print("SKIP race rename: no saved race (fly one lap, then run this again)", flush=True)
 
     # saved pilots: one at a time, names match without case, rename replaces, pace target kept
+    st, _ = req("/api/profiles/save", {"name": TEST_PILOT, "freq": 5800, "enter": 400, "exit": 300})
+    mine = next((p for p in req("/api/profiles")[1] if p["name"] == TEST_PILOT), {})
+    check("saved pilot thresholds kept within the sliders (Enter 400 -> 255, not 144)",
+          st == 200 and mine.get("enter") == 255 and mine.get("exit") == 254, (st, mine))
+    st, _ = req("/api/profiles/save", {"name": TEST_PILOT, "freq": 7000, "enter": 120, "exit": 100})
+    check("saved pilot on a channel outside 5.8 GHz refused", st == 400, st)
+    req("/api/profiles/remove", {"name": TEST_PILOT})
     prof0 = status()["prof"]
     st, _ = req("/api/profiles/save", {"name": TEST_PILOT, "freq": 5800, "enter": 120, "exit": 100, "target": 45000})
     st2, _ = req("/api/profiles/save", {"name": TEST_PILOT.upper(), "freq": 5880, "enter": 130, "exit": 140})
@@ -215,7 +239,17 @@ try:
     renamed = next((p for p in saved_pilots if p["name"] == TEST_PILOT + " 2"), {})
     check("saved pilot keeps its pace target (within 3-600 s)", renamed.get("target") == 3000, renamed)
     check("saved-pilot revision changes", status()["prof"] != prof0)
+    # WiFi: with a password the timer joins WPA2 only (8-63 characters or 64 hex digits): other
+    # lengths could never be joined, so they are refused (no change to the list)
+    nets_before = req("/api/wifi/saved")[1]["networks"]
+    st1, _ = req("/api/wifi/saved/add", {"ssid": WIFI_TEST + " short", "pwd": "1234567"})
+    st2, _ = req("/api/wifi/saved/add", {"ssid": WIFI_TEST + " long", "pwd": "x" * 64})
+    nets_after = req("/api/wifi/saved")[1]["networks"]
+    check("WiFi passwords the timer can't use refused (7 characters, 64 not hex)",
+          st1 == 400 and st2 == 400 and nets_after == nets_before, (st1, st2, nets_after))
 finally:
+    for suffix in (" short", " long"):  # if an older firmware took them
+        req("/api/wifi/saved/remove", {"ssid": WIFI_TEST + suffix})
     req("/config", {k: original[k] for k in original})
     for n in (TEST_PILOT, TEST_PILOT + " 2"):
         req("/api/profiles/remove", {"name": n})

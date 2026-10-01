@@ -303,8 +303,9 @@ main {
 }
 
 /* Tabs are shown with display:block by the script, so space children with margins */
-.tabcontent > * + * {
-  margin-top: var(--space-3);
+.tabcontent > * + *,
+#historyList > * + * {
+  margin-top: var(--space-3); /* History's race cards are in a list, not the tab itself: they touched */
 }
 
 .card {
@@ -864,7 +865,15 @@ table tr.best-lap td:nth-child(2)::after {
   border-bottom: 0;
 }
 
+.scan-results button span:first-child {
+  min-width: 0; /* a long unbroken name is cut, the signal stays in the row */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .scan-results .signal {
+  flex-shrink: 0;
   color: var(--muted);
   font-size: 13px;
   font-variant-numeric: tabular-nums;

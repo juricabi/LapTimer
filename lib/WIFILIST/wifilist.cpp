@@ -7,6 +7,23 @@
 
 static const char *NVS_NAMESPACE = "wifi";
 
+// A WPA2 password has 8-63 characters or is 64 hex digits; none is an open network. With any
+// password the ESP32 joins only WPA2 networks, so other lengths could never be joined.
+static bool usablePassword(const char *pass)
+{
+    size_t n = pass ? strlen(pass) : 0;
+    if (n == 0 || (n >= 8 && n <= 63))
+        return true;
+    if (n != 64)
+        return false;
+    for (size_t i = 0; i < n; i++)
+    {
+        if (!isxdigit((unsigned char)pass[i]))
+            return false;
+    }
+    return true;
+}
+
 void WifiList::init(Config *config)
 {
     Preferences prefs;
@@ -41,7 +58,7 @@ void WifiList::save()
 
 bool WifiList::add(const char *ssid, const char *pass)
 {
-    if (!ssid || ssid[0] == 0 || strlen(ssid) > 32 || (pass && strlen(pass) > 64))
+    if (!ssid || ssid[0] == 0 || strlen(ssid) > 32 || !usablePassword(pass))
         return false;
     WifiNetwork entry;
     strlcpy(entry.ssid, ssid, sizeof(entry.ssid));

@@ -37,6 +37,11 @@ function bandChannel(freq, preferBand = -1) {
   return null;
 }
 
+// "R1 5658", or "no channel" for a frequency the picker doesn't have (1111: receiver off)
+function freqText(freq) {
+  return bandChannel(freq) ? `${channelName(freq)} ${freq}` : "no channel";
+}
+
 function channelName(freq) {
   const picker = document.getElementById("pilotBand"); // same band as the pilot's picker shows
   const bc = bandChannel(freq, picker ? +picker.value : -1);
@@ -94,6 +99,7 @@ async function fetchJson(url, options) {
   if (!response.ok) {
     const err = new Error(url + ": HTTP " + response.status);
     err.status = response.status;
+    err.body = await response.json().catch(() => null); // the reason, e.g. {"status": "racing"}
     throw err;
   }
   return response.json();
@@ -260,7 +266,9 @@ function renderPilot() {
   $("targetHint").textContent = TARGET_HINT;
   const bc = bandChannel(pilot.freq, +ui.pilotBand.value);
   ui.pilotBand.value = bc ? bc.band : 4;
-  ui.pilotChannel.value = bc ? bc.channel : 0;
+  // no channel (a new timer has none): none shown, or the one shown couldn't be picked (no change)
+  if (bc) ui.pilotChannel.value = bc.channel;
+  else ui.pilotChannel.selectedIndex = -1;
   $("pilotFreq").textContent = bc ? pilot.freq : "Off";
   $("pilotHint").hidden = !!bc;
   renderSavedPilots();
@@ -550,8 +558,10 @@ function scheduleSave() {
 // waiting to be sent goes first, or the race would start with the old value
 async function flushSettings() {
   if (document.activeElement === ui.targetLap) ui.targetLap.blur(); // a typed target is taken on "change"
-  if (!saveTimer) return;
+  while (savingNow) await sleep(50); // a save on its way (sent, no reply yet): Start could overtake it
+  if (!configLoaded || (!saveTimer && !Object.keys(changedSettings().diff).length)) return; // also one that failed
   clearTimeout(saveTimer);
+  clearTimeout(saveRetryTimer);
   saveTimer = null;
   const ok = await saveConfig();
   setSaveState(ok ? "saved" : "error");
@@ -715,6 +725,7 @@ $("wifiScanButton").addEventListener("click", async (e) => {
       item.append(el("span", "", n.ssid + (n.open ? "" : " 🔒")), el("span", "signal", n.rssi + " dBm"));
       item.addEventListener("click", () => {
         ui.ssid.value = n.ssid;
+        if (n.open) ui.pwd.value = ""; // with a password the timer joins only WPA2: never an open network
         results.hidden = true;
         ui.pwd.focus();
       });
@@ -735,21 +746,32 @@ $("restartEspButton").addEventListener("click", async (e) => {
     await postJson("/restart");
     showButtonStatus(e.target, "Restarting…");
   } catch (err) {
-    showButtonStatus(e.target, "Failed");
+    showButtonStatus(e.target, err.status === 409 ? "After the race" : "Failed"); // a restart would lose the race
   }
   e.target.disabled = false;
 });
 
 // ── Saved WiFi networks ──
+let savedWifi = null; // {networks (newest first), max} as the timer last listed them
+let savedWifiRetry = null;
+
+// Not loaded yet because the timer didn't answer (a phone just joined the hotspot): asked again
+function retryUnanswered(e, load) {
+  if (!e.status || e.status >= 500) return setTimeout(load, 3000);
+  return null;
+}
+
 async function loadSavedNetworks() {
   const container = $("savedNetworks");
+  clearTimeout(savedWifiRetry);
   let saved;
   try {
     saved = await fetchJson("/api/wifi/saved");
   } catch (e) {
-    container.textContent = "";
+    savedWifiRetry = retryUnanswered(e, loadSavedNetworks); // the list shown stays
     return;
   }
+  savedWifi = saved;
   container.innerHTML = "";
   if (!saved.networks.length) {
     container.appendChild(el("p", "hint", "No saved networks: the timer uses its own hotspot."));
@@ -782,8 +804,24 @@ $("addWifiButton").addEventListener("click", async (e) => {
     showButtonStatus(button, "Enter a network name");
     return;
   }
+  if (utf8.encode(ssid).length > 32) {
+    showButtonStatus(button, "Network name too long"); // WiFi names have at most 32 bytes
+    return;
+  }
+  // WPA2 passwords have 8-63 characters (or are 64 hex digits); empty is an open network
+  const pwd = ui.pwd.value;
+  const pwdBytes = utf8.encode(pwd).length;
+  if (pwdBytes && (pwdBytes < 8 || pwdBytes > 63) && !/^[0-9a-fA-F]{64}$/.test(pwd)) {
+    showButtonStatus(button, "Password: 8-63 characters, or none");
+    return;
+  }
+  // the timer keeps a few: a new one then forgets the oldest, maybe the one it is on
+  if (savedWifi && !savedWifi.networks.includes(ssid) && savedWifi.networks.length >= savedWifi.max) {
+    const oldest = savedWifi.networks[savedWifi.networks.length - 1];
+    if (!confirm(`The list is full (${savedWifi.max} networks): saving "${ssid}" forgets "${oldest}". Save it?`)) return;
+  }
   try {
-    await postJson("/api/wifi/saved/add", { ssid, pwd: ui.pwd.value });
+    await postJson("/api/wifi/saved/add", { ssid, pwd });
     ui.ssid.value = "";
     ui.pwd.value = "";
     $("wifiScanResults").hidden = true;
@@ -806,13 +844,21 @@ $("forgetWifiButton").addEventListener("click", async (e) => {
     showButtonStatus(button, err.status === 409 ? "Not during a race" : "Failed, try again");
     return;
   }
-  fetch("/restart", { method: "POST" }).catch(() => {});
+  loadSavedNetworks();
+  const restart = await fetch("/restart", { method: "POST" }).catch(() => null);
+  if (!restart || !restart.ok) {
+    button.disabled = false;
+    showButtonStatus(button, "Cleared: tap Restart timer", 8000); // the list is empty, the timer still on its network
+    return;
+  }
   showButtonStatus(button, "Restarting…", 0);
   $("wifiForgotten").hidden = false;
 });
 
 // ── Device info (firmware updates are on update.html) ──
+let infoRetry = null;
 async function loadInfo() {
+  clearTimeout(infoRetry);
   try {
     const info = await fetchJson("/api/info");
     $("infoVersion").textContent = info.version;
@@ -820,7 +866,7 @@ async function loadInfo() {
     $("wifiLostNote").hidden = info.mode !== "wifi"; // only while the timer is on a network
     $("infoIp").textContent = info.ip + (info.mode === "wifi" ? " · " + info.host : "");
   } catch (e) {
-    /* older firmware */
+    infoRetry = retryUnanswered(e, loadInfo); // a 404: older firmware without it
   }
 }
 
@@ -838,6 +884,7 @@ document.querySelector(".tabs").addEventListener("click", (e) => {
 
 function openTab(tab) {
   currentTab = tab;
+  if (tab !== "history") editRaceId = null; // Fix laps asked for, then left: not opened later
   for (const b of document.querySelectorAll(".tablinks")) b.classList.toggle("active", b.dataset.tab === tab);
   for (const s of document.querySelectorAll(".tabcontent")) s.hidden = s.id !== tab;
   if (tab === "history") loadHistory();
@@ -881,6 +928,8 @@ let seenRaceFinished = false;
 let seenEdits = 0; // lap corrections already taken over
 let raceFetchPending = false;
 let raceFetchAgain = false; // laps changed while a fetch was running
+let raceFetchFailed = false; // the last fetch failed: made again with the next status
+let starting = false; // a start on its way: Start stays off (a second one said "Get ready" twice)
 
 function fetchRace() {
   if (raceFetchPending) {
@@ -889,8 +938,14 @@ function fetchRace() {
   }
   raceFetchPending = true;
   fetchJson("/api/race")
-    .then(handleRace)
-    .catch((err) => console.debug("/api/race failed:", err))
+    .then((r) => {
+      raceFetchFailed = false;
+      handleRace(r);
+    })
+    .catch((err) => {
+      raceFetchFailed = true; // e.g. the one after the last pass: the card kept the old laps
+      console.debug("/api/race failed:", err);
+    })
     .finally(() => {
       raceFetchPending = false;
       if (raceFetchAgain) {
@@ -926,6 +981,11 @@ function handleStatus(s) {
     const restarted = bootId !== null;
     bootId = s.boot;
     if (restarted) {
+      // the race in progress was only in the timer's memory
+      if (previous && previous.state >= STATE.COUNTDOWN && previous.state <= STATE.RUNNING) {
+        $("raceLostNote").hidden = false;
+        queueSpeak("The timer restarted. The race was lost");
+      }
       // Race ids and revisions start again after a restart: forget what was seen before
       seenRaceId = null;
       knownRev = null;
@@ -935,8 +995,12 @@ function handleStatus(s) {
       loadSavedNetworks(); // the WiFi list and the connection may have changed with the restart
       loadInfo();
       fetchRace();
+      if (currentTab === "history") loadHistory();
     }
   }
+  if (isRacing()) $("raceLostNote").hidden = true;
+  // a race saved while History is open: listed at once
+  if (previous && s.savedId !== previous.savedId && s.savedId > 0 && currentTab === "history") addSavedRaces();
   if (s.prof !== undefined && s.prof !== profilesRev) {
     if (profilesRev !== null) loadProfiles();
     profilesRev = s.prof;
@@ -950,7 +1014,7 @@ function handleStatus(s) {
     previous.edits !== s.edits ||
     previous.laps !== s.laps ||
     previous.fin !== s.fin;
-  if (lapsChanged) fetchRace();
+  if (lapsChanged || raceFetchFailed) fetchRace();
 
   if (s.timeUp && !seenTimeUp && seenRaceId === s.race) {
     queueSpeak("Time's up");
@@ -971,7 +1035,10 @@ function raceElapsed() {
 function clockText() {
   if (!status) return formatClock(0);
   const elapsed = raceElapsed();
-  if (status.state === STATE.COUNTDOWN) return String(Math.ceil(-elapsed / 1000) || "GO");
+  if (status.state === STATE.COUNTDOWN) {
+    const left = Math.ceil(-elapsed / 1000);
+    return left > 0 ? String(left) : "GO"; // past GO without a newer status: still "GO"
+  }
   if (status.state === STATE.RUNNING && status.mode === MODE.TIMED && !status.timeUp) {
     return formatClock(status.raceMs - elapsed); // time left
   }
@@ -1015,7 +1082,7 @@ setInterval(() => {
 function renderRaceControls() {
   const state = status ? status.state : STATE.IDLE;
   const racing = state === STATE.COUNTDOWN || state === STATE.WAITING || state === STATE.RUNNING;
-  $("startRaceButton").disabled = racing;
+  $("startRaceButton").disabled = racing || starting;
   $("stopRaceButton").disabled = !racing;
   $("clearLapsButton").disabled = racing;
   if (!spectrumScanning) $("spectrumButton").disabled = racing;
@@ -1158,6 +1225,8 @@ function announceNewLaps(r, speak = true) {
   const say = (text) => speak && queueSpeak(text);
   const p = racePilot(r);
   for (let n = seenLaps; n < p.laps.length; n++) {
+    // laps that arrive together (no connection for a while, the phone asleep): the newest only
+    if (n < p.laps.length - 1) continue;
     if (n === 0) {
       if (!r.cd) say("Race start");
       continue;
@@ -1180,6 +1249,9 @@ function announceNewLaps(r, speak = true) {
 // target, with any choice there (Beep + Target: a beep, then "minus 0.30"). "Best lap" comes
 // whenever something is said for the lap. target: the race's pace target (0 = none).
 function announceLap(p, n, target) {
+  // callouts of an earlier lap not spoken yet (short laps, long callouts) are out of date
+  speakQueue = speakQueue.filter((item) => item.kind !== "lap");
+  const say = (text) => queueSpeak(text, "lap");
   const lapMs = p.laps[n];
   const lapStr = secs(lapMs);
   const who = p.name && p.name.trim() ? p.name.trim() + " " : "";
@@ -1189,23 +1261,23 @@ function announceLap(p, n, target) {
   if (type === "beep") {
     if (audioEnabled) beep(100, 330, "square");
   } else if (type === "1lap") {
-    queueSpeak(`${who}lap ${n}, ${lapStr}`);
+    say(`${who}lap ${n}, ${lapStr}`);
   } else if (type === "2lap" && n >= 2) {
-    queueSpeak(`${who}2 laps ${secs(lapMs + p.laps[n - 1])}`);
+    say(`${who}2 laps ${secs(lapMs + p.laps[n - 1])}`);
   } else if (type === "3lap" && n >= 3) {
-    queueSpeak(`${who}3 laps ${secs(lapMs + p.laps[n - 1] + p.laps[n - 2])}`);
+    say(`${who}3 laps ${secs(lapMs + p.laps[n - 1] + p.laps[n - 2])}`);
   }
   const previousBest = previous.length ? Math.min(...previous) : null;
   const sayTarget = lapCompare === "target" && !!target;
   const sayDelta = lapCompare === "best" && previousBest !== null;
   const lapSpoken = type === "1lap" || type === "2lap" || type === "3lap";
-  if (previousBest !== null && lapMs < previousBest && (lapSpoken || sayTarget || sayDelta)) queueSpeak("Best lap");
+  if (previousBest !== null && lapMs < previousBest && (lapSpoken || sayTarget || sayDelta)) say("Best lap");
   if (sayTarget) {
     const d = lapMs - target;
-    queueSpeak(Math.abs(d) <= ON_TARGET_MS ? "On target" : (d > 0 ? "plus " : "minus ") + (Math.abs(d) / 1000).toFixed(2));
+    say(Math.abs(d) <= ON_TARGET_MS ? "On target" : (d > 0 ? "plus " : "minus ") + (Math.abs(d) / 1000).toFixed(2));
   } else if (sayDelta) {
     const d = lapMs - previousBest;
-    queueSpeak((d < 0 ? "minus " : "plus ") + (Math.abs(d) / 1000).toFixed(2));
+    say((d < 0 ? "minus " : "plus ") + (Math.abs(d) / 1000).toFixed(2));
   }
 }
 
@@ -1252,7 +1324,7 @@ function renderRacePilot(r) {
     <div class="race-pilot-head">
       <span class="dot-p"></span>
       <span>${escapeHtml(pilotLabel(p.name))}</span>
-      <span class="muted">${channelName(p.freq)} ${p.freq}</span>
+      <span class="muted">${freqText(p.freq)}</span>
       ${p.full ? '<span class="finished lap-memory-full">Lap memory full</span>' : p.fin ? '<span class="finished">Finished</span>' : ""}
     </div>
     <div class="stats">
@@ -1290,8 +1362,24 @@ function formatTotal(ms) {
 // another phone started it): the timer's state decides.
 async function startRace() {
   const button = $("startRaceButton");
-  if (button.disabled) return;
-  button.disabled = true; // until the next status render (a second tap said "Get ready" again)
+  if (button.disabled || starting) return;
+  if (!bandChannel(pilot.freq)) {
+    // the receiver is off: a practice would wait for ever, a timed or lap race end at once
+    showButtonStatus(button, "No channel: pick one in Setup");
+    queueSpeak("No channel. Pick one in Setup");
+    return;
+  }
+  starting = true;
+  button.disabled = true;
+  try {
+    await sendStart(button);
+  } finally {
+    starting = false;
+    renderRaceControls();
+  }
+}
+
+async function sendStart(button) {
   await flushSettings();
   let noAnswer = 0;
   for (let attempt = 0; attempt < 8; attempt++) {
@@ -1345,12 +1433,16 @@ async function clearRace() {
     queueSpeak("The race is still running");
     return;
   }
-  if (!(raceData && racePilot(raceData).laps.length)) {
+  const finished = status && status.state === STATE.FINISHED; // also without laps (a timed race with no pass)
+  if (!finished && !(raceData && racePilot(raceData).laps.length)) {
     queueSpeak("Nothing to clear");
     return;
   }
   const r = await fetchTimeout("/timer/clear", { method: "POST" }).catch(() => null);
-  if (r && r.ok) queueSpeak("Times cleared");
+  if (r && r.ok) {
+    queueSpeak("Times cleared");
+    $("raceLostNote").hidden = true;
+  }
   else if (r && r.status === 409) {
     showButtonStatus(button, "Busy, try again"); // the last race is still being saved
     queueSpeak("The timer is busy, try again");
@@ -1374,18 +1466,46 @@ $("editLapsButton").addEventListener("click", () => {
 });
 
 // ── Race screen ──
+// The phone's Back button closes it (opening it adds a history entry; Back left the page),
+// as do Escape and leaving fullscreen (Android's first Back only did that). Closing it
+// otherwise steps back over that entry; the step lands later, maybe after it was opened again.
+let raceScreenOwnBack = false; // a step back of our own on its way
+
 $("raceScreenButton").addEventListener("click", () => {
   $("raceScreen").hidden = false;
   document.documentElement.classList.add("race-screen-open");
   if (raceData) renderRaceScreen(raceData);
+  if (!raceScreenOwnBack) history.pushState({ raceScreen: true }, ""); // else added when it lands
+  document.addEventListener("keydown", onRaceScreenKey);
   const fs = document.documentElement.requestFullscreen;
   if (fs) fs.call(document.documentElement).catch(() => {});
 });
 
-$("rsClose").addEventListener("click", () => {
+function closeRaceScreen(fromBack) {
+  if ($("raceScreen").hidden) return;
   $("raceScreen").hidden = true;
   document.documentElement.classList.remove("race-screen-open");
+  document.removeEventListener("keydown", onRaceScreenKey);
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  if (!fromBack && history.state && history.state.raceScreen) {
+    raceScreenOwnBack = true;
+    history.back();
+  }
+}
+window.addEventListener("popstate", () => {
+  if (raceScreenOwnBack) {
+    raceScreenOwnBack = false;
+    if (!$("raceScreen").hidden) history.pushState({ raceScreen: true }, ""); // opened again meanwhile
+    return;
+  }
+  closeRaceScreen(true);
+});
+const onRaceScreenKey = (e) => {
+  if (e.key === "Escape") closeRaceScreen(false);
+};
+$("rsClose").addEventListener("click", () => closeRaceScreen(false));
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement) closeRaceScreen(false);
 });
 
 function renderRaceScreen(r) {
@@ -1444,11 +1564,12 @@ const exitInput = $("exit");
 // The calibration belongs to the pilot flying: their name and channel head the graph
 function renderCalibPilot() {
   $("calibPilotName").textContent = pilotLabel(pilot.name);
-  $("calibPilotFreq").textContent = bandChannel(pilot.freq) ? `${channelName(pilot.freq)} ${pilot.freq}` : "no channel";
+  $("calibPilotFreq").textContent = freqText(pilot.freq);
   if (pilot.freq !== calibFreq) {
     calibFreq = pilot.freq; // another channel: start the auto-calibration afresh
     autoCalSamples = [];
     renderAutoCal();
+    spectrumPilot();
   }
 }
 
@@ -1635,8 +1756,8 @@ function analyseAutoCal(samples, minLapMs) {
   const high = between[Math.floor((between.length - 1) * 0.98)];
   const ref = Math.min(...passes.map((i) => samples[i]));
   if (ref - high < 10) return { passes: passes.length, high, ref };
-  const enter = Math.round(high + (ref - high) / 2);
-  return { passes: passes.length, high, ref, enter, exit: Math.min(high + 2, enter - 3) };
+  const enter = Math.min(RSSI_MAX, Math.max(RSSI_MIN + 1, Math.round(high + (ref - high) / 2)));
+  return { passes: passes.length, high, ref, enter, exit: Math.max(RSSI_MIN, Math.min(high + 2, enter - 3)) };
 }
 
 function renderAutoCal() {
@@ -1750,6 +1871,7 @@ function spectrumUpdate(data) {
   if (!measured.length) return;
   if (!spec.els) spectrumBuild(data, Math.min(...measured));
   spec.data = data;
+  spectrumPilot();
   const complete = !data.running;
   const floor = Math.max(0, Math.min(...measured) - 5);
   spec.els.note.hidden = !complete || Math.max(...measured) - floor >= 15;
@@ -1764,23 +1886,16 @@ function spectrumBuild(data, firstMin) {
   const freqX = (f) => ((f - data.start) / data.step) * SPEC_W + SPEC_W / 2;
   const pct = (f) => ((freqX(f) / width) * 100).toFixed(2) + "%";
 
-  let marker = "";
-  let names = "";
-  if (bandChannel(pilot.freq)) {
-    const x = freqX(pilot.freq);
-    marker = `<line x1="${x}" x2="${x}" y1="0" y2="${SPEC_H}" stroke="var(--pilot)" stroke-width="2" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" />`;
-    names = `<span style="left:${pct(pilot.freq)}">${escapeHtml(channelName(pilot.freq))}</span>`;
-  }
   let labels = "";
   for (let f = 5650; f <= data.start + (count - 1) * data.step; f += 25) labels += `<span style="left:${pct(f)}">${f}</span>`;
 
   box.innerHTML = `
-    <div class="spectrum-pilots">${names}</div>
+    <div class="spectrum-pilots"></div>
     <div class="spectrum-plot">
       <svg viewBox="0 0 ${width} ${SPEC_H}" preserveAspectRatio="none" role="img" aria-label="Signal strength per frequency">
         <path class="spec-area" fill="hsla(214, 70%, 60%, 0.2)" />
         <path class="spec-line" fill="none" stroke="hsl(214, 70%, 60%)" stroke-width="2" vector-effect="non-scaling-stroke" />
-        ${marker}
+        <line class="spec-pilot" y1="0" y2="${SPEC_H}" stroke="var(--pilot)" stroke-width="2" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" display="none" />
       </svg>
       <span class="spectrum-scale spectrum-scale-max"></span><span class="spectrum-scale spectrum-scale-min"></span>
     </div>
@@ -1793,10 +1908,25 @@ function spectrumBuild(data, firstMin) {
     max: box.querySelector(".spectrum-scale-max"),
     min: box.querySelector(".spectrum-scale-min"),
     note: box.querySelector(".spectrum-quiet"),
+    marker: box.querySelector(".spec-pilot"),
+    names: box.querySelector(".spectrum-pilots"),
   };
   spec.shown = new Array(count).fill(null);
   spec.min = Math.max(0, firstMin - 5);
   spec.max = spec.min + 90;
+}
+
+// The pilot's channel on the scan chart; it moves when another channel is picked after the scan
+function spectrumPilot() {
+  const { data, els } = spec;
+  if (!data || !els) return;
+  const width = data.rssi.length * SPEC_W;
+  const x = ((pilot.freq - data.start) / data.step) * SPEC_W + SPEC_W / 2;
+  const shown = !!bandChannel(pilot.freq) && x >= 0 && x <= width;
+  els.marker.setAttribute("display", shown ? "inline" : "none");
+  els.marker.setAttribute("x1", x);
+  els.marker.setAttribute("x2", x);
+  els.names.innerHTML = shown ? `<span style="left:${((x / width) * 100).toFixed(2)}%">${escapeHtml(channelName(pilot.freq))}</span>` : "";
 }
 
 // One animation frame: move shown values and the scale part of the way to their targets
@@ -1851,11 +1981,19 @@ let historyList = [];
 let editRaceId = null; // set by "Fix laps" on the Race tab: open this race for editing
 
 // note: shown above the list (e.g. why a race just disappeared); without one it is hidden
+let historyRetry = null;
+
 async function loadHistory(note) {
+  clearTimeout(historyRetry);
   try {
     historyList = (await fetchJson("/api/races")).sort((a, b) => b.id - a.id);
   } catch (e) {
-    historyList = [];
+    // the races shown stay; loaded once the timer answers (while History is open)
+    $("historyNote").textContent = "No connection to the timer: the races can't be loaded now.";
+    $("historyNote").hidden = false;
+    $("historyEmpty").hidden = true;
+    historyRetry = retryUnanswered(e, () => currentTab === "history" && loadHistory(note));
+    return;
   }
   $("historyNote").textContent = note || "";
   $("historyNote").hidden = !note;
@@ -1916,25 +2054,43 @@ function renderHistory() {
   const list = $("historyList");
   list.innerHTML = "";
   $("historyEmpty").hidden = historyList.length > 0;
-  for (const race of historyList) {
-    const card = el("div", "card history-item");
-    const summary = el("button", "history-summary");
-    summary.type = "button";
-    summary.innerHTML = historySummaryHtml(race, race.pilots);
-    const detail = el("div", "history-detail");
-    detail.hidden = true;
-    summary.addEventListener("click", () => {
-      if (!detail.hidden) detail.hidden = true;
-      else openHistoryDetail(race.id, summary, detail, false);
-    });
-    card.append(summary, detail);
-    list.appendChild(card);
-    if (race.id === editRaceId) {
-      editRaceId = null;
-      openHistoryDetail(race.id, summary, detail, true);
-      setTimeout(() => card.scrollIntoView({ block: "start" }), 50);
-    }
+  for (const race of historyList) list.appendChild(historyCard(race));
+  editRaceId = null; // asked for a race that isn't there (any more): not opened later by itself
+}
+
+async function addSavedRaces() {
+  let list;
+  try {
+    list = await fetchJson("/api/races");
+  } catch (e) {
+    return; // the next one saved, or the next time History is opened
   }
+  const shown = new Set(historyList.map((r) => r.id));
+  for (const race of list.filter((r) => !shown.has(r.id)).sort((a, b) => a.id - b.id)) {
+    $("historyList").prepend(historyCard(race));
+  }
+  historyList = list.sort((a, b) => b.id - a.id);
+  $("historyEmpty").hidden = historyList.length > 0;
+}
+
+function historyCard(race) {
+  const card = el("div", "card history-item");
+  const summary = el("button", "history-summary");
+  summary.type = "button";
+  summary.innerHTML = historySummaryHtml(race, race.pilots);
+  const detail = el("div", "history-detail");
+  detail.hidden = true;
+  summary.addEventListener("click", () => {
+    if (!detail.hidden) detail.hidden = true;
+    else openHistoryDetail(race.id, summary, detail, false);
+  });
+  card.append(summary, detail);
+  if (race.id === editRaceId) {
+    editRaceId = null;
+    openHistoryDetail(race.id, summary, detail, true);
+    setTimeout(() => card.scrollIntoView({ block: "start" }), 50);
+  }
+  return card;
 }
 
 async function openHistoryDetail(id, summary, detail, editing) {
@@ -1962,14 +2118,16 @@ function renderHistoryDetail(container, race, editing, summary) {
     const st = pilotStats(p);
     const block = el("div", "history-pilot");
     block.innerHTML = `
-      <div class="race-pilot-head"><span class="dot-p"></span><span>${escapeHtml(pilotLabel(p.name, i, race.pilots.length))}</span><span class="muted">${channelName(p.freq)} ${p.freq}</span>${p.full ? '<span class="finished lap-memory-full">Lap memory full</span>' : ""}</div>
+      <div class="race-pilot-head"><span class="dot-p"></span><span>${escapeHtml(pilotLabel(p.name, i, race.pilots.length))}</span><span class="muted">${freqText(p.freq)}</span>${p.full ? '<span class="finished lap-memory-full">Lap memory full</span>' : ""}</div>
       <p class="hint">${statsLine(st, race.target)}</p>`;
     if (st.laps >= 2) {
       const chart = el("div", "lap-chart");
       block.appendChild(chart);
       mountLapChart(chart, p.laps.slice(1), { target: race.target || 0, best3From: st.best3From }, `history-${race.id}-${i}`);
     }
-    if (p.laps.length) {
+    if (p.laps.length === 1 && !editing) {
+      block.appendChild(el("p", "hint", "No laps: only the start pass."));
+    } else if (p.laps.length) {
       const table = el("table");
       table.innerHTML = `<tr><th>Lap</th><th>Time</th>${editing ? "<th>Fix</th>" : ""}</tr>`;
       p.laps.forEach((t, n) => {
@@ -2106,7 +2264,8 @@ async function editLap(race, pilotIndex, op, lap, container, summary) {
   try {
     await postJson("/api/races/edit", { id: race.id, pilot: pilotIndex, op, lap, expect: race.pilots[pilotIndex].laps[lap] });
   } catch (e) {
-    note = e.status === 409 && isRacing() ? "Not during a race: try again after it."
+    const racing = e.status === 409 && ((e.body && e.body.status === "racing") || isRacing());
+    note = racing ? "Not during a race: try again after it."
       : e.status === 409 ? "The laps changed meanwhile. Here they are now; check and try again."
       : "Could not change this lap.";
   }
@@ -2254,7 +2413,7 @@ function lapChartLayout(laps, opts) {
     hi = mid + 250;
   }
   const margin = (hi - lo) * 0.12;
-  const yMin = lo - margin;
+  const yMin = Math.max(0, lo - margin);
   const yMax = hi + margin;
   const plotTop = pad.top;
   const plotBottom = H - pad.bottom;
@@ -2270,8 +2429,8 @@ function lapChartLayout(laps, opts) {
 
 // Grid lines at round lap times, 2-5 of them
 function chartTicks(yMin, yMax) {
-  const steps = [100, 200, 250, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000];
-  const stepMs = steps.find((st) => (yMax - yMin) / st <= 4) || 60000;
+  const steps = [100, 200, 250, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 120000, 300000, 600000];
+  const stepMs = steps.find((st) => (yMax - yMin) / st <= 4) || 600000;
   const ticks = [];
   for (let t = Math.ceil(yMin / stepMs) * stepMs; t <= yMax; t += stepMs) ticks.push(t);
   return { ticks, decimals: stepMs % 1000 === 0 ? 0 : stepMs % 100 === 0 ? 1 : 2 };
@@ -2885,8 +3044,9 @@ let speechTestButton = null; // set while "Test voice" is running, to report the
 const speechSupported = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
 const isAndroid = /android/i.test(navigator.userAgent);
 
-function queueSpeak(text) {
-  if (audioEnabled) speakQueue.push(text);
+// kind "lap": a lap's callout, dropped when a newer lap comes before it is spoken
+function queueSpeak(text, kind) {
+  if (audioEnabled) speakQueue.push({ text, kind });
 }
 
 async function enableAudioLoop() {
@@ -2905,7 +3065,7 @@ async function enableAudioLoop() {
       }
     } else if (speakQueue.length > 0) {
       lastSpeechMs = Date.now();
-      doSpeak(speakQueue.shift());
+      doSpeak(speakQueue.shift().text);
     }
     await new Promise((r) => setTimeout(r, 100));
   }
@@ -2914,6 +3074,8 @@ async function enableAudioLoop() {
 
 function disableAudioLoop() {
   audioEnabled = false;
+  speakQueue = [];
+  if (speechSupported) speechSynthesis.cancel();
 }
 
 // The announcer is heard through this phone's Voice switch: say so where the announcer is set
@@ -3213,16 +3375,7 @@ function startVoiceRecognition() {
       if (!event.results[i].isFinal) continue;
       const transcript = event.results[i][0].transcript.trim().toLowerCase();
       if (Date.now() - lastSpeechMs < 1500) break;
-      const has = (word) => new RegExp("\\b" + word + "\\b").test(transcript);
-      if (has("best time")) speakBestTime();
-      else if (has("clear time") || has("clear best")) clearRace();
-      else if (has("start") || has("begin") || has("go")) {
-        if (isRacing()) queueSpeak("The race is already running");
-        else startRace(); // does nothing while a start is already on its way (it answers)
-      } else if (has("stop")) {
-        if (isRacing()) stopRace();
-        else queueSpeak("No race is running");
-      }
+      voiceCommand(transcript);
       break;
     }
   };
@@ -3281,6 +3434,20 @@ document.addEventListener("pointerdown", () => startVoiceRecognition(), { once: 
 
 // The mic icon explains its colour and, on Chrome over plain http, how to allow the
 // microphone (a page can't open chrome:// links, so the address is there to copy)
+// What a heard phrase (lower case) asks for
+function voiceCommand(transcript) {
+  const has = (word) => new RegExp("\\b" + word + "\\b").test(transcript);
+  if (has("clear time") || has("clear best")) clearRace(); // before "best time": "clear best time" clears
+  else if (has("best time")) speakBestTime();
+  else if (has("start") || has("begin") || has("go")) {
+    if (isRacing()) queueSpeak("The race is already running");
+    else startRace(); // does nothing while a start is already on its way (it answers)
+  } else if (has("stop")) {
+    if (isRacing()) stopRace();
+    else queueSpeak("No race is running");
+  }
+}
+
 function renderMicHelp() {
   const box = $("micHelpText");
   let html;
