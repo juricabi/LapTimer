@@ -95,6 +95,8 @@ async function main() {
     await send("Page.enable");
     // the page under test in its dark theme by default (the layout section also tries light)
     await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
+    // a headless page has no focus: without this, focus() and blur() fire no events
+    await send("Emulation.setFocusEmulationEnabled", { enabled: true });
     const loaded = new Promise((resolve) => listeners.set("Page.loadEventFired", resolve));
     await send("Page.navigate", { url: MOCK + "/mock/log" });
     await loaded;

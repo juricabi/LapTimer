@@ -324,6 +324,40 @@ PAGE_TEST.setup = async (T) => {
   await T.until(() => !T.$$("#savedPilots .chip-name").some((b) => b.textContent.startsWith("Rooster")));
   await T.sleep(500);
   T.check("× forgets a saved pilot on the timer", !(await T.get("/api/profiles")).some((p) => p.name === "Rooster"));
+  T.check("× asks first", T.dialogs.at(-1) === 'Forget "Rooster"?', T.dialogs.at(-1));
+
+  // a saved pilot tapped while a new name is being typed: that pilot, the typed name dropped
+  // (a real tap blurs the field before its click, unless the press keeps the focus there)
+  const chipOf = (n) => T.$$("#savedPilots .chip-pilot").find((c) => c.querySelector(".chip-name").textContent.startsWith(n + " ·"));
+  name.focus();
+  T.setValue(name, "Goo");
+  const press = new T.w.MouseEvent("mousedown", { bubbles: true, cancelable: true });
+  chipOf("Iceman").querySelector(".chip-name").dispatchEvent(press);
+  if (!press.defaultPrevented) name.blur(); // what the tap does then
+  chipOf("Iceman").querySelector(".chip-name").click();
+  await T.saved();
+  await T.sleep(800);
+  cfg = await T.config();
+  let names = (await T.get("/api/profiles")).map((p) => p.name);
+  T.check("a saved pilot tapped while typing a name: that pilot, the typed name not remembered",
+    cfg.name === "Iceman" && !names.includes("Goo") && T.d.activeElement !== name, [cfg.name, names]);
+
+  // forgetting the pilot you fly as: the settings stay, the next change doesn't save it again
+  chipOf("Iceman").querySelector(".chip-remove").click();
+  await T.until(() => !chipOf("Iceman"));
+  T.setValue("#enter", "130");
+  await T.saved();
+  await T.sleep(800);
+  names = (await T.get("/api/profiles")).map((p) => p.name);
+  T.check("the pilot forgotten while flying as it isn't saved again by the next change",
+    (await T.config()).enterRssi === 130 && !names.includes("Iceman"), names);
+  name.focus();
+  T.setValue(name, "Iceman");
+  name.blur();
+  await T.saved();
+  await T.until(() => !!chipOf("Iceman"));
+  await T.sleep(500);
+  T.check("typing its name again remembers it", (await T.get("/api/profiles")).some((p) => p.name === "Iceman" && p.enter === 130));
 
   // a saved-pilot change during a race waits for the end of the race
   await T.w.startRace();
@@ -351,6 +385,31 @@ PAGE_TEST.setup = async (T) => {
   await T.saved();
   T.check("saved pilots full: the message shows", await T.until(() => T.shown("#profilesFull"), 6000));
   T.check("the refused pilot isn't listed", await T.until(() => !T.$$("#savedPilots .chip-name").some((b) => b.textContent.startsWith("One too many")), 4000));
+
+  // × answered Cancel keeps the pilot; forgetting one makes room for the pilot that didn't fit
+  T.confirmAnswer = false;
+  chipOf("Filler pilot 0").querySelector(".chip-remove").click();
+  T.confirmAnswer = true;
+  await T.sleep(500);
+  T.check("× answered Cancel: the pilot stays", !!chipOf("Filler pilot 0") && (await T.get("/api/profiles")).some((p) => p.name === "Filler pilot 0"));
+  chipOf("Filler pilot 0").querySelector(".chip-remove").click();
+  T.check("forgetting a pilot when full: the message goes", await T.until(() => !T.shown("#profilesFull"), 4000));
+  let kept = false;
+  for (let i = 0; i < 40 && !kept; i++) {
+    kept = (await T.get("/api/profiles")).some((p) => p.name === "One too many");
+    if (!kept) await T.sleep(100);
+  }
+  T.check("... and the pilot that didn't fit is remembered now", kept);
+  await T.until(() => !T.v("profileSending") && T.v("profileQueue.length") === 0);
+  // a forget the timer couldn't write (507 from a failed flash write) isn't "full"
+  const post = T.w.postJson;
+  T.w.postJson = (url, body) => (url.endsWith("/remove") ? Promise.reject(Object.assign(new Error("full"), { status: 507 })) : post(url, body));
+  chipOf("Filler pilot 1").querySelector(".chip-remove").click();
+  await T.until(() => !T.v("profileSending") && T.v("profileQueue.length") === 0);
+  await T.until(() => !!chipOf("Filler pilot 1"), 3000);
+  T.w.postJson = post;
+  T.check("a forget the timer couldn't write: the pilot shows again, no 'full' message",
+    !!chipOf("Filler pilot 1") && !T.shown("#profilesFull"));
 
   // race settings: only the changed setting is sent
   T.$('#raceMode [data-value="1"]').click();

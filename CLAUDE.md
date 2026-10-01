@@ -63,7 +63,11 @@ Every change goes through all steps; a step is done when its check passes.
 - **Multi-device**: `POST /config` replies `{base, rev}`; a page adopts `rev` only if `base` is
   the revision it knew, otherwise it reloads. `/api/status` carries `boot` (random per start)
   and `prof` (saved-pilot revision). Saved pilots change one at a time
-  (`/api/profiles/save|remove`); lap fixes carry `expect` and get 409 when stale. A race the
+  (`/api/profiles/save|remove`). On the page, × asks first; a pilot forgotten while flying as
+  it is not remembered again until its name is typed; a chip's press keeps the focus in a name
+  being typed (leaving the field remembered the half-typed name and rebuilt the chips under
+  the finger, so the tap was lost); forgetting one when full remembers the pilot that didn't
+  fit. 507 means full only for a save (a remove's 507 is a failed flash write). Lap fixes carry `expect` and get 409 when stale. A race the
   page shows but the timer no longer has (another phone's Delete all, the oldest dropped for a
   new one, a web-files update): opening, renaming, fixing or exporting it says so above the
   list (`raceGone`, checked with a 404 on `/api/races?id=`) and the list reloads.
@@ -234,7 +238,10 @@ Every change goes through all steps; a step is done when its check passes.
 - **Browser tests**: a background tab runs timers about once a second, so scripted tests there
   look slow or "frozen"; a tab hidden or covered for minutes is slowed to about once a minute
   (the page test suite crawled in the owner's covered Chrome window): run it headless with
-  `tools/run_page_test.js`, which also emulates the dark theme. Read the clock as
+  `tools/run_page_test.js`, which also emulates the dark theme and page focus (without it
+  `focus()`/`blur()` fire no events, and a test of leaving a field passed on a buggy page). A
+  real tap blurs a focused field before its click: a test of tapping while typing calls
+  `blur()` itself unless the press was `preventDefault`ed. Read the clock as
   `clockText()`, not `#timer`: the screen copy is refreshed by a 50 ms timer. After starting a
   race, wait for `raceData.race === status.race`: the page shows the previous race until
   `/api/race` answers. Reloading a test file into the same page fails silently (its `const`s

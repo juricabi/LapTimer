@@ -220,6 +220,7 @@ ui.pilotName.addEventListener("input", () => {
   if (name !== ui.pilotName.value) ui.pilotName.value = name;
   pilot.name = name;
   pilotTouched = true;
+  forgottenPilot = "";
   renderCalibPilot();
   renderSavedPilots();
 });
@@ -295,18 +296,28 @@ function renderSavedPilots() {
     const use = el("button", "chip-name", `${pr.name} · ${channelName(pr.freq) || pr.freq}${target}`);
     use.type = "button";
     use.setAttribute("aria-label", "Fly as " + pr.name);
+    // the press keeps the focus in a name being typed: leaving the field would remember it
+    use.addEventListener("mousedown", (e) => e.preventDefault());
     use.addEventListener("click", () => {
       if (!configLoaded) return;
+      rememberPilot(); // the last pilot's changes not yet remembered; a name being typed is dropped
+      pilotTouched = false;
       // saved pilots from before the pace target have none: off
       Object.assign(pilot, { name: pr.name, freq: pr.freq, enter: pr.enter, exit: pr.exit, target: pr.target || 0 });
       renderPilot();
+      if (document.activeElement === ui.pilotName) ui.pilotName.blur(); // closes the keyboard
       scheduleSave();
     });
     chip.appendChild(use);
     const remove = el("button", "chip-remove", "×");
     remove.type = "button";
     remove.setAttribute("aria-label", "Forget " + pr.name);
-    remove.addEventListener("click", () => queueProfileChange("/api/profiles/remove", { name: pr.name }));
+    remove.addEventListener("click", () => {
+      if (!confirm(`Forget "${pr.name}"?`)) return;
+      const flying = (pilot.name || "").trim().toLowerCase();
+      if (pr.name.toLowerCase() === flying) forgottenPilot = flying;
+      queueProfileChange("/api/profiles/remove", { name: pr.name });
+    });
     chip.appendChild(remove);
     container.appendChild(chip);
   });
@@ -603,11 +614,13 @@ async function loadProfiles() {
 // The pilot is remembered automatically: a named pilot (name, channel, thresholds) is kept
 // in the saved pilots list. A name still being typed is remembered once it is done.
 let pilotTouched = false; // changed on this page since it was last remembered
+let forgottenPilot = ""; // forgotten (×) while flying as it: not remembered again until its name is typed
 
 function rememberPilot() {
   if (!configLoaded || !pilotTouched) return;
   const name = (pilot.name || "").trim();
   if (!name || !bandChannel(pilot.freq) || document.activeElement === ui.pilotName) return;
+  if (name.toLowerCase() === forgottenPilot) return;
   pilotTouched = false;
   const known = profiles.find((pr) => pr.name.toLowerCase() === name.toLowerCase());
   if (known && known.name === name && known.freq === pilot.freq && known.enter === pilot.enter && known.exit === pilot.exit &&
@@ -654,9 +667,18 @@ async function sendProfileChanges() {
     try {
       await postJson(url, body);
       if (url.endsWith("/save")) $("profilesFull").hidden = true;
+      else if (!$("profilesFull").hidden) {
+        $("profilesFull").hidden = true; // room again: the pilot that didn't fit is remembered now
+        pilotTouched = true;
+        rememberPilot();
+      }
     } catch (e) {
       if (e.status === 409 || !e.status) break; // a race started, or no answer: try again later
-      if (e.status === 507) $("profilesFull").hidden = false; // full: this pilot is not saved
+      if (url.endsWith("/save")) {
+        if (e.status === 507) $("profilesFull").hidden = false; // full: this pilot is not saved
+      } else if (body.name.toLowerCase() === forgottenPilot) {
+        forgottenPilot = ""; // still saved on the timer (its flash write failed): kept up to date
+      }
     }
     profileQueue.shift();
     sent = true;
