@@ -30,6 +30,14 @@
   --pilot: #2563eb;
   --pilot-text: #2563eb;      /* channel-scan label on surface-2: 4.9:1 */
 
+  /* lap-time chart, on surface (and on the best-3 band): lines/dots >= 3:1, labels >= 4.5:1 */
+  --chart-lap: #2563eb;       /* line and dots 5.2:1 (band 4.5:1) */
+  --chart-best: #166534;      /* best-lap line and label 7.1:1 (band 6.2:1) */
+  --chart-target: #a14a0a;    /* target line and label 6.0:1 (band 5.3:1) */
+  --chart-text: #5b6b80;      /* axis labels 5.4:1 (band 4.8:1) */
+  --chart-band: rgba(22, 163, 74, 0.12); /* best 3 laps in a row, decorative */
+  --chart-grid: #e2e8f0;      /* decorative */
+
   --topbar: #0f172a;
   --topbar-text: #f8fafc;
   --topbar-muted: #94a3b8;
@@ -72,6 +80,13 @@
     --best: rgba(34, 197, 94, 0.14);
     --pilot: #60a5fa;
     --pilot-text: #60a5fa;      /* on surface-2 6.0:1 */
+
+    --chart-lap: #60a5fa;       /* 6.7:1 (band 5.2:1) */
+    --chart-best: #4ade80;      /* 9.8:1 (band 7.7:1) */
+    --chart-target: #fbbf24;    /* 10.2:1 (band 8.0:1) */
+    --chart-text: #94a3b8;      /* 6.6:1 (band 5.2:1) */
+    --chart-band: rgba(34, 197, 94, 0.14);
+    --chart-grid: #243049;
 
     --topbar: #070c18;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
@@ -941,6 +956,31 @@ table tr.best-lap td:nth-child(2)::after {
   white-space: nowrap;
 }
 
+/* Pace target: a short number field on the pilot's card */
+.pilot-target {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pilot-target label {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.pilot-target input[type="text"] {
+  width: 112px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pilot-target .unit {
+  color: var(--muted);
+  font-weight: 600;
+}
+
 .freq-pill small {
   font-size: 12px;
   font-weight: 700;
@@ -1024,6 +1064,32 @@ body:not(.config-ready) [data-needs-config] > :not(.save-status) {
   overflow: hidden;
 }
 
+/* Lap-time chart (Race tab and history): tap or drag along it to read a lap */
+.lap-chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.lap-chart-readout {
+  min-height: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lap-chart-plot {
+  touch-action: pan-y; /* the page still scrolls; a sideways drag moves along the laps */
+  cursor: crosshair;
+}
+
+.lap-chart-plot svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 /* ───────── History ───────── */
 .history-summary {
   display: flex;
@@ -1054,6 +1120,49 @@ body:not(.config-ready) [data-needs-config] > :not(.save-status) {
 .history-meta {
   color: var(--muted);
   font-size: 13px;
+  flex-shrink: 0;
+}
+
+.history-heading {
+  width: 100%;
+}
+
+.history-title {
+  overflow-wrap: anywhere;
+}
+
+/* a named race: its date under the name */
+.history-sub {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.history-pilot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Renaming a race in place: the name on its own row, Save and Cancel under it */
+.rename-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.rename-row input[type="text"] {
+  grid-column: 1 / -1;
+}
+
+/* "Copy as text": a small text button under the history buttons */
+.link-button {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 var(--space-1);
 }
 
 .history-pilots {
@@ -1168,6 +1277,43 @@ body:not(.config-ready) [data-needs-config] > :not(.save-status) {
 .rs-delta-slower { color: #f87171; }
 .rs-best { color: #94a3b8; }
 
+.rs-delta-label {
+  font-size: 0.6em;
+  color: #94a3b8;               /* on #131c2e 6.6:1 */
+}
+
+/* Best 2 / Best 3 / Target under the big numbers (hidden on a short landscape screen) */
+.rs-extra {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid #243049;
+}
+
+.rs-extra div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.rs-extra span {
+  font-size: clamp(11px, 2.8vw, 18px);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+}
+
+.rs-extra b {
+  font-size: clamp(18px, 5.5vw, 40px);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #e2e8f0;               /* on #131c2e 13.8:1 */
+}
+
 /* the page behind the race screen doesn't scroll */
 html.race-screen-open {
   overflow: hidden;
@@ -1198,6 +1344,10 @@ html.race-screen-open {
 
   .race-screen .rs-current-row {
     font-size: clamp(12px, 4vh, 28px);
+  }
+
+  .race-screen .rs-extra {
+    display: none;
   }
 }
 

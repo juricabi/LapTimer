@@ -103,13 +103,15 @@ void RaceHistory::recoverTempFiles(const char *dir)
     }
 }
 
-// Summary shown in the history list: {id, date, mode, pilots: [{name, laps, best}]}
+// Summary shown in the history list: {id, date, mode, name?, pilots: [{name, laps, best}]}
 static void addSummary(JsonArray list, JsonObjectConst race)
 {
     JsonObject item = list.add<JsonObject>();
     item["id"] = race["id"];
     item["date"] = race["date"];
     item["mode"] = race["mode"];
+    if (!race["name"].isNull())
+        item["name"] = race["name"]; // the race's own name (pilots have theirs below)
     JsonArray pilots = item["pilots"].to<JsonArray>();
     for (JsonObjectConst p : race["pilots"].as<JsonArrayConst>())
     {
@@ -232,7 +234,7 @@ bool RaceHistory::deleteOldest(JsonDocument &index)
     return true;
 }
 
-void RaceHistory::save(LapTimer &timer)
+void RaceHistory::save(LapTimer &timer, uint32_t targetLapMs)
 {
     if (!ready)
     {
@@ -248,6 +250,8 @@ void RaceHistory::save(LapTimer &timer)
     doc.remove("state");
     doc.remove("edits");
     doc["id"] = id;
+    if (targetLapMs)
+        doc["target"] = targetLapMs; // the pace target this race was flown against
 
     // make room (count and free space), then write race + index
     JsonDocument index;
@@ -311,8 +315,35 @@ int RaceHistory::editRace(uint32_t id, uint8_t pilot, uint8_t op, int lapIndex, 
         pilots[pilot].remove("full");
     if (!writeJson(path, race))
         return EDIT_INVALID;
+    updateSummary(id, race.as<JsonObjectConst>());
+    return EDIT_OK;
+}
 
-    // refresh this race's entry in the history list
+int RaceHistory::renameRace(uint32_t id, const char *name)
+{
+    char clean[RACE_NAME_MAX_BYTES + 1];
+    copyUtf8(clean, name ? name : "", sizeof(clean));
+    HistoryLock lock(mutex);
+    String path = racePath(id);
+    JsonDocument race;
+    File in = LittleFS.open(path, "r");
+    bool readOk = in && !deserializeJson(race, in);
+    in.close();
+    if (!readOk)
+        return EDIT_INVALID;
+    if (clean[0])
+        race["name"] = clean;
+    else
+        race.remove("name"); // back to the date
+    if (!writeJson(path, race))
+        return EDIT_INVALID;
+    updateSummary(id, race.as<JsonObjectConst>());
+    return EDIT_OK;
+}
+
+// Replaces one race's entry in the history list. Call with the lock held.
+void RaceHistory::updateSummary(uint32_t id, JsonObjectConst race)
+{
     JsonDocument index;
     loadIndex(index);
     JsonArray list = index.as<JsonArray>();
@@ -324,9 +355,8 @@ int RaceHistory::editRace(uint32_t id, uint8_t pilot, uint8_t op, int lapIndex, 
             break;
         }
     }
-    addSummary(list, race.as<JsonObjectConst>());
+    addSummary(list, race);
     writeIndex(index);
-    return EDIT_OK;
 }
 
 void RaceHistory::sendList(AsyncWebServerRequest *request)
@@ -393,8 +423,10 @@ void RaceHistory::loadProfiles(JsonDocument &doc)
 }
 
 // Adds or updates one saved pilot (names match without case). prevName: the pilot's old
-// name after a rename, that entry is replaced.
-int RaceHistory::saveProfile(const char *name, const char *prevName, uint16_t freq, uint8_t enter, uint8_t exit)
+// name after a rename, that entry is replaced. A pace target is stored only when set
+// (pilots saved before it existed have none: off).
+int RaceHistory::saveProfile(const char *name, const char *prevName, uint16_t freq, uint8_t enter, uint8_t exit,
+                             uint32_t targetLapMs)
 {
     char clean[21];
     copyUtf8(clean, name ? name : "", sizeof(clean));
@@ -419,6 +451,9 @@ int RaceHistory::saveProfile(const char *name, const char *prevName, uint16_t fr
     p["freq"] = freq;
     p["enter"] = enter;
     p["exit"] = exit;
+    targetLapMs = clampTargetLapMs(targetLapMs);
+    if (targetLapMs)
+        p["target"] = targetLapMs;
     if (measureJson(doc) > MAX_PROFILES_SIZE)
         return 507;
     if (!writeJson(PROFILES_FILE, doc))

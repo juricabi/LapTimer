@@ -21,7 +21,11 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
   up) and **lap race** (finish after N laps).
 - **Countdown start** (3-2-1-go beeps) or the race starts on the first gate pass
   (see [Starting a race](#starting-a-race)).
-- Last lap, delta to best, best, average, best 3 consecutive and consistency.
+- Last lap, delta to best, best, average, consistency, best 2 and best 3 consecutive, total.
+- **Lap-time chart**: every lap at a glance, scaled to your laps so 0.3 s shows; the best lap,
+  the best 3 in a row and your target marked, a crash lap kept off the scale. Tap a lap to read it.
+- **Pace target**: a target lap time per pilot; every lap is announced against it ("plus 0.40",
+  "On target") and the Race tab, race screen and chart show it.
 - **Race screen**: big numbers for a phone or tablet at the field, with a live current-lap timer.
 
 **Voice and sound**
@@ -43,6 +47,9 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 
 **After the race**
 - Every race with a pass is saved on the timer (last 30) with **CSV export**.
+- **Rename** a race ("Club night heat 2"); unnamed races show their date.
+- **Save image**: a picture of the race (stats, chart, every lap against your best) to share
+  from the phone's gallery, or **Copy as text**.
 - **Fix laps**: merge two laps split by a false pass, or split a lap where a pass was missed.
 
 **Connection**
@@ -131,13 +138,15 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
 ## Use
 
 1. **Setup**: enter the pilot's name and channel, or tap a saved pilot. Settings save automatically.
+   Optionally a **Target lap** in seconds (empty = off); it is saved with the pilot.
 2. **Calibrate** at the gate: switch on **Auto-calibrate** and fly 3+ passes, then **Apply**.
    By hand: **Enter** below the peaks of your passes and above what the timer reads with the
    drone on the pad, **Exit** just above the level while the drone is away (a pass ends when
    the signal drops below Exit). Run a **channel scan** first if others are flying.
 3. **Race**: press **Start** (or say "start"). Open the **Race screen** for big numbers.
-4. **History**: every race with a pass is saved. Open one to see all laps, **Fix laps**, or
-   export CSV.
+4. **History**: every race with a pass is saved. Open one to see its chart and all laps,
+   **Fix laps**, **Rename** it, **Save image** or export CSV. On the timer's plain `http://`
+   page phones offer no share menu: the image is downloaded, share it from the gallery.
 
 ### Starting a race
 
@@ -158,7 +167,8 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
 
 - **Announcer** (Setup → Announcer, saved on the timer): what to announce (lap time, 2 or 3
   consecutive laps, a beep on the phone, or nothing), the delta to your best lap, and the
-  speech rate. Every phone with Voice on speaks it. The timer's own buzzer is separate
+  speech rate. With a target lap set (Setup → Pilot), every lap is compared with the target
+  instead: "plus 0.40", "minus 0.30", or "On target" within 0.05 s; "Best lap" still comes. Every phone with Voice on speaks it. The timer's own buzzer is separate
   (Setup → Alerts).
 - **This phone** (Setup → This phone, for each phone, not saved on the timer): **Voice**
   (speaks lap times, race events and the answers to voice commands), **Voice commands**, and

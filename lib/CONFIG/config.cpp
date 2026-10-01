@@ -35,9 +35,12 @@ void Config::load(void)
 
     if (version < CONFIG_VERSION)
     {
-        // older layout: keep the v0 settings, add defaults for the race settings
+        // older layout: keep the fields it had, give the newer ones their defaults
         DEBUG("Migrating config v%u -> v%u\n", version, CONFIG_VERSION);
-        setRaceDefaults();
+        if (version < 3)
+            setRaceDefaults(); // v0 (and the v1/v2 development layouts): v0 fields only
+        if (version < 4)
+            conf.targetLapMs = 0;
         conf.version = CONFIG_VERSION | CONFIG_MAGIC;
         modified = true;
         write();
@@ -80,6 +83,7 @@ void Config::toJsonDoc(JsonDocument &config)
     config["raceSec"] = conf.raceSeconds;
     config["raceLaps"] = conf.raceLaps;
     config["countdown"] = conf.countdown;
+    config["target"] = conf.targetLapMs;
     // WiFi networks (with passwords) are managed by WifiList and never sent back to the page
 }
 
@@ -138,6 +142,13 @@ static bool updateString(JsonObject source, const char *key, char *field, size_t
     return true;
 }
 
+uint32_t clampTargetLapMs(uint32_t ms)
+{
+    if (ms == 0)
+        return 0;
+    return ms < TARGET_LAP_MIN_MS ? TARGET_LAP_MIN_MS : ms > TARGET_LAP_MAX_MS ? TARGET_LAP_MAX_MS : ms;
+}
+
 // Exit must stay below enter, or every reading between them would open and close a pass
 static void fixThresholds(uint8_t &enter, uint8_t &exit)
 {
@@ -168,6 +179,7 @@ void Config::fromJson(JsonObject source)
     changed |= updateField(source, "raceSec", conf.raceSeconds);
     changed |= updateField(source, "raceLaps", conf.raceLaps);
     changed |= updateField(source, "countdown", conf.countdown);
+    changed |= updateField(source, "target", conf.targetLapMs);
 
     // keep values in sane ranges
     if (conf.frequency != POWER_DOWN_FREQ_MHZ && (conf.frequency < 5000 || conf.frequency > 5999))
@@ -180,6 +192,7 @@ void Config::fromJson(JsonObject source)
         conf.raceSeconds = 10;
     if (conf.raceLaps < 1)
         conf.raceLaps = 1;
+    conf.targetLapMs = clampTargetLapMs(conf.targetLapMs);
     fixThresholds(conf.enterRssi, conf.exitRssi);
 
     if (changed)
@@ -264,6 +277,11 @@ bool Config::getCountdown()
     return conf.countdown;
 }
 
+uint32_t Config::getTargetLapMs()
+{
+    return conf.targetLapMs;
+}
+
 void Config::setRaceDefaults(void)
 {
     conf.raceMode = RACE_PRACTICE;
@@ -291,6 +309,7 @@ void Config::setDefaults(void)
     strlcpy(conf.password, "", sizeof(conf.password));
     strlcpy(conf.pilotName, "", sizeof(conf.pilotName));
     setRaceDefaults();
+    conf.targetLapMs = 0;
     modified = true;
     write();
 }

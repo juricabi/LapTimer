@@ -65,9 +65,14 @@
 #define EEPROM_RESERVED_SIZE 256
 #define CONFIG_MAGIC_MASK (0b11U << 30)
 #define CONFIG_MAGIC (0b01U << 30)
-// v0: v1.0.0. v3: race settings. (v1 and v2 were multi-pilot development builds with another
-// layout after the v0 fields.) Older versions keep the v0 fields and get default race settings.
-#define CONFIG_VERSION 3U
+// v0: v1.0.0. v3: race settings. v4: pace target. (v1 and v2 were multi-pilot development
+// builds with another layout after the v0 fields.) Older versions keep the fields they had and
+// get defaults for the newer ones (Config::load migrates one version at a time).
+#define CONFIG_VERSION 4U
+
+// Pace target: 0 = off, otherwise a lap time in this range
+#define TARGET_LAP_MIN_MS 3000U
+#define TARGET_LAP_MAX_MS 600000U
 
 #define EEPROM_CHECK_TIME_MS 1000
 
@@ -98,12 +103,17 @@ typedef struct
     uint8_t raceLaps;
     bool countdown;         // 3-2-1-go start instead of starting on the first pass
     bool announceDelta;     // announce the difference to the best lap
+    // --- v4 ---
+    uint32_t targetLapMs;   // pace target, 0 = off (used by the page only)
 } laptimer_config_t;
 
 static_assert(sizeof(laptimer_config_t) <= EEPROM_RESERVED_SIZE, "config does not fit the reserved EEPROM size");
 
 // Copies at most size - 1 bytes without cutting a UTF-8 character in half
 void copyUtf8(char *dst, const char *src, size_t size);
+
+// 0 stays off; anything else is kept within TARGET_LAP_MIN_MS..TARGET_LAP_MAX_MS
+uint32_t clampTargetLapMs(uint32_t ms);
 
 class Config
 {
@@ -130,6 +140,7 @@ public:
     uint32_t getRaceMs();
     uint8_t getRaceLaps();
     bool getCountdown();
+    uint32_t getTargetLapMs();
     uint32_t getRevision() { return revision; }  // changes on every settings change, so pages can reload
 
 private:

@@ -28,8 +28,10 @@ Every change goes through all steps; a step is done when its check passes.
 ## Rules
 
 - **Settings layout** (`laptimer_config_t`) is append-only: add fields at the end, bump
-  `CONFIG_VERSION` and give the new fields defaults in the migration in `Config::load` (like
-  `setRaceDefaults()`), so users keep their settings through updates. Versions 1 and 2 were
+  `CONFIG_VERSION` and give the new fields defaults in the migration in `Config::load`, one
+  step per version (`if (version < 4) conf.targetLapMs = 0;`), so users keep their settings
+  through updates. A step's defaults must not run for newer versions: `setRaceDefaults()` for
+  every older version would have wiped the v3 race settings at v4. Versions 1 and 2 were
   multi-pilot development layouts; version 3 keeps their v0 fields only. `fromJson` changes
   only keys that are present, and the page sends only changed settings — two open phones
   rely on this.
@@ -59,9 +61,21 @@ Every change goes through all steps; a step is done when its check passes.
   (EEPROM) and saved WiFi networks (NVS) survive both kinds of update. Every race/profile
   write goes through `RaceHistory::writeJson` (temp file + rename) under the history lock.
   Files are read into memory before sending: LittleFS can't replace a file that is open.
+  A race file has its own `name` (rename, 32 bytes; `pilots[].name` is the pilot) and the
+  pace `target` in use when it was saved; both only when set, and both in the history list
+  (`addSummary`) where the page needs them.
+- **Pace target** (`targetLapMs`, `/config` key `target`, 0 = off, 3-600 s): only the page uses
+  it (callouts, "vs target", chart); the timing core doesn't. Saved pilots store it when set.
 - **WiFi passwords** stay on the timer; `/config` and `/api/wifi/saved` return names only.
 - **UI**: design tokens in `style.css` with contrast ratios noted beside them — text ≥ 4.5:1,
   controls ≥ 3:1, touch targets ≥ 44 px; plain CSS/JS, no new libraries.
+- **Lap chart and share image**: `lapChartSvg` builds one SVG string for both. Its colours go
+  in `style` attributes (`var()` is ignored in SVG presentation attributes) and are checked on
+  the best-3 band too. The share image is a canvas in the dark theme's colours (`SHARE` in
+  `script.js`, kept in step with the dark tokens); the chart is drawn on it from a Blob URL
+  (no `foreignObject`, no external files, so the canvas stays saveable). On the timer's http
+  page `navigator.share`/`clipboard` don't exist: the image is downloaded, text copied with
+  `execCommand("copy")`.
 - **Voice**: Web Speech API in a normal browser tab. Set `utterance.lang = "en-US"`; on Android
   leave the voice object unset (forcing one makes Chrome/Brave silent). Speech starts after a tap.
 
@@ -180,7 +194,15 @@ Every change goes through all steps; a step is done when its check passes.
   `upload_speed = 115200` in `targets/PhobosLT.ini` (its 460800 dropped mid-write). Prefer WiFi updates. Opening the serial port (e.g.
   `boot_log.py` without `--reset`) can still restart the board: don't mistake that for a crash.
 - **Browser tests**: a background tab runs timers about once a second, so scripted tests there
-  look slow or "frozen". Screenshots of a background tab can show a stale frame.
+  look slow or "frozen". Screenshots of a background tab can show a stale frame. Chrome keeps a
+  page zoom per address, so resizing the window didn't give a 390 px page: load the app in a
+  390 × 844 `<iframe>` on the same origin (e.g. over `/mock/log`). The console tool doesn't see
+  the iframe's messages: collect `error`/`unhandledrejection` with listeners. Light theme with
+  a dark OS: delete the `prefers-color-scheme` rule from the stylesheet via CSSOM. Screenshots
+  timed out about every second call: retry. `mock_server.py --host 0.0.0.0` serves phones.
+- **A saved race without a drone**: with Enter/Exit just inside the RSSI noise (floor 50-53:
+  52/51) noise counts passes; start, wait ~25 s, stop, restore the thresholds, and clear the
+  history afterwards if it was empty. `device_test.py` needs a saved race for its rename checks.
 - **Scripted file edits**: write the edit script to a file and run it — shell heredocs mangle
   `\n` escapes and Windows paths. Read a file fully before opening it for writing
   (`open(p, "w")` truncates first; that once emptied `data/update.html`).

@@ -310,11 +310,26 @@ void Webserver::registerApi()
         history->clear();
         sendOk(request); });
 
-    // Saved pilots: a JSON array [{name, freq, enter, exit}], changed one pilot at a time
+    // A race's own name: {id, name}; an empty name removes it. Two phones: the last rename wins.
+    // Not during a race (409 racing): a flash write stalls RSSI sampling.
+    server.addHandler(new AsyncCallbackJsonWebHandler("/api/races/rename", [this](AsyncWebServerRequest *request, JsonVariant &json)
+                                                      {
+        if (timer->isRacing())
+        {
+            request->send(409, "application/json", "{\"status\":\"racing\"}");
+            return;
+        }
+        int result = history->renameRace(json["id"] | 0, json["name"] | "");
+        if (result == EDIT_OK)
+            sendOk(request);
+        else
+            request->send(400, "application/json", "{\"status\":\"invalid\"}"); }));
+
+    // Saved pilots: a JSON array [{name, freq, enter, exit, target?}], changed one pilot at a time
     server.on("/api/profiles", HTTP_GET, [this](AsyncWebServerRequest *request)
               { history->sendProfiles(request); });
 
-    // {name, freq, enter, exit, prev}: add or update (prev = old name after a rename)
+    // {name, freq, enter, exit, target, prev}: add or update (prev = old name after a rename)
     // Not during a race: a flash write stalls RSSI sampling (the page sends it afterwards)
     server.addHandler(new AsyncCallbackJsonWebHandler("/api/profiles/save", [this](AsyncWebServerRequest *request, JsonVariant &json)
                                                       {
@@ -324,7 +339,7 @@ void Webserver::registerApi()
             return;
         }
         int code = history->saveProfile(json["name"] | "", json["prev"] | "", json["freq"] | 0,
-                                        json["enter"] | 0, json["exit"] | 0);
+                                        json["enter"] | 0, json["exit"] | 0, json["target"] | 0U);
         request->send(code, "application/json",
                       code == 200 ? "{\"status\":\"OK\"}" : code == 507 ? "{\"status\":\"full\"}" : "{\"status\":\"invalid\"}"); }));
 

@@ -101,9 +101,29 @@ async function fetchJson(url, options) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Pilot names are stored in 20 bytes of UTF-8 on the timer
+// Pilot names are stored in 20 bytes of UTF-8 on the timer, race names in 32
 const NAME_MAX_BYTES = 20;
+const RACE_NAME_MAX_BYTES = 32;
 const utf8 = new TextEncoder();
+
+// Pace target: 0 = off, otherwise 3-600 s (the timer keeps it in this range too)
+const TARGET_MIN_MS = 3000;
+const TARGET_MAX_MS = 600000;
+const ON_TARGET_MS = 50; // "On target" within ±0.05 s
+
+// 12.5 → "12.5", 45 → "45" (the target field shows what was typed, without trailing zeros)
+function formatTarget(ms) {
+  return ms ? String(+(ms / 1000).toFixed(2)) : "";
+}
+
+// "12,5" or "12.5 s" → 12500; "" → 0 (off); null when it isn't a target the timer accepts
+function parseTarget(text) {
+  const t = text.trim().replace(",", ".").replace(/\s*s$/i, "");
+  if (!t) return 0;
+  if (!/^\d+(\.\d*)?$|^\.\d+$/.test(t)) return null;
+  const ms = Math.round(parseFloat(t) * 100) * 10;
+  return ms >= TARGET_MIN_MS && ms <= TARGET_MAX_MS ? ms : null;
+}
 
 function truncateUtf8(text, maxBytes) {
   let out = "";
@@ -161,7 +181,7 @@ function bindRange(input, format, onInput) {
 // ═══════════════════════════════════════════════════════════════════
 
 let configLoaded = false;
-let pilot = { name: "", freq: 5800, enter: 120, exit: 100 }; // who is flying
+let pilot = { name: "", freq: 5800, enter: 120, exit: 100, target: 0 }; // who is flying (target: pace target, ms)
 let raceMode = MODE.PRACTICE;
 let announcerRate = 1.0;
 let profiles = [];
@@ -170,6 +190,7 @@ const ui = {
   pilotName: $("pilotName"),
   pilotBand: $("pilotBand"),
   pilotChannel: $("pilotChannel"),
+  targetLap: $("targetLap"),
   raceTime: $("raceTime"),
   raceLaps: $("raceLaps"),
   countdown: $("countdown"),
@@ -212,9 +233,26 @@ function onFreqChange() {
 ui.pilotBand.addEventListener("change", onFreqChange);
 ui.pilotChannel.addEventListener("change", onFreqChange);
 
+// The pace target is taken when the field is left (or Enter): saving each keystroke would
+// save 4 s on the way to 45. A value the timer doesn't accept goes back to the saved one.
+ui.targetLap.addEventListener("change", () => {
+  const ms = parseTarget(ui.targetLap.value);
+  const hint = $("targetHint");
+  hint.classList.toggle("warn", ms === null);
+  hint.textContent = ms === null ? "Target lap: 3 to 600 seconds, or empty for off." : TARGET_HINT;
+  if (ms !== null && ms !== pilot.target) {
+    pilot.target = ms;
+    pilotTouched = true; // remembered with the saved pilot once the timer has it
+    if (raceData) renderRacePilot(raceData);
+  }
+  ui.targetLap.value = formatTarget(pilot.target);
+});
+const TARGET_HINT = $("targetHint").textContent;
+
 // Who is flying: name, channel, the saved pilot it matches, and the calibration
 function renderPilot() {
   ui.pilotName.value = pilot.name || "";
+  ui.targetLap.value = formatTarget(pilot.target);
   const bc = bandChannel(pilot.freq, +ui.pilotBand.value);
   ui.pilotBand.value = bc ? bc.band : 4;
   ui.pilotChannel.value = bc ? bc.channel : 0;
@@ -233,12 +271,14 @@ function renderSavedPilots() {
   const current = (pilot.name || "").trim().toLowerCase();
   profiles.forEach((pr) => {
     const chip = el("span", "chip-pilot" + (pr.name.toLowerCase() === current ? " active" : ""));
-    const use = el("button", "chip-name", `${pr.name} · ${channelName(pr.freq) || pr.freq}`);
+    const target = pr.target ? ` · ${formatTarget(pr.target)} s` : "";
+    const use = el("button", "chip-name", `${pr.name} · ${channelName(pr.freq) || pr.freq}${target}`);
     use.type = "button";
     use.setAttribute("aria-label", "Fly as " + pr.name);
     use.addEventListener("click", () => {
       if (!configLoaded) return;
-      Object.assign(pilot, { name: pr.name, freq: pr.freq, enter: pr.enter, exit: pr.exit });
+      // saved pilots from before the pace target have none: off
+      Object.assign(pilot, { name: pr.name, freq: pr.freq, enter: pr.enter, exit: pr.exit, target: pr.target || 0 });
       renderPilot();
       scheduleSave();
     });
@@ -273,7 +313,7 @@ function renderRaceModeFields() {
 
 // Puts settings in the shape of GET /config into the page
 function applyConfig(config) {
-  pilot = { name: config.name || "", freq: config.freq, enter: config.enterRssi, exit: config.exitRssi };
+  pilot = { name: config.name || "", freq: config.freq, enter: config.enterRssi, exit: config.exitRssi, target: config.target || 0 };
   raceMode = config.raceMode || 0;
   renderPilot();
   renderRaceModeFields();
@@ -345,6 +385,7 @@ function configBody() {
     freq: pilot.freq,
     enterRssi: pilot.enter,
     exitRssi: pilot.exit,
+    target: pilot.target,
     raceMode: raceMode,
     raceSec: +ui.raceTime.value,
     raceLaps: +ui.raceLaps.value,
@@ -481,6 +522,7 @@ window.addEventListener("pagehide", () => {
 function onSettingsEdit(e) {
   if (e.target.closest("[data-local]")) return;
   if (e.type === "input" && e.target.type === "range") return; // saved when let go ("change")
+  if (e.type === "input" && e.target === ui.targetLap) return; // saved when the field is left
   scheduleSave();
 }
 $("config").addEventListener("input", onSettingsEdit);
@@ -511,8 +553,9 @@ function rememberPilot() {
   if (!name || !bandChannel(pilot.freq) || document.activeElement === ui.pilotName) return;
   pilotTouched = false;
   const known = profiles.find((pr) => pr.name.toLowerCase() === name.toLowerCase());
-  if (known && known.name === name && known.freq === pilot.freq && known.enter === pilot.enter && known.exit === pilot.exit) return;
-  queueProfileChange("/api/profiles/save", { name, freq: pilot.freq, enter: pilot.enter, exit: pilot.exit });
+  if (known && known.name === name && known.freq === pilot.freq && known.enter === pilot.enter && known.exit === pilot.exit &&
+      (known.target || 0) === pilot.target) return;
+  queueProfileChange("/api/profiles/save", { name, freq: pilot.freq, enter: pilot.enter, exit: pilot.exit, target: pilot.target });
 }
 
 // Saved-pilot changes go out one at a time, and never during a race: writing them to the
@@ -719,6 +762,7 @@ function openTab(tab) {
   for (const b of document.querySelectorAll(".tablinks")) b.classList.toggle("active", b.dataset.tab === tab);
   for (const s of document.querySelectorAll(".tabcontent")) s.hidden = s.id !== tab;
   if (tab === "history") loadHistory();
+  redrawLapCharts(); // drawn while their tab was hidden: no width yet
   if (tab === "calib") startCalibration();
   else stopCalibration();
 }
@@ -893,14 +937,27 @@ function renderRaceControls() {
   $("raceInfo").textContent = info;
 }
 
+// The fastest k laps in a row: {sum, start} (start = index in laps), or null if there are fewer
+function bestConsecutive(laps, k) {
+  let best = null;
+  for (let i = 0; i + k <= laps.length; i++) {
+    let sum = 0;
+    for (let j = i; j < i + k; j++) sum += laps[j];
+    if (!best || sum < best.sum) best = { sum, start: i };
+  }
+  return best;
+}
+
 // Per-pilot statistics from lap times in ms (entry 0 = start pass)
 function pilotStats(p) {
   const laps = p.laps.slice(1);
   const n = laps.length;
-  const stats = { laps: n, last: null, best: null, avg: null, delta: null, best3: null, consistency: null };
+  const stats = { laps: n, last: null, best: null, bestLap: null, avg: null, delta: null, best2: null, best3: null,
+    best3From: null, consistency: null };
   if (!n) return stats;
   stats.last = laps[n - 1];
   stats.best = Math.min(...laps);
+  stats.bestLap = laps.indexOf(stats.best) + 1;
   stats.avg = laps.reduce((a, b) => a + b, 0) / n;
   if (n >= 2) {
     const previousBest = Math.min(...laps.slice(0, -1));
@@ -908,11 +965,19 @@ function pilotStats(p) {
     const variance = laps.reduce((a, b) => a + (b - stats.avg) ** 2, 0) / n;
     stats.consistency = Math.sqrt(variance);
   }
-  for (let i = 0; i + 3 <= n; i++) {
-    const sum = laps[i] + laps[i + 1] + laps[i + 2];
-    if (stats.best3 === null || sum < stats.best3) stats.best3 = sum;
+  const best2 = bestConsecutive(laps, 2);
+  const best3 = bestConsecutive(laps, 3);
+  if (best2) stats.best2 = best2.sum;
+  if (best3) {
+    stats.best3 = best3.sum;
+    stats.best3From = best3.start + 1; // lap number
   }
   return stats;
+}
+
+// Seconds with two decimals, or a dash when there is no value
+function secsOrDash(ms) {
+  return ms === null || ms === undefined ? "–" : secs(ms);
 }
 
 // Total time from the race start (entry 0 is the start pass)
@@ -995,14 +1060,15 @@ function announceLap(p, n) {
     queueSpeak(`${who}3 laps ${secs(lapMs + p.laps[n - 1] + p.laps[n - 2])}`);
   }
   if (type === "none") return;
-  if (previous.length) {
-    const previousBest = Math.min(...previous);
-    if (lapMs < previousBest) queueSpeak("Best lap");
-    else if (ui.anDelta.checked) {
-      const delta = (lapMs - previousBest) / 1000;
-      queueSpeak("plus " + delta.toFixed(2));
-    }
-    if (ui.anDelta.checked && lapMs < previousBest) queueSpeak("minus " + ((previousBest - lapMs) / 1000).toFixed(2));
+  const previousBest = previous.length ? Math.min(...previous) : null;
+  if (previousBest !== null && lapMs < previousBest) queueSpeak("Best lap");
+  if (pilot.target) {
+    // with a pace target, every lap is compared with it (instead of the best lap)
+    const d = lapMs - pilot.target;
+    queueSpeak(Math.abs(d) <= ON_TARGET_MS ? "On target" : (d > 0 ? "plus " : "minus ") + (Math.abs(d) / 1000).toFixed(2));
+  } else if (previousBest !== null && ui.anDelta.checked) {
+    const d = lapMs - previousBest;
+    queueSpeak((d < 0 ? "minus " : "plus ") + (Math.abs(d) / 1000).toFixed(2));
   }
 }
 
@@ -1017,10 +1083,24 @@ function deltaText(ms) {
   return [sign + (Math.abs(ms) / 1000).toFixed(2), ms < 0 ? "delta-faster" : "delta-slower"];
 }
 
+// The last lap against the pace target: within ON_TARGET_MS counts as on target (green)
+function targetDeltaText(ms) {
+  if (ms === null) return ["–", ""];
+  const [text] = deltaText(ms);
+  return [text, ms <= ON_TARGET_MS ? "delta-faster" : "delta-slower"];
+}
+
+// The Delta box: against the pace target when one is set, otherwise against the best lap
+function lastLapDelta(st, target) {
+  if (!target) return { label: "Delta", text: deltaText(st.delta) };
+  return { label: "vs target", text: targetDeltaText(st.last === null ? null : st.last - target) };
+}
+
 function renderRacePilot(r) {
   const p = racePilot(r);
   const st = pilotStats(p);
-  const [dText, dClass] = deltaText(st.delta);
+  const delta = lastLapDelta(st, pilot.target);
+  const [dText, dClass] = delta.text;
   const bestIndex = st.best === null ? -1 : p.laps.indexOf(st.best, 1);
   const rows = [];
   for (let n = p.laps.length - 1; n >= 1; n--) {
@@ -1039,14 +1119,28 @@ function renderRacePilot(r) {
     </div>
     <div class="stats">
       ${statBox("Laps", st.laps)}
-      ${statBox("Last", st.last === null ? "–" : secs(st.last))}
-      ${statBox("Delta", dText, dClass)}
-      ${statBox("Best", st.best === null ? "–" : secs(st.best))}
-      ${statBox("Average", st.avg === null ? "–" : secs(st.avg))}
-      ${statBox("Best 3 laps", st.best3 === null ? "–" : secs(st.best3))}
+      ${statBox("Last", secsOrDash(st.last))}
+      ${statBox(delta.label, dText, dClass)}
+      ${statBox("Best", secsOrDash(st.best))}
+      ${statBox("Average", secsOrDash(st.avg))}
+      ${statBox("Consistency", st.consistency === null ? "–" : "±" + secs(st.consistency))}
+      ${statBox("Best 2 laps", secsOrDash(st.best2))}
+      ${statBox("Best 3 laps", secsOrDash(st.best3))}
+      ${statBox("Total", p.laps.length ? formatTotal(pilotTotal(p)) : "–")}
     </div>
-    <p class="hint">Consistency: ${st.consistency === null ? "–" : "±" + secs(st.consistency) + "s"} · Total ${secs(pilotTotal(p))}s</p>
+    ${st.laps >= 2 ? '<div class="lap-chart"></div>' : ""}
     ${rows.length ? `<div class="lap-table-wrap"><table><tr><th>Lap</th><th>Time</th><th>vs best</th></tr>${rows.join("")}</table></div>` : ""}`;
+  const chart = card.querySelector(".lap-chart");
+  if (chart) mountLapChart(chart, p.laps.slice(1), { target: pilot.target, best3From: st.best3From }, "race-" + r.race);
+}
+
+// Race time: 37.21, or 9:37.21 from a minute on
+function formatTotal(ms) {
+  const cs = Math.round(ms / 10);
+  if (cs < 6000) return secs(ms);
+  const m = Math.floor(cs / 6000);
+  const rest = cs - m * 6000; // rounded first, so 59.996 s doesn't show as "60.00"
+  return m + ":" + (rest < 1000 ? "0" : "") + (rest / 100).toFixed(2);
 }
 
 // ── Race controls ──
@@ -1147,18 +1241,23 @@ function renderRaceScreen(r) {
   if ($("raceScreen").hidden) return;
   const p = racePilot(r);
   const st = pilotStats(p);
+  const target = pilot.target;
   let deltaHtml = "";
-  if (st.delta !== null) {
-    const [text, cls] = deltaText(st.delta);
-    deltaHtml = `<span class="${cls.replace("delta-", "rs-delta-")}">${text}</span>`;
+  if (target ? st.last !== null : st.delta !== null) {
+    const [text, cls] = lastLapDelta(st, target).text;
+    const label = target ? ' <span class="rs-delta-label">vs target</span>' : "";
+    deltaHtml = `<span class="${cls.replace("delta-", "rs-delta-")}">${text}${label}</span>`;
   }
   const lapGoal = r.mode === MODE.LAPS ? "/" + r.raceLaps : "";
   const lapText = p.full ? "Lap memory full" : p.fin ? "Finished ✓" : p.laps.length ? `Lap ${st.laps}${lapGoal}` : "Not started";
+  const extra = [["Best 2", st.best2], ["Best 3", st.best3]];
+  if (target) extra.push(["Target", target]);
   $("rsPilot").innerHTML = `
     <div class="rs-name"><span>${escapeHtml(pilotLabel(p.name))}</span><span class="rs-lapno${p.fin ? " rs-finished" : ""}">${lapText}</span></div>
     <div class="rs-last${st.last === null ? " rs-empty" : ""}">${st.last === null ? "--.--" : secs(st.last)}</div>
     <div class="rs-row">${deltaHtml || "<span></span>"}<span class="rs-best">Best ${st.best === null ? "--.--" : secs(st.best)}</span></div>
-    <div class="rs-row rs-current-row"><span>This lap</span><span class="rs-current">--.--</span></div>`;
+    <div class="rs-row rs-current-row"><span>This lap</span><span class="rs-current">--.--</span></div>
+    <div class="rs-extra">${extra.map(([label, ms]) => `<div><span>${label}</span><b>${ms === null ? "--.--" : secs(ms)}</b></div>`).join("")}</div>`;
   updateCurrentLaps();
 }
 
@@ -1597,18 +1696,32 @@ async function loadHistory() {
   renderHistory();
 }
 
+function raceDate(race) {
+  return race.date ? new Date(race.date * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+}
+
+// The race's own name if it has one, otherwise its date
 function raceTitle(race) {
-  if (race.date) {
-    return new Date(race.date * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-  }
-  return "Race #" + race.id;
+  return race.name || raceDate(race) || "Race #" + race.id;
+}
+
+// The history list's summary of a full race
+function pilotSummaries(race) {
+  return race.pilots.map((p) => {
+    const st = pilotStats(p);
+    return { name: p.name, laps: st.laps, best: st.best };
+  });
 }
 
 // pilots: [{name, laps (count), best}]; races saved by the multi-pilot firmware have several
 function historySummaryHtml(race, pilotsSummary) {
   const count = pilotsSummary.length;
+  const subtitle = race.name && race.date ? `<div class="history-sub">${escapeHtml(raceDate(race))}</div>` : "";
   return `
-    <div class="history-top"><span class="history-title">${escapeHtml(raceTitle(race))}</span><span class="history-meta">${MODE_NAMES[race.mode] || ""}</span></div>
+    <div class="history-heading">
+      <div class="history-top"><span class="history-title">${escapeHtml(raceTitle(race))}</span><span class="history-meta">${MODE_NAMES[race.mode] || ""}</span></div>
+      ${subtitle}
+    </div>
     <div class="history-pilots">${pilotsSummary
       .map((p, i) => `<span><i class="dot-p"></i>${escapeHtml(pilotLabel(p.name, i, count))} · ${p.laps} laps · best ${p.best ? secs(p.best) : "–"}</span>`)
       .join("")}</div>`;
@@ -1661,10 +1774,15 @@ function renderHistoryDetail(container, race, editing, summary) {
   }
   race.pilots.forEach((p, i) => {
     const st = pilotStats(p);
-    const block = el("div");
+    const block = el("div", "history-pilot");
     block.innerHTML = `
       <div class="race-pilot-head"><span class="dot-p"></span><span>${escapeHtml(pilotLabel(p.name, i, race.pilots.length))}</span><span class="muted">${channelName(p.freq)} ${p.freq}</span>${p.full ? '<span class="finished lap-memory-full">Lap memory full</span>' : ""}</div>
-      <p class="hint">Best ${st.best === null ? "–" : secs(st.best)} · average ${st.avg === null ? "–" : secs(st.avg)} · best 3 laps ${st.best3 === null ? "–" : secs(st.best3)}</p>`;
+      <p class="hint">${statsLine(st, race.target)}</p>`;
+    if (st.laps >= 2) {
+      const chart = el("div", "lap-chart");
+      block.appendChild(chart);
+      mountLapChart(chart, p.laps.slice(1), { target: race.target || 0, best3From: st.best3From }, `history-${race.id}-${i}`);
+    }
     if (p.laps.length) {
       const table = el("table");
       table.innerHTML = `<tr><th>Lap</th><th>Time</th>${editing ? "<th>Fix</th>" : ""}</tr>`;
@@ -1704,10 +1822,90 @@ function renderHistoryDetail(container, race, editing, summary) {
     if (!editing && isRacing()) showButtonStatus(editButton, "After the race");
     else renderHistoryDetail(container, race, !editing, summary);
   });
+  const renameButton = el("button", "btn btn-ghost", "Rename");
+  renameButton.addEventListener("click", () => openRename(container, race, summary, renameButton));
+  const imageButton = el("button", "btn btn-ghost", "Save image");
+  imageButton.addEventListener("click", () => shareRaceImage(race, imageButton));
   const exportButton = el("button", "btn btn-ghost", "Export CSV");
   exportButton.addEventListener("click", () => downloadCsv([race], "laptimer-race-" + race.id + ".csv"));
-  buttons.append(editButton, exportButton);
-  container.appendChild(buttons);
+  buttons.append(editButton, renameButton, imageButton, exportButton);
+  const copyButton = el("button", "link-small link-button", "Copy as text");
+  copyButton.type = "button";
+  copyButton.addEventListener("click", () => {
+    const ok = copyText(raceText(race));
+    showButtonStatus(copyButton, ok ? "Copied ✓" : "Copy not possible here", 2000);
+  });
+  container.append(buttons, copyButton);
+  redrawLapCharts(); // the charts were drawn before they were on the page
+}
+
+// Statistics under a pilot's name in the history; with the pace target the race was flown against
+function statsLine(st, target) {
+  const parts = [
+    `Best ${secsOrDash(st.best)}${st.bestLap ? ` (lap ${st.bestLap})` : ""}`,
+    `average ${secsOrDash(st.avg)}`,
+    `best 2 laps ${secsOrDash(st.best2)}`,
+    `best 3 laps ${secsOrDash(st.best3)}`,
+    `consistency ${st.consistency === null ? "–" : "±" + secs(st.consistency)}`,
+  ];
+  if (target) parts.push(`target ${secs(target)}`);
+  return parts.join(" · ");
+}
+
+// A race's own name: typed in place, saved on the timer (not during a race: a flash write).
+// Two phones renaming the same race: the last one wins. An empty name goes back to the date.
+function openRename(container, race, summary, button) {
+  if (isRacing()) {
+    showButtonStatus(button, "After the race");
+    return;
+  }
+  const open = container.querySelector(".rename-row");
+  if (open) {
+    open.querySelector("input").focus();
+    return;
+  }
+  const form = el("form", "rename-row");
+  const input = el("input");
+  input.type = "text";
+  input.value = race.name || "";
+  input.placeholder = raceDate(race) || "Race name";
+  input.autocomplete = "off";
+  input.enterKeyHint = "done";
+  input.setAttribute("aria-label", "Race name (empty: the date)");
+  input.addEventListener("input", () => {
+    const name = truncateUtf8(input.value, RACE_NAME_MAX_BYTES);
+    if (name !== input.value) input.value = name;
+  });
+  const save = el("button", "btn", "Save");
+  save.type = "submit";
+  const cancel = el("button", "btn btn-ghost", "Cancel");
+  cancel.type = "button";
+  cancel.addEventListener("click", () => form.remove());
+  form.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") form.remove();
+  });
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = input.value.trim();
+    save.disabled = true;
+    try {
+      await postJson("/api/races/rename", { id: race.id, name });
+    } catch (err) {
+      save.disabled = false;
+      showButtonStatus(save, err.status === 409 ? "After the race" : "Failed", 3000);
+      return;
+    }
+    for (const r of [race, historyList.find((h) => h.id === race.id)]) {
+      if (!r) continue;
+      if (name) r.name = name;
+      else delete r.name;
+    }
+    if (summary) summary.innerHTML = historySummaryHtml(race, pilotSummaries(race));
+    form.remove();
+  });
+  form.append(input, save, cancel);
+  container.prepend(form);
+  input.focus();
 }
 
 // One fix at a time: the buttons stay off until the new laps are shown (a double tap would
@@ -1728,12 +1926,7 @@ async function editLap(race, pilotIndex, op, lap, container, summary) {
   try {
     const full = await fetchJson("/api/races?id=" + race.id);
     renderHistoryDetail(container, full, true, summary);
-    if (summary) {
-      summary.innerHTML = historySummaryHtml(full, full.pilots.map((p) => {
-        const st = pilotStats(p);
-        return { name: p.name, laps: st.laps, best: st.best };
-      }));
-    }
+    if (summary) summary.innerHTML = historySummaryHtml(full, pilotSummaries(full));
   } catch (e) {
     note = note || "Could not load this race.";
     for (const b of container.querySelectorAll(".lap-actions button")) b.disabled = false;
@@ -1749,7 +1942,8 @@ function csvRows(race) {
   race.pilots.forEach((p, i) => {
     p.laps.forEach((t, n) => {
       if (n === 0) return;
-      rows.push([race.id, date, MODE_NAMES[race.mode] || "", pilotLabel(p.name, i, race.pilots.length), p.freq, n, secs(t)]);
+      rows.push([race.id, date, MODE_NAMES[race.mode] || "", pilotLabel(p.name, i, race.pilots.length), p.freq, n, secs(t),
+        race.name || ""]);
     });
   });
   return rows;
@@ -1764,10 +1958,13 @@ function csvCell(v) {
 }
 
 function downloadCsv(races, filename) {
-  const header = ["race", "date", "mode", "pilot", "frequency", "lap", "time_s"];
+  const header = ["race", "date", "mode", "pilot", "frequency", "lap", "time_s", "race_name"];
   const lines = [header, ...races.flatMap(csvRows)].map((r) => r.map(csvCell).join(","));
   // the byte order mark makes Excel read the names as UTF-8
-  const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  downloadBlob(new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" }), filename);
+}
+
+function downloadBlob(blob, filename) {
   const a = el("a");
   a.href = URL.createObjectURL(blob);
   a.download = filename;
@@ -1805,6 +2002,528 @@ $("clearHistoryButton").addEventListener("click", async (e) => {
     showButtonStatus(e.target, err.status === 409 ? "After the race" : "Failed");
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════
+//  Lap-time chart
+// ═══════════════════════════════════════════════════════════════════
+
+// One drawing for the page and the share image. Colours go into style attributes: var() is
+// ignored in SVG presentation attributes, and an SVG drawn as an image sees no page CSS.
+const CHART_COLORS = {
+  lap: "var(--chart-lap)",
+  best: "var(--chart-best)",
+  band: "var(--chart-band)",
+  target: "var(--chart-target)",
+  grid: "var(--chart-grid)",
+  text: "var(--chart-text)",
+  bg: "var(--surface)",
+};
+const CHART_HEIGHT = 170;
+const CHART_FONT = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
+
+// Where everything goes. laps: lap times in ms (without the start pass); opts: {width, height,
+// scale, target}. The y-axis spans the laps, not zero, so a 0.3 s difference shows. A lap
+// slower than twice the median (a crash) doesn't stretch it: its dot sits at the top edge.
+function lapChartLayout(laps, opts) {
+  const s = opts.scale || 1;
+  const W = opts.width;
+  const H = opts.height;
+  const pad = { left: 38 * s, right: 10 * s, top: 16 * s, bottom: 20 * s };
+  const n = laps.length;
+  const step = (W - pad.left - pad.right) / n;
+  const sorted = [...laps].sort((a, b) => a - b);
+  const median = n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+  const cap = 2 * median;
+  const shown = laps.filter((t) => t <= cap);
+  let lo = Math.min(...shown);
+  let hi = Math.max(...shown);
+  const target = opts.target || 0;
+  const targetOnScale = target >= median / 2 && target <= cap; // otherwise drawn at the edge
+  if (target && targetOnScale) {
+    lo = Math.min(lo, target);
+    hi = Math.max(hi, target);
+  }
+  if (hi - lo < 500) {
+    const mid = (lo + hi) / 2;
+    lo = mid - 250;
+    hi = mid + 250;
+  }
+  const margin = (hi - lo) * 0.12;
+  const yMin = lo - margin;
+  const yMax = hi + margin;
+  const plotTop = pad.top;
+  const plotBottom = H - pad.bottom;
+  return {
+    W, H, s, pad, n, step, cap, yMin, yMax, plotTop, plotBottom, target, targetOnScale,
+    x: (i) => pad.left + (i + 0.5) * step,
+    y: (ms) => plotTop + ((yMax - Math.max(yMin, Math.min(yMax, ms))) / (yMax - yMin)) * (plotBottom - plotTop),
+  };
+}
+
+// Grid lines at round lap times, 2-5 of them
+function chartTicks(yMin, yMax) {
+  const steps = [100, 200, 250, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000];
+  const stepMs = steps.find((st) => (yMax - yMin) / st <= 4) || 60000;
+  const ticks = [];
+  for (let t = Math.ceil(yMin / stepMs) * stepMs; t <= yMax; t += stepMs) ticks.push(t);
+  return { ticks, decimals: stepMs % 1000 === 0 ? 0 : stepMs % 100 === 0 ? 1 : 2 };
+}
+
+// The chart as an SVG string. opts: {width, height, scale, font, target, best3From, selected}
+// (best3From: lap number where the best 3 in a row start; selected: index of a tapped lap).
+// colors: {lap, best, band, target, grid, text, bg}.
+function lapChartSvg(laps, opts, colors) {
+  const L = lapChartLayout(laps, opts);
+  const s = L.s;
+  const font = opts.font || 11;
+  const best = Math.min(...laps);
+  const bestIndex = laps.indexOf(best);
+  const right = L.W - L.pad.right;
+  const out = [];
+  // weight > 400: a label on the plot. Drawn after the laps, with a halo in the background
+  // colour, so neither the lap line nor a dot crosses out its digits.
+  const labels = [];
+  const textAt = (x, y, str, color, anchor = "start", weight = 400) => {
+    const halo = weight > 400 ? `;stroke:${colors.bg};stroke-width:${3 * s}px;paint-order:stroke;stroke-linejoin:round` : "";
+    (weight > 400 ? labels : out).push(`<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="${anchor}" font-weight="${weight}" style="fill:${color}${halo}">${str}</text>`);
+  };
+  const hLine = (y, color, width, dash) =>
+    out.push(`<line x1="${L.pad.left}" y1="${y.toFixed(1)}" x2="${right}" y2="${y.toFixed(1)}" stroke-width="${width}"` +
+      `${dash ? ` stroke-dasharray="${dash}"` : ""} style="stroke:${color}"/>`);
+
+  // best 3 laps in a row: a light band behind them
+  if (opts.best3From) {
+    const x0 = L.x(opts.best3From - 1) - L.step / 2;
+    out.push(`<rect x="${x0.toFixed(1)}" y="${L.plotTop}" width="${(3 * L.step).toFixed(1)}" height="${L.plotBottom - L.plotTop}" style="fill:${colors.band}"/>`);
+  }
+
+  // grid and lap-time labels
+  const { ticks, decimals } = chartTicks(L.yMin, L.yMax);
+  for (const t of ticks) {
+    hLine(L.y(t), colors.grid, 1 * s);
+    textAt(L.pad.left - 6 * s, L.y(t) + font * 0.35, (t / 1000).toFixed(decimals), colors.text, "end");
+  }
+
+  // lap numbers
+  const every = L.n <= 10 ? 1 : L.n <= 20 ? 2 : L.n <= 50 ? 5 : L.n <= 100 ? 10 : 20;
+  for (let i = 0; i < L.n; i++) {
+    // lap 1 too, unless the next label would crowd it (every 2nd lap)
+    if ((i + 1) % every === 0 || (i === 0 && every !== 2)) textAt(L.x(i), L.H - 5 * s, String(i + 1), colors.text, "middle");
+  }
+
+  // target and best lap: dashed lines with their labels (target on the left, best on the right)
+  const labelY = (y) => (y - font - 4 * s < L.plotTop ? y + font + 2 * s : y - 4 * s); // above the line if there is room
+  if (L.target) {
+    const yT = L.targetOnScale ? L.y(L.target) : L.target > L.yMax ? L.plotTop : L.plotBottom;
+    hLine(yT, colors.target, 1.5 * s, `${6 * s} ${4 * s}`);
+    textAt(L.pad.left + 4 * s, labelY(yT), "target " + secs(L.target), colors.target, "start", 600);
+  }
+  const yBest = L.y(best);
+  hLine(yBest, colors.best, 1.5 * s, `${2 * s} ${3 * s}`);
+  textAt(right - 2 * s, labelY(yBest), "best " + secs(best), colors.best, "end", 600);
+
+  // the laps: a thin line, a dot each (only the best and crashes when there are very many).
+  // A crash lap is off the scale: an open triangle on the top edge, dashed lines to it.
+  const crash = (t) => t > L.cap;
+  const pointY = (t) => (crash(t) ? L.plotTop : L.y(t));
+  const pt = (i) => `${L.x(i).toFixed(1)} ${pointY(laps[i]).toFixed(1)}`;
+  let solid = "";
+  let dashed = "";
+  for (let i = 1; i < L.n; i++) {
+    const segment = `M${pt(i - 1)}L${pt(i)}`;
+    if (crash(laps[i - 1]) || crash(laps[i])) dashed += segment;
+    else solid += segment;
+  }
+  const lineStyle = `fill="none" stroke-width="${1.5 * s}" stroke-linejoin="round" stroke-linecap="round" style="stroke:${colors.lap}"`;
+  if (solid) out.push(`<path d="${solid}" ${lineStyle}/>`);
+  if (dashed) out.push(`<path d="${dashed}" stroke-dasharray="${3 * s} ${3 * s}" ${lineStyle}/>`);
+  const r = Math.max(1.5, Math.min(4, L.step * 0.28)) * s;
+  laps.forEach((t, i) => {
+    if (i === bestIndex || (L.n > 60 && !crash(t))) return;
+    const x = L.x(i);
+    const marker = `stroke-width="${1.5 * s}" style="fill:${colors.bg};stroke:${colors.lap}"`;
+    if (!crash(t)) {
+      out.push(`<circle cx="${x.toFixed(1)}" cy="${L.y(t).toFixed(1)}" r="${r.toFixed(1)}" ${marker}/>`);
+      return;
+    }
+    const a = Math.max(r, 3.5 * s) * 1.3;
+    const top = L.plotTop;
+    out.push(`<path d="M${x.toFixed(1)} ${(top - a).toFixed(1)}L${(x - a).toFixed(1)} ${(top + a * 0.7).toFixed(1)}` +
+      `L${(x + a).toFixed(1)} ${(top + a * 0.7).toFixed(1)}Z" stroke-linejoin="round" ${marker}/>`);
+    const leftSide = x > L.W / 2;
+    textAt(x + (leftSide ? -1 : 1) * (a + 3 * s), top + font * 0.35, secs(t), colors.text, leftSide ? "end" : "start", 600);
+  });
+  out.push(`<circle cx="${L.x(bestIndex).toFixed(1)}" cy="${yBest.toFixed(1)}" r="${Math.max(r * 1.6, 3.5 * s).toFixed(1)}" stroke-width="${1.5 * s}" style="fill:${colors.best};stroke:${colors.bg}"/>`);
+  out.push(...labels);
+
+  // the tapped lap
+  if (opts.selected !== undefined && opts.selected !== null) {
+    const i = opts.selected;
+    const x = L.x(i).toFixed(1);
+    out.push(`<line x1="${x}" y1="${L.plotTop}" x2="${x}" y2="${L.plotBottom}" stroke-width="${1 * s}" style="stroke:${colors.text}"/>`);
+    out.push(`<circle cx="${x}" cy="${pointY(laps[i]).toFixed(1)}" r="${(r + 3 * s).toFixed(1)}" fill="none" stroke-width="${1.5 * s}" style="stroke:${colors.text}"/>`);
+  }
+
+  const label = `Lap times: ${L.n} laps, best lap ${bestIndex + 1} ${secs(best)} seconds`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${L.W}" height="${L.H}" viewBox="0 0 ${L.W} ${L.H}" role="img" aria-label="${label}"` +
+    ` style="font-family:${CHART_FONT};font-size:${font}px">${out.join("")}</svg>`;
+}
+
+// A chart on the page: tap (or drag along it) to read a lap. The tapped lap stays selected
+// when the chart is drawn again (a new lap, a lap fix) under the same key.
+const chartSelection = new Map(); // key → lap index
+const mountedCharts = new Set();
+
+function mountLapChart(wrap, laps, opts, key) {
+  for (const c of mountedCharts) if (!c.wrap.isConnected) mountedCharts.delete(c);
+  const chart = { wrap, laps, opts, key, width: 0, layout: null };
+  mountedCharts.add(chart);
+  wrap.innerHTML = '<p class="lap-chart-readout" aria-live="polite"></p><div class="lap-chart-plot"></div>';
+  const plot = wrap.lastChild;
+  const pick = (e) => {
+    const rect = plot.getBoundingClientRect();
+    if (!rect.width || !chart.layout) return;
+    const L = chart.layout;
+    const x = ((e.clientX - rect.left) / rect.width) * L.W;
+    chartSelection.set(key, Math.max(0, Math.min(laps.length - 1, Math.floor((x - L.pad.left) / L.step))));
+    drawLapChart(chart);
+  };
+  plot.addEventListener("pointerdown", pick);
+  plot.addEventListener("pointermove", (e) => {
+    if (e.buttons) pick(e);
+  });
+  drawLapChart(chart);
+}
+
+function drawLapChart(chart) {
+  const plot = chart.wrap.querySelector(".lap-chart-plot");
+  chart.width = plot.clientWidth; // 0 on a hidden tab: drawn again when it is shown
+  let selected = chartSelection.get(chart.key);
+  if (selected !== undefined && selected >= chart.laps.length) selected = undefined;
+  const opts = { ...chart.opts, width: Math.round(chart.width) || 320, height: CHART_HEIGHT, selected };
+  chart.layout = lapChartLayout(chart.laps, opts);
+  plot.innerHTML = lapChartSvg(chart.laps, opts, CHART_COLORS);
+  const readout = chart.wrap.querySelector(".lap-chart-readout");
+  if (selected === undefined) {
+    readout.textContent = "Tap a lap for its time" + (chart.opts.best3From ? " · band: best 3 in a row" : "");
+    return;
+  }
+  const t = chart.laps[selected];
+  const best = Math.min(...chart.laps);
+  readout.textContent = `Lap ${selected + 1} · ${secs(t)} s · ${t === best ? "best" : "+" + secs(t - best)}`;
+}
+
+// After a tab switch or a resize the charts are drawn for their new width
+function redrawLapCharts() {
+  for (const chart of mountedCharts) {
+    if (!chart.wrap.isConnected) mountedCharts.delete(chart);
+    else if (chart.wrap.querySelector(".lap-chart-plot").clientWidth !== chart.width) drawLapChart(chart);
+  }
+}
+
+let chartResizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(chartResizeTimer);
+  chartResizeTimer = setTimeout(redrawLapCharts, 150);
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  Share a race: image and text
+// ═══════════════════════════════════════════════════════════════════
+// On plain http (the timer) phones offer neither the share menu nor the clipboard API, so the
+// image is downloaded and shared from the gallery; on https it goes to the share menu.
+
+// The dark theme's tokens from style.css (keep them in step): the image is always dark
+const SHARE = {
+  bg: "#0b1120",
+  panel: "#131c2e",
+  border: "#243049",
+  text: "#e2e8f0",
+  strong: "#f8fafc",
+  muted: "#94a3b8",
+  pilot: "#60a5fa",
+  best: "#4ade80",
+  slower: "#f87171",
+  target: "#fbbf24",
+};
+const SHARE_CHART_COLORS = { lap: "#60a5fa", best: "#4ade80", band: "rgba(34, 197, 94, 0.16)", target: "#fbbf24", grid: "#243049", text: "#94a3b8", bg: "#131c2e" };
+const SHARE_WIDTH = 1080;
+const SHARE_MAX_LAPS = 60; // the image grows with the lap list; the rest is in the CSV
+
+// "Lap race · 5 laps · countdown start"
+function raceSettingsText(race) {
+  const parts = [MODE_NAMES[race.mode] || "Race"];
+  if (race.mode === MODE.TIMED && race.raceMs) parts.push(formatMinSec(Math.round(race.raceMs / 1000)));
+  if (race.mode === MODE.LAPS && race.raceLaps) parts.push(race.raceLaps + " laps");
+  parts.push(race.cd ? "countdown start" : "flying start");
+  return parts.join(" · ");
+}
+
+// "Maverick · R8 · 5917 MHz"
+function pilotLine(p) {
+  const channel = channelName(p.freq);
+  return `${pilotLabel(p.name)} · ${channel ? channel + " · " : ""}${p.freq} MHz`;
+}
+
+// The race against its pace target: best and average against it, laps on target or faster
+function targetResult(laps, target) {
+  const st = pilotStats({ laps: [0, ...laps] });
+  const onOrUnder = laps.filter((t) => t <= target + ON_TARGET_MS).length;
+  return [`best ${deltaText(st.best - target)[0]} · average ${deltaText(st.avg - target)[0]}`,
+    `${onOrUnder} of ${laps.length} laps on target or faster`];
+}
+
+function raceText(race) {
+  const p = race.pilots[0]; // races from the multi-pilot firmware: the first pilot
+  const st = pilotStats(p);
+  const laps = p.laps.slice(1);
+  const lines = [raceTitle(race)];
+  if (race.name && race.date) lines.push(raceDate(race));
+  lines.push(pilotLine(p), raceSettingsText(race), "");
+  lines.push(`${st.laps} laps · best ${secsOrDash(st.best)}${st.bestLap ? ` (lap ${st.bestLap})` : ""} · average ${secsOrDash(st.avg)}`);
+  lines.push(`Best 2 laps ${secsOrDash(st.best2)} · best 3 laps ${secsOrDash(st.best3)} · consistency ${st.consistency === null ? "–" : "±" + secs(st.consistency)}` +
+    ` · total ${p.laps.length ? formatTotal(pilotTotal(p)) : "–"}`);
+  if (race.target && laps.length) lines.push(`Target ${secs(race.target)}: ${targetResult(laps, race.target).join(" · ")}`);
+  if (laps.length) {
+    lines.push("", "Lap  Time  vs best");
+    laps.forEach((t, i) => lines.push(`${i + 1}  ${secs(t)}  ${t === st.best ? "best" : "+" + secs(t - st.best)}`));
+  }
+  lines.push("", "LapTimer");
+  return lines.join("\n");
+}
+
+// execCommand("copy") still works on plain http (navigator.clipboard needs https)
+function copyText(text) {
+  const area = el("textarea");
+  area.value = text;
+  area.readOnly = true; // no keyboard popping up on a phone
+  area.style.cssText = "position:fixed;top:0;left:-9999px;opacity:0";
+  document.body.appendChild(area);
+  area.select();
+  area.setSelectionRange(0, text.length);
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch (e) {
+    ok = false;
+  }
+  area.remove();
+  return ok;
+}
+
+function svgToImage(svg) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("chart image did not load"));
+    };
+    img.src = url;
+  });
+}
+
+// Draws the race card. chart: an image of the chart, or null. Returns the canvas.
+function drawRaceCard(race, chart) {
+  const p = race.pilots[0];
+  const st = pilotStats(p);
+  const laps = p.laps.slice(1);
+  const target = laps.length ? race.target || 0 : 0;
+  const W = SHARE_WIDTH;
+  const M = 56; // outer margin
+  const inner = W - 2 * M;
+  const listed = Math.min(laps.length, SHARE_MAX_LAPS);
+  const cols = listed > 20 ? 3 : 2;
+  const rowsPerCol = Math.ceil(listed / cols);
+  const ROW = 46;
+  const CHART_H = 440;
+  const subtitle = race.name && race.date ? raceDate(race) : "";
+
+  // section heights, top to bottom
+  const H = M + 76 + (subtitle ? 44 : 0) + 20 + 44 + 40 + 32 + 136 + 16 + 120 + 24 + (target ? 112 + 24 : 0) +
+    (chart ? CHART_H + 40 + 24 : 0) + (listed ? 56 + rowsPerCol * ROW + (laps.length > listed ? 48 : 0) + 24 : 0) + 48 + M;
+
+  const canvas = el("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  const font = (weight, size) => `${weight} ${size}px ${CHART_FONT}`;
+  const text = (str, x, y, size, color, weight = 400, align = "left", maxWidth = inner) => {
+    ctx.font = font(weight, size);
+    while (size > 14 && ctx.measureText(str).width > maxWidth) ctx.font = font(weight, --size); // long names get smaller
+    ctx.fillStyle = color;
+    ctx.textAlign = align;
+    ctx.fillText(str, x, y);
+  };
+  const panel = (x, y, w, h, color = SHARE.panel) => {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, 20);
+    else ctx.rect(x, y, w, h);
+    ctx.fill();
+  };
+  const statBoxes = (items, y, h) => {
+    const gap = 16;
+    const w = (inner - gap * (items.length - 1)) / items.length;
+    items.forEach(([label, value, sub], i) => {
+      const x = M + i * (w + gap);
+      panel(x, y, w, h);
+      text(label.toUpperCase(), x + 22, y + 38, 21, SHARE.muted, 700, "left", w - 44);
+      text(value, x + 22, y + 88, h > 125 ? 46 : 38, SHARE.strong, 800, "left", w - 44);
+      if (sub) text(sub, x + w - 22, y + 38, 21, SHARE.best, 700, "right");
+    });
+  };
+
+  ctx.fillStyle = SHARE.bg;
+  ctx.fillRect(0, 0, W, H);
+  let y = M;
+
+  // title, date, pilot, race settings
+  text(raceTitle(race), M, y + 58, 60, SHARE.strong, 800);
+  y += 76;
+  if (subtitle) {
+    text(subtitle, M, y + 32, 30, SHARE.muted, 600);
+    y += 44;
+  }
+  y += 20;
+  ctx.fillStyle = SHARE.pilot;
+  ctx.beginPath();
+  ctx.arc(M + 12, y + 22, 12, 0, 2 * Math.PI);
+  ctx.fill();
+  text(pilotLine(p), M + 36, y + 34, 34, SHARE.text, 700, "left", inner - 36);
+  y += 44;
+  text(raceSettingsText(race), M, y + 30, 28, SHARE.muted, 600);
+  y += 40 + 32;
+
+  // statistics
+  statBoxes([
+    ["Laps", String(st.laps)],
+    ["Best", secsOrDash(st.best), st.bestLap ? "lap " + st.bestLap : ""],
+    ["Average", secsOrDash(st.avg)],
+  ], y, 136);
+  y += 136 + 16;
+  statBoxes([
+    ["Best 2 laps", secsOrDash(st.best2)],
+    ["Best 3 laps", secsOrDash(st.best3)],
+    ["Consistency", st.consistency === null ? "–" : "±" + secs(st.consistency)],
+    ["Total", p.laps.length ? formatTotal(pilotTotal(p)) : "–"],
+  ], y, 120);
+  y += 120 + 24;
+
+  if (target) {
+    panel(M, y, inner, 112);
+    text("TARGET", M + 22, y + 38, 21, SHARE.muted, 700);
+    text(secs(target) + " s", M + 22, y + 86, 40, SHARE.target, 800, "left", 190);
+    const [result, count] = targetResult(laps, target);
+    text(result, M + 240, y + 46, 28, SHARE.text, 700, "left", inner - 262);
+    text(count, M + 240, y + 86, 26, SHARE.muted, 600, "left", inner - 262);
+    y += 112 + 24;
+  }
+
+  if (chart) {
+    panel(M, y, inner, CHART_H + 40);
+    ctx.drawImage(chart, M + 20, y + 20, inner - 40, CHART_H);
+    y += CHART_H + 40 + 24;
+  }
+
+  // lap list: down each column, "vs best" beside every lap
+  if (listed) {
+    text("LAP TIMES", M, y + 34, 22, SHARE.muted, 700);
+    y += 56;
+    const colW = inner / cols;
+    for (let k = 0; k < listed; k++) {
+      const col = Math.floor(k / rowsPerCol);
+      const row = k % rowsPerCol;
+      const x = M + col * colW;
+      const top = y + row * ROW;
+      const t = laps[k];
+      const isBest = t === st.best;
+      if (isBest) panel(x, top, colW - 16, ROW - 6, "rgba(34, 197, 94, 0.16)");
+      const base = top + ROW / 2 + 8;
+      text(String(k + 1), x + 56, base, 24, SHARE.muted, 600, "right");
+      text(secs(t), x + (cols === 3 ? 172 : 220), base, 28, isBest ? SHARE.best : SHARE.strong, 700, "right");
+      text(isBest ? "★ best" : "+" + secs(t - st.best), x + colW - 34, base, 24, isBest ? SHARE.best : SHARE.muted, 600, "right");
+    }
+    y += rowsPerCol * ROW;
+    if (laps.length > listed) {
+      text(`+ ${laps.length - listed} more laps (Export CSV has them all)`, M, y + 34, 24, SHARE.muted, 600);
+      y += 48;
+    }
+    y += 24;
+  }
+
+  // footer
+  ctx.fillStyle = SHARE.border;
+  ctx.fillRect(M, y, inner, 2);
+  text("LapTimer", M, y + 40, 24, SHARE.muted, 700);
+  return canvas;
+}
+
+function canvasToPng(canvas) {
+  return new Promise((resolve, reject) => {
+    try {
+      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("no image"))), "image/png");
+    } catch (e) {
+      reject(e); // a tainted canvas (SecurityError)
+    }
+  });
+}
+
+// The card as a PNG. If the browser won't let a canvas with the chart drawn on it be saved,
+// the card is drawn again without the chart rather than not at all.
+async function raceImage(race) {
+  const laps = race.pilots[0].laps.slice(1);
+  let chart = null;
+  if (laps.length >= 2) {
+    const st = pilotStats(race.pilots[0]);
+    const svg = lapChartSvg(laps, { width: SHARE_WIDTH - 2 * 56 - 40, height: 440, scale: 2.2, font: 24, target: race.target || 0,
+      best3From: st.best3From }, SHARE_CHART_COLORS);
+    chart = await svgToImage(svg).catch((e) => {
+      console.error(e);
+      return null;
+    });
+  }
+  try {
+    return { blob: await canvasToPng(drawRaceCard(race, chart)), withChart: !!chart };
+  } catch (e) {
+    if (!chart) throw e;
+    console.error("Image with the chart refused, saving it without", e);
+    return { blob: await canvasToPng(drawRaceCard(race, null)), withChart: false };
+  }
+}
+
+async function shareRaceImage(race, button) {
+  if (button.disabled) return;
+  button.disabled = true;
+  showButtonStatus(button, "Drawing…", 0);
+  try {
+    const { blob, withChart } = await raceImage(race);
+    const file = new File([blob], `laptimer-race-${race.id}.png`, { type: "image/png" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: raceTitle(race) });
+        showButtonStatus(button, "Shared ✓", 2000);
+      } catch (e) {
+        if (e.name === "AbortError") showButtonStatus(button, button.dataset.label, 1);
+        else {
+          downloadBlob(blob, file.name);
+          showButtonStatus(button, "Saved ✓", 2500);
+        }
+      }
+    } else {
+      downloadBlob(blob, file.name);
+      showButtonStatus(button, withChart ? "Saved ✓" : "Saved, no chart", 2500);
+    }
+  } catch (e) {
+    console.error(e);
+    showButtonStatus(button, "Could not draw it");
+  }
+  button.disabled = false;
+}
 
 // ═══════════════════════════════════════════════════════════════════
 //  Speech (announcer) and beeps

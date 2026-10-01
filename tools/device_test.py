@@ -2,9 +2,10 @@
 
 Usage: python tools/device_test.py <host>     e.g. 192.168.1.50 (the IP is faster than laptimer.local)
 
-Covers settings round trips and checks, race start/stop/clear, race vs channel scan,
-history and lap-fix conflicts, saved pilots and the WiFi password never being sent.
-Lap detection itself needs a drone flying through the gate.
+Covers settings round trips and checks (pace target too), race start/stop/clear, race vs
+channel scan, history, lap-fix conflicts and race names, saved pilots and the WiFi password
+never being sent. Lap detection itself needs a drone flying through the gate; renaming a race
+needs a saved race (fly one lap first: a web-files update deletes the history).
 """
 import json, sys, time, urllib.error, urllib.request
 
@@ -69,6 +70,17 @@ try:
     req("/config", {"name": "ŠĐČĆŽšđčćžŠĐČĆŽ"})
     name = req("/config")[1]["name"]
     check("long name cut at a whole character", name == "ŠĐČĆŽšđčćž", name)
+
+    # pace target: 0 = off, otherwise kept within 3-600 s; saving other settings leaves it alone
+    check("settings have the pace target", "target" in original, sorted(original))
+    targets = []
+    for value in (45000, 1000, 999999, 0):
+        req("/config", {"target": value})
+        targets.append(req("/config")[1].get("target"))
+    check("pace target kept within 3-600 s, 0 = off", targets == [45000, 3000, 600000, 0], targets)
+    req("/config", {"target": 45000})
+    req("/config", {"countdown": not original["countdown"]})
+    check("other settings leave the pace target alone", req("/config")[1].get("target") == 45000)
     req("/config", {k: original[k] for k in original})
 
     # race vs channel scan, in every order
@@ -99,6 +111,8 @@ try:
     check("clear refused while racing", st == 409, st)
     st, _ = req("/api/profiles/save", {"name": TEST_PILOT, "freq": 5800, "enter": 120, "exit": 100})
     check("saved pilots refused while racing (flash write)", st == 409, st)
+    st, _ = req("/api/races/rename", {"id": 1, "name": "During the race"})
+    check("race rename refused while racing (flash write)", st == 409, st)
     req("/timer/stop", {})
     time.sleep(0.3)
     st, _ = req("/api/spectrum?start=1")
@@ -126,16 +140,42 @@ try:
             _, after = req(f"/api/races?id={newest['id']}")
             check("stale lap fix refused, race unchanged", st == 409 and after["pilots"][pilot]["laps"] == laps, st)
 
-    # saved pilots: one at a time, names match without case, rename replaces
+    # race names: cut at a whole character (32 bytes), an empty name goes back to the date
+    st, _ = req("/api/races/rename", {"id": 999999, "name": "Missing"})
+    check("renaming a missing race refused", st == 400, st)
+    if races:
+        rid = max(races, key=lambda r: r["id"])["id"]
+        _, before = req(f"/api/races?id={rid}")
+        long_name = "A" + "ŠĐČĆŽšđčćžŠĐČĆŽš"  # 1 + 16 two-byte characters = 33 bytes
+        st, _ = req("/api/races/rename", {"id": rid, "name": long_name})
+        _, after = req(f"/api/races?id={rid}")
+        listed = next((r for r in req("/api/races")[1] if r["id"] == rid), {})
+        check("race renamed, name cut at a whole character, in the list too",
+              st == 200 and after.get("name") == long_name[:16] and listed.get("name") == long_name[:16] and
+              after["pilots"] == before["pilots"], (st, after.get("name"), listed.get("name")))
+        st, _ = req("/api/races/rename", {"id": rid, "name": ""})
+        _, after = req(f"/api/races?id={rid}")
+        listed = next((r for r in req("/api/races")[1] if r["id"] == rid), {})
+        check("empty race name goes back to the date", st == 200 and "name" not in after and "name" not in listed, after.get("name"))
+        if before.get("name"):
+            req("/api/races/rename", {"id": rid, "name": before["name"]})
+    else:
+        print("SKIP race rename: no saved race (fly one lap, then run this again)", flush=True)
+
+    # saved pilots: one at a time, names match without case, rename replaces, pace target kept
     prof0 = status()["prof"]
-    st, _ = req("/api/profiles/save", {"name": TEST_PILOT, "freq": 5800, "enter": 120, "exit": 100})
+    st, _ = req("/api/profiles/save", {"name": TEST_PILOT, "freq": 5800, "enter": 120, "exit": 100, "target": 45000})
     st2, _ = req("/api/profiles/save", {"name": TEST_PILOT.upper(), "freq": 5880, "enter": 130, "exit": 140})
     mine = [p for p in req("/api/profiles")[1] if p["name"].lower() == TEST_PILOT.lower()]
-    check("saved pilot added and updated once", st == 200 and st2 == 200 and len(mine) == 1 and mine[0]["freq"] == 5880 and
-          mine[0]["exit"] < mine[0]["enter"], mine)
-    req("/api/profiles/save", {"name": TEST_PILOT + " 2", "prev": TEST_PILOT.upper(), "freq": 5880, "enter": 130, "exit": 110})
-    names = [p["name"] for p in req("/api/profiles")[1]]
+    check("saved pilot added and updated once (no target: none stored)", st == 200 and st2 == 200 and len(mine) == 1 and
+          mine[0]["freq"] == 5880 and mine[0]["exit"] < mine[0]["enter"] and "target" not in mine[0], mine)
+    req("/api/profiles/save", {"name": TEST_PILOT + " 2", "prev": TEST_PILOT.upper(), "freq": 5880, "enter": 130, "exit": 110,
+                               "target": 1000})
+    saved_pilots = req("/api/profiles")[1]
+    names = [p["name"] for p in saved_pilots]
     check("rename replaces the saved pilot", TEST_PILOT + " 2" in names and TEST_PILOT.upper() not in names, names)
+    renamed = next((p for p in saved_pilots if p["name"] == TEST_PILOT + " 2"), {})
+    check("saved pilot keeps its pace target (within 3-600 s)", renamed.get("target") == 3000, renamed)
     check("saved-pilot revision changes", status()["prof"] != prof0)
 finally:
     req("/config", {k: original[k] for k in original})

@@ -1,6 +1,7 @@
 """Simulated LapTimer for UI work: serves data/ and fakes the firmware JSON API.
 
 Run: python tools/mock_server.py, then open http://127.0.0.1:8765/
+     python tools/mock_server.py --host 0.0.0.0   (reachable from a phone on the same network)
 Keep it in step with lib/WEBSERVER/api.cpp when the API changes.
 
 Test helpers (mock only, GET):
@@ -12,7 +13,7 @@ Test helpers (mock only, GET):
   /mock/oldrace           adds a race saved by the multi-pilot firmware (two pilots)
   /mock/log               the last settings changes (POST /config bodies)
 """
-import json, math, os, random, threading, time
+import argparse, json, math, os, random, threading, time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -22,15 +23,17 @@ LOCK = threading.Lock()
 CONFIG = {
     "freq": 5800, "minLap": 50, "alarm": 0, "anType": 2, "anRate": 10, "anDelta": True, "buzzerOn": True,
     "enterRssi": 120, "exitRssi": 100, "name": "Maverick",
-    "raceMode": 0, "raceSec": 60, "raceLaps": 5, "countdown": False,
+    "raceMode": 0, "raceSec": 60, "raceLaps": 5, "countdown": False, "target": 0,
 }
 SAVED = ["Home WiFi", "Field hotspot"]
 PROFILES = [
     {"name": "Maverick", "freq": 5800, "enter": 120, "exit": 100},
-    {"name": "Iceman", "freq": 5658, "enter": 125, "exit": 104},
+    {"name": "Iceman", "freq": 5658, "enter": 125, "exit": 104, "target": 4300},
     {"name": "Rooster", "freq": 5917, "enter": 118, "exit": 98},
 ]
 MAX_PROFILES_SIZE = 4096  # bytes of JSON, as in the firmware
+RACE_NAME_MAX_BYTES = 32
+TARGET_LAP_MIN_MS, TARGET_LAP_MAX_MS = 3000, 600000
 MAX_LAPS = 200
 LAP_BASE = 4.4  # seconds per simulated lap (fast for testing)
 CONFIG_LOG = []  # last POST /config bodies, for /mock/log
@@ -45,13 +48,24 @@ RACING = (1, 2, 3)
 
 
 def seed_races():
-    """Two saved single-pilot races, so History has something to show."""
+    """Saved single-pilot races for History: 1, 2, 6 and 45 laps, a missed pass (double lap),
+    a 60 s crash lap, a named race and races flown with a pace target."""
     now = int(time.time())
+    rnd = random.Random(7)
+    many = [0] + [int(12800 + rnd.uniform(-450, 650) - k * 8) for k in range(45)]
+    outlier = [0, 13120, 12840, 12990, 60150, 13300, 12710, 12880]
+    seeds = [  # (ago, laps, mode, extra)
+        (6 * 86400, [0, 13420], 0, {}),
+        (5 * 86400, [0, 13110, 12870], 0, {}),
+        (3 * 86400, [0, 4620, 4410, 4388, 4501, 4297, 4350], 0, {}),
+        (2 * 86400, many, 0, {"name": "Evening session at the field", "target": 12800}),
+        (26 * 3600, outlier, 1, {"target": 13000}),
+        (2 * 3600, [0, 4210, 3980, 4105, 7960, 3920], 2, {}),
+    ]
     races = {}
-    for rid, (ago, laps, mode) in enumerate([(3 * 86400, [0, 4620, 4410, 4388, 4501, 4297, 4350], 0),
-                                             (2 * 3600, [0, 4210, 3980, 4105, 7960, 3920], 2)], start=1):
-        races[rid] = {"id": rid, "date": now - ago, "mode": mode, "cd": False, "raceMs": 60000, "raceLaps": 5,
-                      "pilots": [{"name": "Maverick", "freq": 5800, "fin": mode == 2, "laps": laps}]}
+    for rid, (ago, laps, mode, extra) in enumerate(seeds, start=1):
+        races[rid] = {"id": rid, "date": now - ago, "mode": mode, "cd": mode == 1, "raceMs": 120000, "raceLaps": 5,
+                      "pilots": [{"name": "Maverick", "freq": 5800, "fin": mode == 2, "laps": laps}], **extra}
     return races
 
 
@@ -65,6 +79,12 @@ def now_ms():
 def cut_utf8(text, limit=20):
     """Config/profile names: at most 20 bytes of UTF-8, cut at a whole character."""
     return (text or "").encode()[:limit].decode(errors="ignore")
+
+
+def clamp_target(ms):
+    """Pace target: 0 = off, otherwise 3-600 s (clampTargetLapMs in the firmware)."""
+    ms = max(0, int(ms or 0))
+    return 0 if ms == 0 else min(TARGET_LAP_MAX_MS, max(TARGET_LAP_MIN_MS, ms))
 
 
 def fix_thresholds(entry, enter_key, exit_key):
@@ -134,6 +154,8 @@ def save_race():
     rid = max(RACES, default=0) + 1
     RACES[rid] = {"id": rid, "date": R["date"], "mode": R["mode"], "cd": R["cd"], "raceMs": R["raceMs"],
                   "raceLaps": R["raceLaps"], "pilots": race_pilots()}
+    if CONFIG["target"]:
+        RACES[rid]["target"] = CONFIG["target"]  # the pace target in use when it was saved
     S["savedId"], S["savedRace"] = rid, R["race"]
 
 
@@ -167,6 +189,7 @@ def apply_config(data):
         new["raceMode"] = 0
     new["raceSec"] = max(10, int(new["raceSec"]))
     new["raceLaps"] = max(1, int(new["raceLaps"]))
+    new["target"] = clamp_target(new["target"])
     fix_thresholds(new, "enterRssi", "exitRssi")
     if new != CONFIG:
         CONFIG.update(new)
@@ -250,9 +273,12 @@ class H(SimpleHTTPRequestHandler):
                     return self._json(race) if race else self._json({"error": "not found"}, 404)
                 out = []
                 for r in RACES.values():
-                    out.append({"id": r["id"], "date": r["date"], "mode": r["mode"],
-                                "pilots": [{"name": p["name"], "laps": max(0, len(p["laps"]) - 1),
-                                            "best": min(p["laps"][1:]) if len(p["laps"]) > 1 else 0} for p in r["pilots"]]})
+                    item = {"id": r["id"], "date": r["date"], "mode": r["mode"],
+                            "pilots": [{"name": p["name"], "laps": max(0, len(p["laps"]) - 1),
+                                        "best": min(p["laps"][1:]) if len(p["laps"]) > 1 else 0} for p in r["pilots"]]}
+                    if "name" in r:
+                        item["name"] = r["name"]
+                    out.append(item)
                 return self._json(out)
             if u.path == "/api/profiles":
                 return self._json(PROFILES)
@@ -368,6 +394,19 @@ class H(SimpleHTTPRequestHandler):
                         live.pop("full", None)
                     S["edits"] += 1
                 return self._json({"status": "OK"})
+            if u.path == "/api/races/rename":
+                if R["state"] in RACING:  # no flash writes during a race
+                    return self._json({"status": "racing"}, 409)
+                d = json.loads(body or b"{}")
+                race = RACES.get(d.get("id", 0))
+                if not race:
+                    return self._json({"status": "invalid"}, 400)
+                name = cut_utf8(d.get("name") or "", RACE_NAME_MAX_BYTES)
+                if name:
+                    race["name"] = name
+                else:
+                    race.pop("name", None)  # back to the date
+                return self._json({"status": "OK"})
             if u.path == "/api/races/clear":
                 if R["state"] in RACING:
                     return self._json({"status": "racing"}, 409)
@@ -405,6 +444,8 @@ class H(SimpleHTTPRequestHandler):
                     return self._json({"status": "OK"})
                 entry = {"name": name, "freq": d.get("freq", 0), "enter": d.get("enter", 120), "exit": d.get("exit", 100)}
                 fix_thresholds(entry, "enter", "exit")
+                if clamp_target(d.get("target")):
+                    entry["target"] = clamp_target(d.get("target"))  # stored only when set
                 drop = {name.lower(), (d.get("prev") or "").lower()}
                 updated = [p for p in PROFILES if p["name"].lower() not in drop] + [entry]
                 if len(json.dumps(updated)) > MAX_PROFILES_SIZE:
@@ -420,4 +461,8 @@ class H(SimpleHTTPRequestHandler):
         pass
 
 
-ThreadingHTTPServer(("127.0.0.1", 8765), H).serve_forever()
+parser = argparse.ArgumentParser(description="Simulated LapTimer for UI work")
+parser.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to reach it from a phone")
+parser.add_argument("--port", type=int, default=8765)
+args = parser.parse_args()
+ThreadingHTTPServer((args.host, args.port), H).serve_forever()
