@@ -22,7 +22,8 @@ Every change goes through all steps; a step is done when its check passes.
    (lap detection needs a drone through the gate).
 5. **Review** larger batches (`main...<branch>`) and fix what holds up.
 6. **Commit and push** the branch. A release: merge to `main`, tag, GitHub release with
-   `laptimer-vX.Y.Z-firmware.bin` and `laptimer-vX.Y.Z-littlefs.bin`.
+   `laptimer-vX.Y.Z-firmware.bin` and `laptimer-vX.Y.Z-littlefs.bin`. After visible UI changes
+   `node tools/readme_images.js` retakes the README's screenshots (docs/images) from the mock.
 
 ## Design principles
 

@@ -8,9 +8,9 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 [PhobosLT_pooling](https://github.com/nikbg3/PhobosLT_pooling).
 
 <p align="center">
-  <img src="docs/images/setup.png" width="240" alt="Setup: pilot, channel and saved pilots" />
-  <img src="docs/images/race.png" width="240" alt="Race: clock and lap stats" />
-  <img src="docs/images/race-screen.png" width="240" alt="Race screen: big numbers for the field" />
+  <img src="docs/images/setup.png" width="240" alt="Setup: pilot, channel, target lap and saved pilots" />
+  <img src="docs/images/race.png" width="240" alt="Race: clock, pace target and lap stats" />
+  <img src="docs/images/race-screen.png" width="240" alt="Race screen: big numbers for the field, best 2 and 3 laps, target" />
 </p>
 
 ## Features
@@ -60,9 +60,13 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 - Settings save automatically and stay consistent across several open phones.
 
 <p align="center">
-  <img src="docs/images/calibrate.png" width="240" alt="Calibration graph with enter and exit thresholds" />
+  <img src="docs/images/calibrate.png" width="240" alt="Calibration graph with Enter and Exit, and auto-calibration's suggestion" />
   <img src="docs/images/channel-scan.png" width="240" alt="Channel scan with the pilot's channel marked" />
+  <img src="docs/images/history.png" width="240" alt="A saved race: stats and the lap chart with the target, the best 3 in a row and a crash lap kept off the scale" />
+</p>
+<p align="center">
   <img src="docs/images/fix-laps.png" width="240" alt="Fixing laps in the race history" />
+  <img src="docs/images/race-image.png" width="240" alt="The race picture to share: stats, chart, target and every lap" />
 </p>
 
 ## Hardware
@@ -221,6 +225,7 @@ log and hotspot signal scripts.
 Tests: `python tools/mock_server.py`, then `node tools/run_page_test.js` checks the web page
 in a headless Chrome (every tab, both themes at phone width, two phones, connection loss), and
 `python tools/device_test.py <timer-ip>` checks the timer's API (also against the mock).
+`node tools/readme_images.js` takes this README's screenshots from the mock.
 
 ## License
 
