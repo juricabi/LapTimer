@@ -73,6 +73,16 @@ try:
 
     # pace target: 0 = off, otherwise kept within 3-600 s; saving other settings leaves it alone
     check("settings have the pace target and its announce switch", "target" in original and "anTarget" in original, sorted(original))
+    # a lap is compared with the best lap or with the target, never both: the one switched on wins
+    req("/config", {"anDelta": True})
+    req("/config", {"anTarget": True})
+    a = req("/config")[1]
+    req("/config", {"anDelta": True})
+    b = req("/config")[1]
+    req("/config", {"anDelta": True, "anTarget": True})
+    c = req("/config")[1]
+    got = [a["anDelta"], a["anTarget"], b["anDelta"], b["anTarget"], c["anDelta"], c["anTarget"]]
+    check("delta to the best lap and to the target never both on", got == [False, True, True, False, False, True], got)
     targets = []
     for value in (45000, 1000, 999999, 0):
         req("/config", {"target": value})
@@ -98,6 +108,20 @@ try:
 
     req("/config", {"countdown": True, "target": 45000})
     time.sleep(1.2)
+    at_start = req("/config")[1]  # the settings this race takes
+
+    def race_view():
+        """The race as the timer reports it (race data and status), to compare with at_start."""
+        _, r = req("/api/race")
+        s = status()
+        p = r["pilots"][0]
+        return {"name": p["name"], "freq": p["freq"], "mode": r["mode"], "cd": bool(r["cd"]), "raceMs": r["raceMs"],
+                "raceLaps": r["raceLaps"], "target": r.get("target", 0),
+                "status": [s["mode"], bool(s["cd"]), s["raceMs"], s["raceLaps"]]}
+
+    expected = {"name": at_start["name"], "freq": at_start["freq"], "mode": at_start["raceMode"], "cd": True,
+                "raceMs": at_start["raceSec"] * 1000, "raceLaps": at_start["raceLaps"], "target": 45000,
+                "status": [at_start["raceMode"], True, at_start["raceSec"] * 1000, at_start["raceLaps"]]}
     req("/timer/start", {})
     time.sleep(0.3)
     req("/config", {"target": 30000})  # a change during the race applies from the next one
@@ -108,6 +132,12 @@ try:
     time.sleep(3.2)
     st, _ = req("/api/spectrum?start=1")
     check("scan refused while racing", st == 409 and status()["state"] == 3, st)
+    # every race setting changed during the race (this phone or another one): the race keeps its own
+    req("/config", {"name": "Mid Race Pilot", "freq": 5658 if at_start["freq"] != 5658 else 5800,
+                    "raceMode": (at_start["raceMode"] + 1) % 3, "raceSec": 300 if at_start["raceSec"] != 300 else 240,
+                    "raceLaps": 9 if at_start["raceLaps"] != 9 else 8, "countdown": False})
+    got = race_view()
+    check("race keeps pilot, channel, mode, limits, countdown and target when settings change", got == expected, got)
     st, _ = req("/timer/start", {})
     check("second start refused while racing", st == 409, st)
     st, _ = req("/timer/clear", {})
@@ -118,10 +148,11 @@ try:
     check("race rename refused while racing (flash write)", st == 409, st)
     req("/timer/stop", {})
     time.sleep(0.3)
-    race_target = req("/api/race")[1].get("target")
-    next_target = req("/config")[1].get("target")
-    check("after Stop the race keeps its target, the next race takes the new one",
-          race_target == 45000 and next_target == 30000, (race_target, next_target))
+    got = race_view()
+    next_race = req("/config")[1]
+    check("after Stop the race keeps all its settings, the next race takes the new ones",
+          got == expected and next_race["target"] == 30000 and next_race["name"] == "Mid Race Pilot", (got, next_race["target"]))
+    req("/config", {k: original[k] for k in original})
     st, _ = req("/api/spectrum?start=1")
     wait_scan_done()
     _, spec = req("/api/spectrum")

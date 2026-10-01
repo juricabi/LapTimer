@@ -25,8 +25,8 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 - **Lap-time chart**: every lap at a glance, scaled to your laps so 0.3 s shows; the best lap,
   the best 3 in a row and your target marked, a crash lap kept off the scale. Tap a lap to read it.
 - **Pace target**: a target lap time per pilot, mainly for practice; each race keeps the one it
-  started with. Laps are announced against it ("plus 0.40", "On target"; a switch of its own),
-  and the Race tab, race screen, chart and race image show it.
+  started with. Laps are announced against it ("plus 0.40", "On target"; Announcer → Then
+  compare with: Target), and the Race tab, race screen, chart and race image show it.
 - **Race screen**: big numbers for a phone or tablet at the field, with a live current-lap timer.
 
 **Voice and sound**
@@ -171,12 +171,11 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
 
 ### Voice
 
-- **Announcer** (Setup → Announcer, saved on the timer): what to announce (lap time, 2 or 3
-  consecutive laps, a beep on the phone, or nothing), the delta to your best lap, and the
-  speech rate. **Announce target** (on by default): with a target lap set (Setup → Pilot),
-  every lap is compared with the target instead of your best: "plus 0.40", "minus 0.30", or
-  "On target" within 0.05 s; "Best lap" still comes. Every phone with Voice on speaks it. The timer's own buzzer is separate
-  (Setup → Alerts).
+- **Announcer** (Setup → Announcer, saved on the timer): **Announce each lap** (lap time, 2 or
+  3 consecutive laps, a beep on the phone, or nothing), **Then compare with** (nothing, your
+  best lap: "minus 0.12", or your target lap: "plus 0.40", "On target" within 0.05 s; one of
+  them, with any choice above, a beep too; "Best lap" still comes), and the speech rate.
+  Every phone with Voice on speaks it. The timer's own buzzer is separate (Setup → Alerts).
 - **This phone** (Setup → This phone, for each phone, not saved on the timer): **Voice**
   (speaks lap times, race events and the answers to voice commands), **Voice commands**, and
   **Test voice**. Phones allow speech only after a tap: tap Test voice once after opening the

@@ -63,7 +63,7 @@
           </div>
         </div>
         <p class="hint warn" id="pilotHint" hidden>No channel yet: pick a band and channel.</p>
-        <p class="hint" id="targetHint">A race keeps the target it started with, so set it before Start. It shows on the Race tab, the chart and the race image, and is spoken with Announce target (below). Empty = off; saved with the pilot.</p>
+        <p class="hint" id="targetHint">A race keeps the target it started with, so set it before Start. It shows on the Race tab, the chart and the race image, and is spoken with Announcer → Then compare with: Target. Empty = off; saved with the pilot.</p>
         <div id="savedPilotsBlock" class="field" hidden>
           <span class="field-label">Saved pilots</span>
           <div id="savedPilots" class="chips"></div>
@@ -114,7 +114,7 @@
         <h2>Announcer</h2>
         <p class="hint" id="announcerNote">Spoken by every phone that has Voice on (This phone, below).</p>
         <label class="field">
-          <span class="field-label">Announce</span>
+          <span class="field-label">Announce each lap</span>
           <select id="announcerSelect" autocomplete="off">
             <option value="none">Nothing</option>
             <option value="beep">Beep on the phone</option>
@@ -124,26 +124,21 @@
           </select>
         </label>
         <div class="field">
+          <span class="field-label" id="lapCompareLabel">Then compare with</span>
+          <div class="segmented" id="lapCompare" role="radiogroup" aria-labelledby="lapCompareLabel">
+            <button data-value="none" class="active">Nothing</button>
+            <button data-value="best">Best lap</button>
+            <button data-value="target">Target</button>
+          </div>
+          <p class="hint" id="lapCompareHint"></p>
+        </div>
+        <div class="field">
           <label class="field-label" for="rate">Speech rate</label>
           <div class="input-with-value">
             <span class="val">1.0</span>
             <input type="range" min="0.1" max="2" step="0.1" id="rate" />
           </div>
         </div>
-        <label class="switch-row">
-          <span>
-            <span class="switch-title">Announce delta</span><br />
-            <span class="hint">Say how much faster or slower than your best lap</span>
-          </span>
-          <span class="switch"><input type="checkbox" id="anDelta" /><span class="slider"></span></span>
-        </label>
-        <label class="switch-row">
-          <span>
-            <span class="switch-title">Announce target</span><br />
-            <span class="hint">With a target lap (Pilot, above): say how far each lap is from it ("plus 0.40", "On target"), in place of the delta</span>
-          </span>
-          <span class="switch"><input type="checkbox" id="anTarget" /><span class="slider"></span></span>
-        </label>
       </div>
 
       <div class="card">
@@ -319,7 +314,7 @@
     <div id="rsPilot" class="rs-pilot"></div>
   </div>
 
-  <script src="script.js?v=4149557f"></script>
+  <script src="script.js?v=67900142"></script>
 </body>
 
 </html>

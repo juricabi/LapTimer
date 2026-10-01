@@ -109,7 +109,7 @@ typedef struct
     // --- v4 ---
     uint32_t targetLapMs;   // pace target, 0 = off (used by the page only)
     // --- v5 ---
-    bool announceTarget;    // announce each lap against the pace target (page only)
+    bool announceTarget;    // compare each lap with the pace target (page only); never with announceDelta
 } laptimer_config_t;
 
 static_assert(sizeof(laptimer_config_t) <= EEPROM_RESERVED_SIZE, "config does not fit the reserved EEPROM size");

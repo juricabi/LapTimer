@@ -12,7 +12,9 @@ Every change goes through all steps; a step is done when its check passes.
    Done: both print SUCCESS, and every file in `data/` is non-empty.
 2. **Look** (web changes) — `python tools/mock_server.py`, open `http://127.0.0.1:8765/` at
    390 px width, check light and dark theme and every tab the change touches. Keep the mock's
-   endpoints in step with `lib/WEBSERVER/api.cpp`. Done: no console errors, layout fits.
+   endpoints in step with `lib/WEBSERVER/api.cpp`. For race display changes also run
+   `tools/page_race_test.js` (a race shows its own settings, never later ones; how to run it
+   is at its top). Done: no console errors, layout fits, page test all PASS.
 3. **Deploy** — `python tools/ota_upload.py <timer-ip> fw fs` (firmware first). The IP is much
    faster than `laptimer.local` on Windows. Done: "back online" after each file, and "web files
    verified" after `fs` (the tool fetches every file of `data/` and compares sizes).
@@ -75,8 +77,11 @@ Every change goes through all steps; a step is done when its check passes.
   time there), so after Stop it can differ from the finished race's stats. Start
   sends a settings change still waiting for its 600 ms save first (`flushSettings`), or the
   race would start with the old value (this holds for all race settings). Its
-  callouts have their own switch (`anTarget`, settings v5, on by default), live like the
-  other announcer settings; with it on they replace the delta to the best lap.
+  callouts: Announcer → "Then compare with" Nothing / Best lap / Target, one choice stored as
+  `anDelta`/`anTarget` (settings v5; an upgrade keeps `anDelta`, target off). They never are
+  both on: the page sends one, `fromJson` turns the other off (the one switched on wins).
+  It is independent of "Announce each lap" (Beep + Target: a beep, then "minus 0.30"), and
+  live like the other announcer settings.
 - **WiFi passwords** stay on the timer; `/config` and `/api/wifi/saved` return names only.
 - **UI**: design tokens in `style.css` with contrast ratios noted beside them — text ≥ 4.5:1,
   controls ≥ 3:1, touch targets ≥ 44 px; plain CSS/JS, no new libraries.
@@ -216,9 +221,12 @@ Every change goes through all steps; a step is done when its check passes.
   the iframe's messages: collect `error`/`unhandledrejection` with listeners. Light theme with
   a dark OS: delete the `prefers-color-scheme` rule from the stylesheet via CSSOM. Screenshots
   timed out about every second call: retry. `mock_server.py --host 0.0.0.0` serves phones.
-- **A saved race without a drone**: with Enter/Exit just inside the RSSI noise (floor 50-53:
-  52/51) noise counts passes; start, wait ~25 s, stop, restore the thresholds, and clear the
-  history afterwards if it was empty. `device_test.py` needs a saved race for its rename checks.
+- **Saved races without a drone**: `python tools/noise_races.py <timer-ip>` sets Enter/Exit just
+  inside the RSSI noise (floor 50-53: 52/51), so noise counts passes, records five test races
+  (practice, timed, laps, a long one with a merged "crash" lap, one lap; named "Test · ...")
+  and restores all settings. Race thresholds are taken at the start, so changing them during a
+  race does nothing. `device_test.py` needs a saved race for its rename checks. Record them
+  after the last web-files upload: an `fs` upload deletes the history (it happened once).
 - **Scripted file edits**: write the edit script to a file and run it — shell heredocs mangle
   `\n` escapes and Windows paths. Read a file fully before opening it for writing
   (`open(p, "w")` truncates first; that once emptied `data/update.html`).

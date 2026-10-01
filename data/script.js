@@ -184,6 +184,7 @@ function bindRange(input, format, onInput) {
 let configLoaded = false;
 let pilot = { name: "", freq: 5800, enter: 120, exit: 100, target: 0 }; // who is flying (target: pace target, ms)
 let raceMode = MODE.PRACTICE;
+let lapCompare = "none"; // after each lap: "none", "best" (delta to the best lap) or "target"
 let announcerRate = 1.0;
 let profiles = [];
 
@@ -198,8 +199,6 @@ const ui = {
   minLap: $("minLap"),
   announcer: $("announcerSelect"),
   rate: $("rate"),
-  anDelta: $("anDelta"),
-  anTarget: $("anTarget"),
   voiceToggle: $("voiceToggle"),
   buzzer: $("buzzerToggle"),
   alarm: $("alarmThreshold"),
@@ -246,6 +245,7 @@ ui.targetLap.addEventListener("change", () => {
     pilot.target = ms;
     pilotTouched = true; // remembered with the saved pilot once the timer has it
     renderRaceViews();
+    renderLapCompare(); // "Target" says whether one is set
   }
   ui.targetLap.value = formatTarget(pilot.target);
 });
@@ -266,6 +266,7 @@ function renderPilot() {
   renderCalibPilot();
   renderCalibration();
   renderRaceViews(); // before a race the Race tab shows this pilot and target
+  renderLapCompare(); // its hint says whether a target is set
 }
 
 // The Race tab and race screen drawn again after a settings change (this phone, another
@@ -319,6 +320,28 @@ setupSegmented($("raceMode"), (v) => {
   scheduleSave();
 });
 
+// "Then compare with": one choice, so the best lap and the target can't both be on
+setupSegmented($("lapCompare"), (v) => {
+  if (!configLoaded) return;
+  lapCompare = v;
+  renderLapCompare();
+  scheduleSave();
+});
+
+function renderLapCompare() {
+  setSegmented($("lapCompare"), lapCompare);
+  const hint = $("lapCompareHint");
+  const noTarget = lapCompare === "target" && !pilot.target;
+  hint.classList.toggle("warn", noTarget);
+  hint.textContent = {
+    none: "Nothing more after each lap.",
+    best: 'After each lap: how much faster or slower than your best lap ("minus 0.12"), also after a beep.',
+    target: noTarget
+      ? "No target lap set (Pilot, above): nothing is said after the lap until you set one."
+      : `After each lap: how far from your target lap ("plus 0.40", "On target" within 0.05 s), also after a beep.`,
+  }[lapCompare];
+}
+
 function renderRaceModeFields() {
   setSegmented($("raceMode"), raceMode);
   $("raceTimeField").hidden = raceMode !== MODE.TIMED;
@@ -343,8 +366,8 @@ function applyConfig(config) {
   ui.minLap.value = (config.minLap / 10).toFixed(1);
   ui.announcer.selectedIndex = config.anType;
   ui.rate.value = (config.anRate / 10).toFixed(1);
-  ui.anDelta.checked = !!config.anDelta;
-  ui.anTarget.checked = config.anTarget !== false; // on unless switched off
+  lapCompare = config.anTarget ? "target" : config.anDelta ? "best" : "none"; // the timer keeps only one on
+  renderLapCompare();
   ui.buzzer.checked = !!config.buzzerOn;
   ui.alarm.value = (config.alarm / 10).toFixed(1);
   [updateRaceTimeLabel, updateRaceLapsLabel, updateMinLapLabel, updateRateLabel, updateAlarmLabel].forEach((f) => f());
@@ -414,8 +437,8 @@ function configBody() {
     alarm: Math.round(ui.alarm.value * 10),
     anType: ui.announcer.selectedIndex,
     anRate: Math.round(announcerRate * 10),
-    anDelta: ui.anDelta.checked,
-    anTarget: ui.anTarget.checked,
+    anDelta: lapCompare === "best",
+    anTarget: lapCompare === "target",
     buzzerOn: ui.buzzer.checked,
   };
 }
@@ -960,17 +983,28 @@ function renderRaceControls() {
   statusEl.textContent = text;
   statusEl.className = "race-status" + (cls ? " " + cls : "");
   $("rsStatus").textContent = text;
-  // the running (or finished) race's mode; while idle the mode the next race will use
-  const live = status && state !== STATE.IDLE;
-  const mode = live ? status.mode : raceMode;
+  // the shown race's settings (as the timer took them); with no race shown, the next race's
+  const shown = shownRaceSettings();
+  const mode = shown ? shown.mode : raceMode;
   let info = MODE_NAMES[mode];
-  if (mode === MODE.TIMED) info += " · " + formatMinSec(live ? Math.round(status.raceMs / 1000) : +ui.raceTime.value || 0);
-  if (mode === MODE.LAPS) info += " · " + (live ? status.raceLaps : +ui.raceLaps.value || 0) + " laps";
-  if (live ? status.cd : ui.countdown.checked) info += " · countdown";
-  // the pace target: the race's own once it started, before that the one it will take
-  const target = live && raceData && raceData.race === status.race ? raceData.target || 0 : pilot.target;
+  if (mode === MODE.TIMED) info += " · " + formatMinSec(shown ? Math.round(shown.raceMs / 1000) : +ui.raceTime.value || 0);
+  if (mode === MODE.LAPS) info += " · " + (shown ? shown.raceLaps : +ui.raceLaps.value || 0) + " laps";
+  if (shown ? shown.cd : ui.countdown.checked) info += " · countdown";
+  const target = shown ? shown.target : pilot.target;
   if (target) info += " · target " + secs(target);
   $("raceInfo").textContent = info;
+}
+
+// The settings of the race the Race tab shows (running, finished, or the last one stopped),
+// as the timer took them at its start; null when it shows the next race instead (before any
+// race, after Clear). Changing a setting never changes a race on show.
+function shownRaceSettings() {
+  if (!status) return null;
+  const lastRace = raceData && racePilot(raceData).laps.length > 0;
+  if (status.state === STATE.IDLE && !lastRace) return null;
+  // right after a start /api/race may still hold the previous race: then the setting it just took
+  const target = raceData && raceData.race === status.race ? raceData.target || 0 : pilot.target;
+  return { mode: status.mode, raceMs: status.raceMs, raceLaps: status.raceLaps, cd: !!status.cd, target };
 }
 
 // The fastest k laps in a row: {sum, start} (start = index in laps), or null if there are fewer
@@ -1093,7 +1127,10 @@ function announceNewLaps(r, speak = true) {
   }
 }
 
-// target: the race's pace target (0 = none)
+// One lap, in two independent parts: "Announce each lap" says the lap itself (nothing, a beep,
+// the lap time, 2 or 3 laps); "Then compare with" adds the delta to the best lap or to the
+// target, with any choice there (Beep + Target: a beep, then "minus 0.30"). "Best lap" comes
+// whenever something is said for the lap. target: the race's pace target (0 = none).
 function announceLap(p, n, target) {
   const lapMs = p.laps[n];
   const lapStr = secs(lapMs);
@@ -1103,23 +1140,22 @@ function announceLap(p, n, target) {
 
   if (type === "beep") {
     if (audioEnabled) beep(100, 330, "square");
-    return;
-  }
-  if (type === "1lap") {
+  } else if (type === "1lap") {
     queueSpeak(`${who}lap ${n}, ${lapStr}`);
   } else if (type === "2lap" && n >= 2) {
     queueSpeak(`${who}2 laps ${secs(lapMs + p.laps[n - 1])}`);
   } else if (type === "3lap" && n >= 3) {
     queueSpeak(`${who}3 laps ${secs(lapMs + p.laps[n - 1] + p.laps[n - 2])}`);
   }
-  if (type === "none") return;
   const previousBest = previous.length ? Math.min(...previous) : null;
-  if (previousBest !== null && lapMs < previousBest) queueSpeak("Best lap");
-  if (target && ui.anTarget.checked) {
-    // with a pace target announced, every lap is compared with it (instead of the best lap)
+  const sayTarget = lapCompare === "target" && !!target;
+  const sayDelta = lapCompare === "best" && previousBest !== null;
+  const lapSpoken = type === "1lap" || type === "2lap" || type === "3lap";
+  if (previousBest !== null && lapMs < previousBest && (lapSpoken || sayTarget || sayDelta)) queueSpeak("Best lap");
+  if (sayTarget) {
     const d = lapMs - target;
     queueSpeak(Math.abs(d) <= ON_TARGET_MS ? "On target" : (d > 0 ? "plus " : "minus ") + (Math.abs(d) / 1000).toFixed(2));
-  } else if (previousBest !== null && ui.anDelta.checked) {
+  } else if (sayDelta) {
     const d = lapMs - previousBest;
     queueSpeak((d < 0 ? "minus " : "plus ") + (Math.abs(d) / 1000).toFixed(2));
   }
@@ -1213,7 +1249,9 @@ async function startRace() {
     const t = Math.floor(Date.now() / 1000);
     const r = await fetchTimeout("/timer/start?t=" + t, { method: "POST" }).catch(() => null);
     if ((r && r.ok) || (await raceIsOn())) {
-      queueSpeak(ui.countdown.checked ? "Get ready" : "Waiting for the first pass");
+      // what the timer started decides the words (another phone may have changed the countdown)
+      const on = await raceIsOn();
+      queueSpeak((on ? status.cd : ui.countdown.checked) ? "Get ready" : "Waiting for the first pass");
       pollOnce();
       return;
     }

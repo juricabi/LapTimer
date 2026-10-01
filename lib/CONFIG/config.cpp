@@ -42,7 +42,7 @@ void Config::load(void)
         if (version < 4)
             conf.targetLapMs = 0;
         if (version < 5)
-            conf.announceTarget = true; // a target set is meant to be heard
+            conf.announceTarget = false; // laps keep being compared as before (best lap or not at all)
         conf.version = CONFIG_VERSION | CONFIG_MAGIC;
         modified = true;
         write();
@@ -182,6 +182,15 @@ void Config::fromJson(JsonObject source)
     changed |= updateField(source, "anRate", conf.announcerRate);
     changed |= updateField(source, "anDelta", conf.announceDelta);
     changed |= updateField(source, "anTarget", conf.announceTarget);
+    // a lap is compared with the best lap or with the target, never both: the one switched
+    // on now wins (an old page or a second phone can't leave both on)
+    if (conf.announceDelta && conf.announceTarget)
+    {
+        if (source["anTarget"] | false)
+            conf.announceDelta = false;
+        else
+            conf.announceTarget = false;
+    }
     changed |= updateField(source, "buzzerOn", conf.buzzerOn);
     changed |= updateField(source, "enterRssi", conf.enterRssi);
     changed |= updateField(source, "exitRssi", conf.exitRssi);
@@ -321,7 +330,7 @@ void Config::setDefaults(void)
     strlcpy(conf.pilotName, "", sizeof(conf.pilotName));
     setRaceDefaults();
     conf.targetLapMs = 0;
-    conf.announceTarget = true;
+    conf.announceTarget = false;
     modified = true;
     write();
 }

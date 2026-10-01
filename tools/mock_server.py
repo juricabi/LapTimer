@@ -12,6 +12,7 @@ Test helpers (mock only, GET):
   /mock/full              the pilot's lap memory is full (finished + "full")
   /mock/oldrace           adds a race saved by the multi-pilot firmware (two pilots)
   /mock/log               the last settings changes (POST /config bodies)
+  /mock/page_race_test.js tools/page_race_test.js, for the browser console (see that file)
 """
 import argparse, json, math, os, random, threading, time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -21,7 +22,7 @@ DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 LOCK = threading.Lock()
 
 CONFIG = {
-    "freq": 5800, "minLap": 50, "alarm": 0, "anType": 2, "anRate": 10, "anDelta": True, "anTarget": True, "buzzerOn": True,
+    "freq": 5800, "minLap": 50, "alarm": 0, "anType": 2, "anRate": 10, "anDelta": True, "anTarget": False, "buzzerOn": True,
     "enterRssi": 120, "exitRssi": 100, "name": "Maverick",
     "raceMode": 0, "raceSec": 60, "raceLaps": 5, "countdown": False, "target": 0,
 }
@@ -190,6 +191,11 @@ def apply_config(data):
     new["raceSec"] = max(10, int(new["raceSec"]))
     new["raceLaps"] = max(1, int(new["raceLaps"]))
     new["target"] = clamp_target(new["target"])
+    if new["anDelta"] and new["anTarget"]:  # best lap or target, never both: the one switched on now wins
+        if data.get("anTarget"):
+            new["anDelta"] = False
+        else:
+            new["anTarget"] = False
     fix_thresholds(new, "enterRssi", "exitRssi")
     if new != CONFIG:
         CONFIG.update(new)
@@ -236,6 +242,15 @@ class H(SimpleHTTPRequestHandler):
                 return self._json({"status": "OK"})
             if u.path == "/mock/log":
                 return self._json(CONFIG_LOG)
+            if u.path == "/mock/page_race_test.js":
+                with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_race_test.js"), "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if u.path == "/mock/full":
                 if R["pilot"]:
                     R["pilot"]["fin"] = R["pilot"]["full"] = True
