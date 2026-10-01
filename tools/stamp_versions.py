@@ -21,8 +21,10 @@ PAGES = ("index.html", "update.html")
 
 
 def content_hash(name):
+    # line endings don't count: git on Windows checks files out with CRLF or LF (core.autocrlf),
+    # which changed the stamps of unchanged files after a pull or a branch switch
     with open(os.path.join(DATA, name), "rb") as f:
-        return hashlib.md5(f.read()).hexdigest()[:8]
+        return hashlib.md5(f.read().replace(b"\r\n", b"\n")).hexdigest()[:8]
 
 
 def stamp():
