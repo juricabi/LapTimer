@@ -1844,7 +1844,7 @@ function renderHistoryDetail(container, race, editing, summary) {
   });
   const renameButton = el("button", "btn btn-ghost", "Rename");
   renameButton.addEventListener("click", () => openRename(container, race, summary, renameButton));
-  const imageButton = el("button", "btn btn-ghost", "Share image");
+  const imageButton = el("button", "btn btn-ghost", shareMenu ? "Share image" : "Save image");
   imageButton.addEventListener("click", () => shareRaceImage(race, imageButton));
   const exportButton = el("button", "btn btn-ghost", "Export CSV");
   exportButton.addEventListener("click", () => downloadCsv([race], "laptimer-race-" + race.id + ".csv"));
@@ -2539,15 +2539,40 @@ async function raceImage(race) {
 }
 
 // The share menu (navigator.share) exists only on a secure page: https, or the timer's address
-// in the browser's "insecure origins treated as secure" flag. Otherwise the picture is shown
-// full screen: press and hold it for the phone's own menu (Android "Share image", iOS
-// "Share…" / "Save to Photos"), or Download.
+// in the browser's "insecure origins treated as secure" flag (as for voice commands). Then
+// History offers "Share image"; otherwise "Save image" shows the picture full screen: press
+// and hold it for the phone's own menu (Android "Share image", iOS "Share…" / "Save to
+// Photos"), or Download.
 function canShareFile(file) {
   try {
     return !!(navigator.canShare && navigator.share && navigator.canShare({ files: [file] }));
   } catch (e) {
     return false;
   }
+}
+const shareMenu = canShareFile(new File([""], "race.png", { type: "image/png" }));
+const hasSecureFlag = /Chrome\//.test(navigator.userAgent); // Chrome, Brave, Edge (not on iOS)
+
+// "chrome://flags/…" and the page's address, each with a Copy button (a page can't open
+// chrome:// links); wireCopyButtons makes the buttons work
+function copyCode(text) {
+  const attr = escapeHtml(text).replace(/"/g, "&quot;");
+  return `<code>${escapeHtml(text)}</code><button type="button" class="btn btn-ghost btn-small" data-copy="${attr}">Copy</button>`;
+}
+
+function wireCopyButtons(box) {
+  for (const b of box.querySelectorAll("[data-copy]")) {
+    b.addEventListener("click", () => showButtonStatus(b, copyText(b.dataset.copy) ? "Copied ✓" : "Select and copy", 2000));
+  }
+}
+
+// Treating the timer's plain http address as secure in Chrome; last: the step after that
+function secureFlagSteps(last) {
+  return `<ol>
+      <li>Open ${copyCode("chrome://flags/#unsafely-treat-insecure-origin-as-secure")} in Chrome's address bar.</li>
+      <li>Enter ${copyCode(location.origin)} in its text box and set it to <b>Enabled</b>.</li>
+      <li>${last}</li>
+    </ol>`;
 }
 
 async function shareFile(file, title) {
@@ -2566,7 +2591,7 @@ async function shareRaceImage(race, button) {
   try {
     const { blob, withChart } = await raceImage(race);
     const file = new File([blob], `laptimer-race-${race.id}.png`, { type: "image/png" });
-    const result = canShareFile(file) ? await shareFile(file, raceTitle(race)) : "failed";
+    const result = shareMenu ? await shareFile(file, raceTitle(race)) : "failed";
     showButtonStatus(button, button.dataset.label, 1);
     if (result === "shared") showButtonStatus(button, "Shared ✓", 2000);
     else if (result === "failed") showImagePreview(file, raceTitle(race), withChart, button);
@@ -2579,7 +2604,7 @@ async function shareRaceImage(race, button) {
 
 function showImagePreview(file, title, withChart, returnFocus) {
   const url = URL.createObjectURL(file);
-  const shareable = canShareFile(file);
+  const shareable = shareMenu;
   const overlay = el("div", "image-preview");
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
@@ -2593,6 +2618,15 @@ function showImagePreview(file, title, withChart, returnFocus) {
   close.setAttribute("aria-label", "Close");
   head.append(hint, close);
   const scroll = el("div", "image-preview-scroll");
+  if (!shareable && hasSecureFlag && !window.isSecureContext) {
+    // like voice commands: the same browser setting gives History a Share button
+    const more = el("details", "image-preview-more");
+    more.innerHTML = `<summary>Want a Share button?</summary>
+      <p>Phones offer their share menu only to secure (https) pages; the timer's page is plain http. Allow it once, the same as for voice commands:</p>
+      ${secureFlagSteps("Relaunch Chrome and open the timer's page again: History then shows <b>Share image</b>.")}`;
+    wireCopyButtons(more);
+    scroll.appendChild(more);
+  }
   const img = el("img");
   img.src = url;
   img.alt = title + ": race image";
@@ -3040,8 +3074,6 @@ document.addEventListener("pointerdown", () => startVoiceRecognition(), { once: 
 // microphone (a page can't open chrome:// links, so the address is there to copy)
 function renderMicHelp() {
   const box = $("micHelpText");
-  const attr = (text) => escapeHtml(text).replace(/"/g, "&quot;");
-  const copy = (text) => `<code>${escapeHtml(text)}</code><button type="button" class="btn btn-ghost btn-small" data-copy="${attr(text)}">Copy</button>`;
   let html;
   if (!voiceCommandsOn) {
     html = "<p>Voice commands are off on this phone. Switch them on in Setup → This phone.</p>";
@@ -3055,12 +3087,8 @@ function renderMicHelp() {
   } else if (micError === "not-allowed" || micError === "service-not-allowed") {
     html = location.protocol === "http:"
       ? `<p>Chrome allows the microphone only on <i>https</i> sites, and the timer's page is plain <i>http</i>. Allow it once:</p>
-        <ol>
-          <li>Open ${copy("chrome://flags/#unsafely-treat-insecure-origin-as-secure")} in Chrome's address bar.</li>
-          <li>Enter ${copy(location.origin)} in its text box and set it to <b>Enabled</b>.</li>
-          <li>Relaunch Chrome, open the timer's page again and allow the microphone when asked.</li>
-        </ol>
-        <p class="hint">If the microphone was refused before: tap the icon left of the address → Permissions → Microphone → Allow, then reload.</p>`
+        ${secureFlagSteps("Relaunch Chrome, open the timer's page again and allow the microphone when asked.")}
+        <p class="hint">The same setting gives History a <b>Share image</b> button. If the microphone was refused before: tap the icon left of the address → Permissions → Microphone → Allow, then reload.</p>`
       : "<p>The microphone was refused. Tap the icon left of the address → Permissions → Microphone → Allow, then reload the page.</p>";
   } else if (micError === "busy") {
     html = "<p>Speech recognition is busy: another app or another open page of the timer is using it. Tried again in a few seconds; close the other page if it stays red.</p>";
@@ -3076,29 +3104,7 @@ function renderMicHelp() {
     html = "<p>Starting voice recognition… If it stays grey, tap the page once or reload it.</p>";
   }
   box.innerHTML = html;
-  for (const b of box.querySelectorAll("[data-copy]")) {
-    b.addEventListener("click", () => {
-      // navigator.clipboard needs https: select the text and copy it the old way
-      const ta = document.createElement("textarea");
-      ta.value = b.dataset.copy;
-      ta.setAttribute("readonly", "");
-      ta.style.position = "fixed";
-      ta.style.top = "0";
-      ta.style.left = "0";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      ta.setSelectionRange(0, ta.value.length); // iOS
-      let ok = false;
-      try {
-        ok = document.execCommand("copy");
-      } catch (e) {
-        ok = false;
-      }
-      document.body.removeChild(ta);
-      showButtonStatus(b, ok ? "Copied ✓" : "Select and copy", 2000);
-    });
-  }
+  wireCopyButtons(box);
 }
 
 $("micIndicator").addEventListener("click", () => {

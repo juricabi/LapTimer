@@ -1375,6 +1375,46 @@ html.image-preview-open {
   border-color: #64748b;       /* 4.1:1 on #070c18 */
 }
 
+/* "Want a Share button?": the browser flag, as in the mic help (dark in both themes) */
+.image-preview-more {
+  margin-bottom: var(--space-3);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.image-preview-more summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+  font-weight: 600;
+  color: #93c5fd;              /* 10.8:1 on #070c18 */
+  cursor: pointer;
+}
+
+.image-preview-more ol {
+  padding-left: 20px;
+}
+
+.image-preview-more li {
+  margin: var(--space-2) 0;
+}
+
+.image-preview-more code {
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: #131c2e;
+  border: 1px solid #334155;
+  color: #e2e8f0;              /* 13.8:1 on #131c2e */
+  font-size: 13px;
+  white-space: normal; /* the flag address is long: wrap it */
+  overflow-wrap: anywhere;
+}
+
+.image-preview-more .btn-small {
+  margin-left: var(--space-1);
+  vertical-align: middle;
+}
+
 /* phone in landscape: text sized by the (short) screen height */
 @media (orientation: landscape) and (max-height: 500px) {
   .race-screen .rs-clock {

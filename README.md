@@ -49,8 +49,8 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 **After the race**
 - Every race with a pass is saved on the timer (last 30) with **CSV export**.
 - **Rename** a race ("Club night heat 2"); unnamed races show their date.
-- **Share image**: a picture of the race (stats, chart, target, every lap against your best)
-  to share or save, or **Copy as text**.
+- **Save image / Share image**: a picture of the race (stats, chart, target, every lap against
+  your best) to share or save, or **Copy as text**.
 - **Fix laps**: merge two laps split by a false pass, or split a lap where a pass was missed.
 
 **Connection**
@@ -146,12 +146,13 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
    the signal drops below Exit). Run a **channel scan** first if others are flying.
 3. **Race**: press **Start** (or say "start"). Open the **Race screen** for big numbers.
 4. **History**: every race with a pass is saved. Open one to see its chart and all laps,
-   **Fix laps**, **Rename** it, **Share image** or export CSV. The timer's page is plain
-   `http://`, where phones offer no share button to web pages: the picture opens full screen,
-   **press and hold it** for the phone's own menu (Android: Share image / Download image;
-   iPhone: Share… / Save to Photos), or tap Download. With the timer's address added to
-   `chrome://flags/#unsafely-treat-insecure-origin-as-secure` (as for voice commands) Chrome
-   also shows a **Share** button that opens the share menu directly.
+   **Fix laps**, **Rename** it, **Save image** or export CSV. The timer's page is plain
+   `http://`, where phones offer web pages no share menu: **Save image** opens the picture full
+   screen, **press and hold it** for the phone's own menu (Android: Share image / Download
+   image; iPhone: Share… / Save to Photos), or tap Download. With the timer's address in
+   `chrome://flags/#unsafely-treat-insecure-origin-as-secure` (the same setting as for voice
+   commands; the picture's screen shows the steps) the button becomes **Share image** and
+   opens the share menu directly.
 
 ### Starting a race
 
@@ -191,7 +192,7 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
     and Chrome gives the microphone only to trusted sites. Add the timer's address once in
     `chrome://flags/#unsafely-treat-insecure-origin-as-secure` (for example
     `http://192.168.4.1`; add every address you use), relaunch Chrome and allow the
-    microphone when asked.
+    microphone when asked. The same setting turns History's Save image into **Share image**.
 - **Mic icon** in the top bar: green is listening, red is a problem, grey is off or starting.
   Tap it for the reason and what to do, with the addresses to copy. It recovers by itself
   (back online, microphone back). Chrome closes a listening session after a few seconds of

@@ -81,11 +81,13 @@ Every change goes through all steps; a step is done when its check passes.
   the best-3 band too. The share image is a canvas in the dark theme's colours (`SHARE` in
   `script.js`, kept in step with the dark tokens); the chart is drawn on it from a Blob URL
   (no `foreignObject`, no external files, so the canvas stays saveable). On the timer's http
-  page `navigator.share`/`clipboard` don't exist (secure contexts only): Share image tries
-  `navigator.share` when it exists (https, the insecure-origins flag, 127.0.0.1), otherwise
-  (or when the tap is too old for it) the picture opens full screen, where press-and-hold
-  gives the phone's own share/save menu, plus Download (and Share again, a fresh tap). Text
-  is copied with `execCommand("copy")`.
+  page `navigator.share`/`clipboard` don't exist (secure contexts only). Like voice commands,
+  the feature appears with the insecure-origins flag (or https, or 127.0.0.1): `shareMenu`
+  then makes the History button "Share image" and opens the share menu; without it "Save
+  image" opens the picture full screen (press and hold: the phone's own share/save menu, plus
+  Download) with the flag steps (`secureFlagSteps`, shared with the mic help) on Chromium.
+  A share refused because the tap is too old falls back to that screen, which has a Share
+  button for a fresh tap. Text is copied with `execCommand("copy")` (`copyText`).
 - **Voice**: Web Speech API in a normal browser tab. Set `utterance.lang = "en-US"`; on Android
   leave the voice object unset (forcing one makes Chrome/Brave silent). Speech starts after a tap.
 
