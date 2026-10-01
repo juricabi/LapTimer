@@ -36,11 +36,18 @@ def status():
     return req("/api/status")[1]
 
 
-def noise_thresholds():
-    """Enter at the top few percent of the noise (25 ms maxima over 6 s), Exit one below."""
-    values = sorted(req("/api/rssi?since=0")[1]["rssi"])
-    enter = max(values[int(len(values) * 0.97)], values[0] + 1, 51)
-    return enter, enter - 1, (values[0], values[-1])
+# Tried when the pilot's channel is too quiet: the timer keeps Enter at 51 or more (the page's
+# slider range), so the noise must reach 52 to count as passes
+CHANNELS = (5800, 5740, 5880, 5917, 5843, 5769, 5732, 5695, 5658)
+ENTER_MIN = 51
+
+
+def noise_on(freq):
+    """The noise on a channel: sorted 25 ms maxima from the 3 s after tuning to it."""
+    seq = req("/api/rssi?since=0")[1]["seq"]
+    req("/config", {"freq": freq})
+    time.sleep(3)
+    return sorted(req(f"/api/rssi?since={seq}")[1]["rssi"][8:])  # the first readings are from the retune
 
 
 def race(name, settings, seconds=None, merge_at=None, laps_max=None):
@@ -88,10 +95,20 @@ s = status()
 if s["state"] in (1, 2, 3):
     sys.exit("A race is running: stop it first.")
 _, original = req("/config")
-enter, exit_, noise = noise_thresholds()
-print(f"Noise {noise[0]}-{noise[1]}: Enter {enter}, Exit {exit_} (yours: {original['enterRssi']}/{original['exitRssi']})")
-base = {"enterRssi": enter, "exitRssi": exit_, "countdown": False, "target": 0}
 try:
+    base = None
+    for freq in (original["freq"],) + tuple(c for c in CHANNELS if c != original["freq"]):
+        values = noise_on(freq)
+        if not values or values[-1] <= ENTER_MIN:
+            print(f"  {freq} MHz: noise {values[0] if values else '-'}-{values[-1] if values else '-'}, too quiet")
+            continue
+        enter = max(values[int(len(values) * 0.97)], values[0] + 1, ENTER_MIN)
+        print(f"Noise on {freq} MHz {values[0]}-{values[-1]}: Enter {enter}, Exit {enter - 1}"
+              f" (yours: {original['freq']} MHz, {original['enterRssi']}/{original['exitRssi']})")
+        base = {"freq": freq, "enterRssi": enter, "exitRssi": enter - 1, "countdown": False, "target": 0}
+        break
+    if not base:
+        raise SystemExit("No channel is noisy enough here to make passes from noise: fly a lap instead.")
     race("Test · practice", {**base, "raceMode": 0, "target": 7000}, seconds=70)
     if "--one" in sys.argv[2:]:
         raise SystemExit(0)  # the settings are restored below
