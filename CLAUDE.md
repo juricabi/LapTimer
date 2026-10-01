@@ -54,7 +54,10 @@ Every change goes through all steps; a step is done when its check passes.
 - **Multi-device**: `POST /config` replies `{base, rev}`; a page adopts `rev` only if `base` is
   the revision it knew, otherwise it reloads. `/api/status` carries `boot` (random per start)
   and `prof` (saved-pilot revision). Saved pilots change one at a time
-  (`/api/profiles/save|remove`); lap fixes carry `expect` and get 409 when stale.
+  (`/api/profiles/save|remove`); lap fixes carry `expect` and get 409 when stale. A race the
+  page shows but the timer no longer has (another phone's Delete all, the oldest dropped for a
+  new one, a web-files update): opening, renaming, fixing or exporting it says so above the
+  list (`raceGone`, checked with a 404 on `/api/races?id=`) and the list reloads.
 - **Race wins over a channel scan**: starting a race cancels a scan; a scan is refused during
   a race, the countdown or a queued start.
 - **Cache busting** is automatic: `tools/stamp_versions.py` runs before every PlatformIO build

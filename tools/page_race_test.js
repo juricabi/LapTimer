@@ -258,6 +258,47 @@ async function pageRaceTest() {
   check("after Clear: next race is the new settings (practice, no target)",
     line() === "Practice" && card() === "Rooster R8 5917" && deltaLabel() === "Delta", [line(), card(), deltaLabel()]);
 
+  // 8. Races deleted on another phone while this page still shows them: each action says so
+  //    and shows the list as the timer has it now
+  const note = () => d.getElementById("historyNote");
+  const goneShown = () => !note().hidden && note().textContent.includes("no longer on the timer");
+  const freshList = async () => {
+    await fetch("/mock/oldrace"); // a saved race to work on
+    w.openTab("history");
+    await w.loadHistory();
+    return d.querySelectorAll(".history-item")[0];
+  };
+  const deleteAllElsewhere = () => post("/api/races/clear"); // another phone: History → Delete all
+  let item8 = await freshList();
+  item8.querySelector(".history-summary").click();
+  await until(() => item8.querySelector(".history-detail .button-row"));
+  [...item8.querySelectorAll("button")].find((b) => b.textContent === "Fix laps").click();
+  await deleteAllElsewhere();
+  item8.querySelector(".lap-actions button").click();
+  check("Fix laps on a deleted race: said so, list reloaded", await until(() => goneShown() && !d.querySelector(".history-item")),
+    note().textContent);
+  item8 = await freshList();
+  check("the note goes away when the list loads again", note().hidden);
+  item8.querySelector(".history-summary").click();
+  await until(() => item8.querySelector(".history-detail .button-row"));
+  await deleteAllElsewhere();
+  [...item8.querySelectorAll("button")].find((b) => b.textContent === "Rename").click();
+  item8.querySelector(".rename-row input").value = "Too late";
+  item8.querySelector(".rename-row").requestSubmit();
+  check("Rename of a deleted race: said so, list reloaded", await until(() => goneShown() && !d.querySelector(".history-item")),
+    note().textContent);
+  item8 = await freshList();
+  await deleteAllElsewhere();
+  item8.querySelector(".history-summary").click();
+  check("opening a deleted race: said so, list reloaded", await until(() => goneShown() && !d.querySelector(".history-item")),
+    note().textContent);
+  await freshList();
+  await deleteAllElsewhere();
+  d.getElementById("exportAllButton").click();
+  check("Export all with deleted races: said so, nothing downloaded",
+    await until(() => goneShown() && d.getElementById("exportAllButton").textContent === "Nothing to export"),
+    [note().textContent, d.getElementById("exportAllButton").textContent]);
+
   check("no script errors", errors.length === 0, errors);
   const failed = results.filter((r) => !r.ok);
   return { passed: results.length - failed.length, failed: failed.map((r) => ({ name: r.name, detail: r.detail })) };

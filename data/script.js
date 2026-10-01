@@ -1780,13 +1780,35 @@ function spectrumFrame() {
 let historyList = [];
 let editRaceId = null; // set by "Fix laps" on the Race tab: open this race for editing
 
-async function loadHistory() {
+// note: shown above the list (e.g. why a race just disappeared); without one it is hidden
+async function loadHistory(note) {
   try {
     historyList = (await fetchJson("/api/races")).sort((a, b) => b.id - a.id);
   } catch (e) {
     historyList = [];
   }
+  $("historyNote").textContent = note || "";
+  $("historyNote").hidden = !note;
   renderHistory();
+}
+
+// A race the page still shows but the timer no longer has: another phone's Delete all, the
+// oldest race dropped to make room for a new one, or a web-files update. Say so and show the
+// list as the timer has it now.
+const RACE_GONE = "That race is no longer on the timer: deleted on another phone, or the oldest race made room for a new one.";
+
+function raceGone(note = RACE_GONE) {
+  loadHistory(note);
+}
+
+// After a refused change: is the race still there? (No answer: assume it is, say "Failed".)
+async function raceExists(id) {
+  try {
+    await fetchJson("/api/races?id=" + id);
+    return true;
+  } catch (e) {
+    return e.status !== 404;
+  }
 }
 
 function raceDate(race) {
@@ -1852,7 +1874,8 @@ async function openHistoryDetail(id, summary, detail, editing) {
     const full = await fetchJson("/api/races?id=" + id);
     renderHistoryDetail(detail, full, editing, summary);
   } catch (e) {
-    detail.textContent = "Could not load this race.";
+    if (e.status === 404) raceGone();
+    else detail.textContent = "Could not load this race.";
   }
 }
 
@@ -1984,7 +2007,9 @@ function openRename(container, race, summary, button) {
       await postJson("/api/races/rename", { id: race.id, name });
     } catch (err) {
       save.disabled = false;
-      showButtonStatus(save, err.status === 409 ? "After the race" : "Failed", 3000);
+      if (err.status === 409) showButtonStatus(save, "After the race", 3000);
+      else if (!(await raceExists(race.id))) raceGone();
+      else showButtonStatus(save, "Failed", 3000);
       return;
     }
     for (const r of [race, historyList.find((h) => h.id === race.id)]) {
@@ -2020,6 +2045,11 @@ async function editLap(race, pilotIndex, op, lap, container, summary) {
     renderHistoryDetail(container, full, true, summary);
     if (summary) summary.innerHTML = historySummaryHtml(full, pilotSummaries(full));
   } catch (e) {
+    if (e.status === 404) {
+      delete container.dataset.busy;
+      raceGone(); // the fix was refused because the race is gone
+      return;
+    }
     note = note || "Could not load this race.";
     for (const b of container.querySelectorAll(".lap-actions button")) b.disabled = false;
   }
@@ -2073,9 +2103,21 @@ $("exportAllButton").addEventListener("click", async (e) => {
   showButtonStatus(button, "Preparing…", 0);
   try {
     const races = [];
-    for (const r of historyList) races.push(await fetchJson("/api/races?id=" + r.id));
-    downloadCsv(races, "laptimer-races.csv");
-    showButtonStatus(button, "Exported ✓", 2000);
+    let gone = 0; // races in this list that the timer no longer has
+    for (const r of historyList) {
+      try {
+        races.push(await fetchJson("/api/races?id=" + r.id));
+      } catch (e) {
+        if (e.status !== 404) throw e;
+        gone++;
+      }
+    }
+    if (races.length) downloadCsv(races, "laptimer-races.csv");
+    showButtonStatus(button, races.length ? "Exported ✓" : "Nothing to export", 2000);
+    if (gone) {
+      raceGone(`${gone === 1 ? "A race" : gone + " races"} in the list ${gone === 1 ? "is" : "are"} no longer on the timer ` +
+        `(deleted on another phone, or replaced by newer races)${races.length ? "; the others were exported" : ""}.`);
+    }
   } catch (err) {
     showButtonStatus(button, "Export failed");
   }
