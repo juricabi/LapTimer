@@ -21,8 +21,8 @@ class RaceHistory {
    public:
     void init();  // call after LittleFS is mounted
 
-    // Saves the timer's current race with the pace target in use (0 = none)
-    void save(LapTimer &timer, uint32_t targetLapMs);
+    // Saves the timer's current race
+    void save(LapTimer &timer);
     bool lastSaveOk = true;
     uint32_t lastSavedId = 0;      // history id of the newest saved race
     uint32_t lastSavedRaceId = 0;  // the timer's race id it came from

@@ -45,6 +45,13 @@ void Config::load(void)
         modified = true;
         write();
     }
+    else if (version > CONFIG_VERSION && version <= CONFIG_VERSION_NEWEST_KEPT)
+    {
+        // saved by a newer firmware (going back a version): the layout is append-only, so the
+        // fields this one knows are valid. The version stays, and so do the newer fields beyond
+        // this struct (a write covers only sizeof(conf)): updating again finds them unchanged.
+        DEBUG("Config v%u from a newer firmware: keeping the v%u fields\n", version, CONFIG_VERSION);
+    }
     else if (version != CONFIG_VERSION)
     {
         setDefaults();

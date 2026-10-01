@@ -69,6 +69,8 @@
 // builds with another layout after the v0 fields.) Older versions keep the fields they had and
 // get defaults for the newer ones (Config::load migrates one version at a time).
 #define CONFIG_VERSION 4U
+// A newer version than this is someone else's layout or noise: start from the defaults
+#define CONFIG_VERSION_NEWEST_KEPT 63U
 
 // Pace target: 0 = off, otherwise a lap time in this range
 #define TARGET_LAP_MIN_MS 3000U

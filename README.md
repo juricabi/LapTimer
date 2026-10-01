@@ -138,7 +138,7 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
 ## Use
 
 1. **Setup**: enter the pilot's name and channel, or tap a saved pilot. Settings save automatically.
-   Optionally a **Target lap** in seconds (empty = off); it is saved with the pilot.
+   Optionally a **Target lap** in seconds for the next races (empty = off); it is saved with the pilot.
 2. **Calibrate** at the gate: switch on **Auto-calibrate** and fly 3+ passes, then **Apply**.
    By hand: **Enter** below the peaks of your passes and above what the timer reads with the
    drone on the pad, **Exit** just above the level while the drone is away (a pass ends when

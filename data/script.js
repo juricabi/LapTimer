@@ -762,7 +762,6 @@ function openTab(tab) {
   for (const b of document.querySelectorAll(".tablinks")) b.classList.toggle("active", b.dataset.tab === tab);
   for (const s of document.querySelectorAll(".tabcontent")) s.hidden = s.id !== tab;
   if (tab === "history") loadHistory();
-  redrawLapCharts(); // drawn while their tab was hidden: no width yet
   if (tab === "calib") startCalibration();
   else stopCalibration();
 }
@@ -980,6 +979,22 @@ function secsOrDash(ms) {
   return ms === null || ms === undefined ? "–" : secs(ms);
 }
 
+function consistencyText(st) {
+  return st.consistency === null ? "–" : "±" + secs(st.consistency);
+}
+
+// Time from the race start to the last pass
+function totalText(p) {
+  return p.laps.length ? formatTotal(pilotTotal(p)) : "–";
+}
+
+// The pace target a race started with: the timer takes it at the start, like the other race
+// settings, so changing it (or the pilot) applies from the next race. Before a race, the one set.
+function raceTarget(r) {
+  if (r.state === STATE.IDLE && !racePilot(r).laps.length) return pilot.target;
+  return r.target || 0;
+}
+
 // Total time from the race start (entry 0 is the start pass)
 function pilotTotal(p) {
   return p.laps.reduce((a, b) => a + b, 0);
@@ -1028,7 +1043,7 @@ function announceNewLaps(r, speak = true) {
       if (!r.cd) say("Race start");
       continue;
     }
-    if (speak) announceLap(p, n);
+    if (speak) announceLap(p, n, raceTarget(r));
   }
   seenLaps = p.laps.length;
   if (p.fin && !seenFinished) {
@@ -1041,7 +1056,8 @@ function announceNewLaps(r, speak = true) {
   }
 }
 
-function announceLap(p, n) {
+// target: the race's pace target (0 = none)
+function announceLap(p, n, target) {
   const lapMs = p.laps[n];
   const lapStr = secs(lapMs);
   const who = p.name && p.name.trim() ? p.name.trim() + " " : "";
@@ -1062,9 +1078,9 @@ function announceLap(p, n) {
   if (type === "none") return;
   const previousBest = previous.length ? Math.min(...previous) : null;
   if (previousBest !== null && lapMs < previousBest) queueSpeak("Best lap");
-  if (pilot.target) {
+  if (target) {
     // with a pace target, every lap is compared with it (instead of the best lap)
-    const d = lapMs - pilot.target;
+    const d = lapMs - target;
     queueSpeak(Math.abs(d) <= ON_TARGET_MS ? "On target" : (d > 0 ? "plus " : "minus ") + (Math.abs(d) / 1000).toFixed(2));
   } else if (previousBest !== null && ui.anDelta.checked) {
     const d = lapMs - previousBest;
@@ -1099,7 +1115,8 @@ function lastLapDelta(st, target) {
 function renderRacePilot(r) {
   const p = racePilot(r);
   const st = pilotStats(p);
-  const delta = lastLapDelta(st, pilot.target);
+  const target = raceTarget(r);
+  const delta = lastLapDelta(st, target);
   const [dText, dClass] = delta.text;
   const bestIndex = st.best === null ? -1 : p.laps.indexOf(st.best, 1);
   const rows = [];
@@ -1123,15 +1140,15 @@ function renderRacePilot(r) {
       ${statBox(delta.label, dText, dClass)}
       ${statBox("Best", secsOrDash(st.best))}
       ${statBox("Average", secsOrDash(st.avg))}
-      ${statBox("Consistency", st.consistency === null ? "–" : "±" + secs(st.consistency))}
+      ${statBox("Consistency", consistencyText(st))}
       ${statBox("Best 2 laps", secsOrDash(st.best2))}
       ${statBox("Best 3 laps", secsOrDash(st.best3))}
-      ${statBox("Total", p.laps.length ? formatTotal(pilotTotal(p)) : "–")}
+      ${statBox("Total", totalText(p))}
     </div>
     ${st.laps >= 2 ? '<div class="lap-chart"></div>' : ""}
     ${rows.length ? `<div class="lap-table-wrap"><table><tr><th>Lap</th><th>Time</th><th>vs best</th></tr>${rows.join("")}</table></div>` : ""}`;
   const chart = card.querySelector(".lap-chart");
-  if (chart) mountLapChart(chart, p.laps.slice(1), { target: pilot.target, best3From: st.best3From }, "race-" + r.race);
+  if (chart) mountLapChart(chart, p.laps.slice(1), { target, best3From: st.best3From }, "race-" + r.race);
 }
 
 // Race time: 37.21, or 9:37.21 from a minute on
@@ -1241,7 +1258,7 @@ function renderRaceScreen(r) {
   if ($("raceScreen").hidden) return;
   const p = racePilot(r);
   const st = pilotStats(p);
-  const target = pilot.target;
+  const target = raceTarget(r);
   let deltaHtml = "";
   if (target ? st.last !== null : st.delta !== null) {
     const [text, cls] = lastLapDelta(st, target).text;
@@ -1836,7 +1853,6 @@ function renderHistoryDetail(container, race, editing, summary) {
     showButtonStatus(copyButton, ok ? "Copied ✓" : "Copy not possible here", 2000);
   });
   container.append(buttons, copyButton);
-  redrawLapCharts(); // the charts were drawn before they were on the page
 }
 
 // Statistics under a pilot's name in the history; with the pace target the race was flown against
@@ -1846,7 +1862,7 @@ function statsLine(st, target) {
     `average ${secsOrDash(st.avg)}`,
     `best 2 laps ${secsOrDash(st.best2)}`,
     `best 3 laps ${secsOrDash(st.best3)}`,
-    `consistency ${st.consistency === null ? "–" : "±" + secs(st.consistency)}`,
+    `consistency ${consistencyText(st)}`,
   ];
   if (target) parts.push(`target ${secs(target)}`);
   return parts.join(" · ");
@@ -2038,8 +2054,9 @@ function lapChartLayout(laps, opts) {
   let lo = Math.min(...shown);
   let hi = Math.max(...shown);
   const target = opts.target || 0;
-  const targetOnScale = target >= median / 2 && target <= cap; // otherwise drawn at the edge
-  if (target && targetOnScale) {
+  // a target near the laps widens the scale to include it; a far-off one doesn't squash the
+  // laps (its line is drawn where it falls, at worst on the edge)
+  if (target && target >= median / 2 && target <= cap) {
     lo = Math.min(lo, target);
     hi = Math.max(hi, target);
   }
@@ -2053,10 +2070,13 @@ function lapChartLayout(laps, opts) {
   const yMax = hi + margin;
   const plotTop = pad.top;
   const plotBottom = H - pad.bottom;
+  // y of a lap time, clamped to the plot (a target beyond the scale sits on its edge)
+  const y = (ms) => plotTop + ((yMax - Math.max(yMin, Math.min(yMax, ms))) / (yMax - yMin)) * (plotBottom - plotTop);
   return {
-    W, H, s, pad, n, step, cap, yMin, yMax, plotTop, plotBottom, target, targetOnScale,
+    W, H, s, pad, n, step, cap, yMin, yMax, plotTop, plotBottom, target, y,
     x: (i) => pad.left + (i + 0.5) * step,
-    y: (ms) => plotTop + ((yMax - Math.max(yMin, Math.min(yMax, ms))) / (yMax - yMin)) * (plotBottom - plotTop),
+    pointY: (t) => (t > cap ? plotTop : y(t)), // a crash lap on the top edge
+    r: Math.max(1.5, Math.min(4, step * 0.28)) * s, // dot radius
   };
 }
 
@@ -2069,8 +2089,8 @@ function chartTicks(yMin, yMax) {
   return { ticks, decimals: stepMs % 1000 === 0 ? 0 : stepMs % 100 === 0 ? 1 : 2 };
 }
 
-// The chart as an SVG string. opts: {width, height, scale, font, target, best3From, selected}
-// (best3From: lap number where the best 3 in a row start; selected: index of a tapped lap).
+// The chart as an SVG string. opts: {width, height, scale, font, target, best3From, cursor}
+// (best3From: lap number where the best 3 in a row start; cursor: room for a tapped-lap cursor).
 // colors: {lap, best, band, target, grid, text, bg}.
 function lapChartSvg(laps, opts, colors) {
   const L = lapChartLayout(laps, opts);
@@ -2114,7 +2134,7 @@ function lapChartSvg(laps, opts, colors) {
   // target and best lap: dashed lines with their labels (target on the left, best on the right)
   const labelY = (y) => (y - font - 4 * s < L.plotTop ? y + font + 2 * s : y - 4 * s); // above the line if there is room
   if (L.target) {
-    const yT = L.targetOnScale ? L.y(L.target) : L.target > L.yMax ? L.plotTop : L.plotBottom;
+    const yT = L.y(L.target);
     hLine(yT, colors.target, 1.5 * s, `${6 * s} ${4 * s}`);
     textAt(L.pad.left + 4 * s, labelY(yT), "target " + secs(L.target), colors.target, "start", 600);
   }
@@ -2125,8 +2145,7 @@ function lapChartSvg(laps, opts, colors) {
   // the laps: a thin line, a dot each (only the best and crashes when there are very many).
   // A crash lap is off the scale: an open triangle on the top edge, dashed lines to it.
   const crash = (t) => t > L.cap;
-  const pointY = (t) => (crash(t) ? L.plotTop : L.y(t));
-  const pt = (i) => `${L.x(i).toFixed(1)} ${pointY(laps[i]).toFixed(1)}`;
+  const pt = (i) => `${L.x(i).toFixed(1)} ${L.pointY(laps[i]).toFixed(1)}`;
   let solid = "";
   let dashed = "";
   for (let i = 1; i < L.n; i++) {
@@ -2137,7 +2156,7 @@ function lapChartSvg(laps, opts, colors) {
   const lineStyle = `fill="none" stroke-width="${1.5 * s}" stroke-linejoin="round" stroke-linecap="round" style="stroke:${colors.lap}"`;
   if (solid) out.push(`<path d="${solid}" ${lineStyle}/>`);
   if (dashed) out.push(`<path d="${dashed}" stroke-dasharray="${3 * s} ${3 * s}" ${lineStyle}/>`);
-  const r = Math.max(1.5, Math.min(4, L.step * 0.28)) * s;
+  const r = L.r;
   laps.forEach((t, i) => {
     if (i === bestIndex || (L.n > 60 && !crash(t))) return;
     const x = L.x(i);
@@ -2156,12 +2175,10 @@ function lapChartSvg(laps, opts, colors) {
   out.push(`<circle cx="${L.x(bestIndex).toFixed(1)}" cy="${yBest.toFixed(1)}" r="${Math.max(r * 1.6, 3.5 * s).toFixed(1)}" stroke-width="${1.5 * s}" style="fill:${colors.best};stroke:${colors.bg}"/>`);
   out.push(...labels);
 
-  // the tapped lap
-  if (opts.selected !== undefined && opts.selected !== null) {
-    const i = opts.selected;
-    const x = L.x(i).toFixed(1);
-    out.push(`<line x1="${x}" y1="${L.plotTop}" x2="${x}" y2="${L.plotBottom}" stroke-width="${1 * s}" style="stroke:${colors.text}"/>`);
-    out.push(`<circle cx="${x}" cy="${pointY(laps[i]).toFixed(1)}" r="${(r + 3 * s).toFixed(1)}" fill="none" stroke-width="${1.5 * s}" style="stroke:${colors.text}"/>`);
+  // on the page: a cursor for the tapped lap, moved by showChartSelection (hidden until a tap)
+  if (opts.cursor) {
+    out.push(`<g class="lap-chart-cursor" style="display:none"><line y1="${L.plotTop}" y2="${L.plotBottom}" stroke-width="${1 * s}" style="stroke:${colors.text}"/>` +
+      `<circle r="${(r + 3 * s).toFixed(1)}" fill="none" stroke-width="${1.5 * s}" style="stroke:${colors.text}"/></g>`);
   }
 
   const label = `Lap times: ${L.n} laps, best lap ${bestIndex + 1} ${secs(best)} seconds`;
@@ -2174,58 +2191,77 @@ function lapChartSvg(laps, opts, colors) {
 const chartSelection = new Map(); // key → lap index
 const mountedCharts = new Set();
 
+// Every chart is drawn for its plot's width: when it first gets one (a chart made on a hidden
+// tab or before it was on the page) and whenever the width changes. The plot's height is
+// fixed in CSS, so drawing never changes the size that is watched.
+const chartResize = new ResizeObserver((entries) => {
+  for (const entry of entries) {
+    const chart = entry.target.lapChart;
+    const width = Math.round(entry.contentRect.width);
+    if (chart && width && width !== chart.width) drawLapChart(chart);
+  }
+});
+
 function mountLapChart(wrap, laps, opts, key) {
-  for (const c of mountedCharts) if (!c.wrap.isConnected) mountedCharts.delete(c);
-  const chart = { wrap, laps, opts, key, width: 0, layout: null };
-  mountedCharts.add(chart);
+  for (const c of mountedCharts) {
+    if (c.wrap.isConnected) continue;
+    chartResize.unobserve(c.plot); // replaced by a new render: let it go
+    mountedCharts.delete(c);
+  }
   wrap.innerHTML = '<p class="lap-chart-readout" aria-live="polite"></p><div class="lap-chart-plot"></div>';
   const plot = wrap.lastChild;
+  const chart = { wrap, plot, laps, opts, key, width: 0, layout: null };
+  plot.lapChart = chart;
+  mountedCharts.add(chart);
   const pick = (e) => {
     const rect = plot.getBoundingClientRect();
     if (!rect.width || !chart.layout) return;
     const L = chart.layout;
     const x = ((e.clientX - rect.left) / rect.width) * L.W;
-    chartSelection.set(key, Math.max(0, Math.min(laps.length - 1, Math.floor((x - L.pad.left) / L.step))));
-    drawLapChart(chart);
+    const i = Math.max(0, Math.min(laps.length - 1, Math.floor((x - L.pad.left) / L.step)));
+    if (chartSelection.get(key) === i) return;
+    chartSelection.set(key, i);
+    showChartSelection(chart); // moves the cursor; the chart itself isn't drawn again
   };
   plot.addEventListener("pointerdown", pick);
   plot.addEventListener("pointermove", (e) => {
     if (e.buttons) pick(e);
   });
   drawLapChart(chart);
+  chartResize.observe(plot);
 }
 
 function drawLapChart(chart) {
-  const plot = chart.wrap.querySelector(".lap-chart-plot");
-  chart.width = plot.clientWidth; // 0 on a hidden tab: drawn again when it is shown
-  let selected = chartSelection.get(chart.key);
-  if (selected !== undefined && selected >= chart.laps.length) selected = undefined;
-  const opts = { ...chart.opts, width: Math.round(chart.width) || 320, height: CHART_HEIGHT, selected };
+  chart.width = chart.plot.clientWidth; // 0 while hidden: drawn again once it has a width
+  const opts = { ...chart.opts, width: chart.width || 320, height: CHART_HEIGHT, cursor: true };
   chart.layout = lapChartLayout(chart.laps, opts);
-  plot.innerHTML = lapChartSvg(chart.laps, opts, CHART_COLORS);
+  chart.plot.innerHTML = lapChartSvg(chart.laps, opts, CHART_COLORS);
+  showChartSelection(chart);
+}
+
+function showChartSelection(chart) {
+  let i = chartSelection.get(chart.key);
+  if (i !== undefined && i >= chart.laps.length) i = undefined; // a lap fix removed it
   const readout = chart.wrap.querySelector(".lap-chart-readout");
-  if (selected === undefined) {
+  const cursor = chart.plot.querySelector(".lap-chart-cursor");
+  if (i === undefined) {
+    cursor.style.display = "none";
     readout.textContent = "Tap a lap for its time" + (chart.opts.best3From ? " · band: best 3 in a row" : "");
     return;
   }
-  const t = chart.laps[selected];
+  const L = chart.layout;
+  const t = chart.laps[i];
+  const x = L.x(i).toFixed(1);
+  const line = cursor.querySelector("line");
+  const ring = cursor.querySelector("circle");
+  line.setAttribute("x1", x);
+  line.setAttribute("x2", x);
+  ring.setAttribute("cx", x);
+  ring.setAttribute("cy", L.pointY(t).toFixed(1));
+  cursor.style.display = "";
   const best = Math.min(...chart.laps);
-  readout.textContent = `Lap ${selected + 1} · ${secs(t)} s · ${t === best ? "best" : "+" + secs(t - best)}`;
+  readout.textContent = `Lap ${i + 1} · ${secs(t)} s · ${t === best ? "best" : "+" + secs(t - best)}`;
 }
-
-// After a tab switch or a resize the charts are drawn for their new width
-function redrawLapCharts() {
-  for (const chart of mountedCharts) {
-    if (!chart.wrap.isConnected) mountedCharts.delete(chart);
-    else if (chart.wrap.querySelector(".lap-chart-plot").clientWidth !== chart.width) drawLapChart(chart);
-  }
-}
-
-let chartResizeTimer = null;
-window.addEventListener("resize", () => {
-  clearTimeout(chartResizeTimer);
-  chartResizeTimer = setTimeout(redrawLapCharts, 150);
-});
 
 // ═══════════════════════════════════════════════════════════════════
 //  Share a race: image and text
@@ -2243,11 +2279,14 @@ const SHARE = {
   muted: "#94a3b8",
   pilot: "#60a5fa",
   best: "#4ade80",
-  slower: "#f87171",
+  band: "rgba(34, 197, 94, 0.16)", // best 3 in a row, the best lap in the list
   target: "#fbbf24",
 };
-const SHARE_CHART_COLORS = { lap: "#60a5fa", best: "#4ade80", band: "rgba(34, 197, 94, 0.16)", target: "#fbbf24", grid: "#243049", text: "#94a3b8", bg: "#131c2e" };
+const SHARE_CHART_COLORS = { lap: SHARE.pilot, best: SHARE.best, band: SHARE.band, target: SHARE.target, grid: SHARE.border, text: SHARE.muted, bg: SHARE.panel };
 const SHARE_WIDTH = 1080;
+const SHARE_MARGIN = 56;
+const SHARE_CHART_PAD = 20; // inside the chart's panel
+const SHARE_CHART_H = 440;
 const SHARE_MAX_LAPS = 60; // the image grows with the lap list; the rest is in the CSV
 
 // "Lap race · 5 laps · countdown start"
@@ -2281,8 +2320,8 @@ function raceText(race) {
   if (race.name && race.date) lines.push(raceDate(race));
   lines.push(pilotLine(p), raceSettingsText(race), "");
   lines.push(`${st.laps} laps · best ${secsOrDash(st.best)}${st.bestLap ? ` (lap ${st.bestLap})` : ""} · average ${secsOrDash(st.avg)}`);
-  lines.push(`Best 2 laps ${secsOrDash(st.best2)} · best 3 laps ${secsOrDash(st.best3)} · consistency ${st.consistency === null ? "–" : "±" + secs(st.consistency)}` +
-    ` · total ${p.laps.length ? formatTotal(pilotTotal(p)) : "–"}`);
+  lines.push(`Best 2 laps ${secsOrDash(st.best2)} · best 3 laps ${secsOrDash(st.best3)} · consistency ${consistencyText(st)}` +
+    ` · total ${totalText(p)}`);
   if (race.target && laps.length) lines.push(`Target ${secs(race.target)}: ${targetResult(laps, race.target).join(" · ")}`);
   if (laps.length) {
     lines.push("", "Lap  Time  vs best");
@@ -2334,18 +2373,17 @@ function drawRaceCard(race, chart) {
   const laps = p.laps.slice(1);
   const target = laps.length ? race.target || 0 : 0;
   const W = SHARE_WIDTH;
-  const M = 56; // outer margin
+  const M = SHARE_MARGIN;
   const inner = W - 2 * M;
   const listed = Math.min(laps.length, SHARE_MAX_LAPS);
   const cols = listed > 20 ? 3 : 2;
   const rowsPerCol = Math.ceil(listed / cols);
   const ROW = 46;
-  const CHART_H = 440;
   const subtitle = race.name && race.date ? raceDate(race) : "";
 
   // section heights, top to bottom
   const H = M + 76 + (subtitle ? 44 : 0) + 20 + 44 + 40 + 32 + 136 + 16 + 120 + 24 + (target ? 112 + 24 : 0) +
-    (chart ? CHART_H + 40 + 24 : 0) + (listed ? 56 + rowsPerCol * ROW + (laps.length > listed ? 48 : 0) + 24 : 0) + 48 + M;
+    (chart ? SHARE_CHART_H + 2 * SHARE_CHART_PAD + 24 : 0) + (listed ? 56 + rowsPerCol * ROW + (laps.length > listed ? 48 : 0) + 24 : 0) + 48 + M;
 
   const canvas = el("canvas");
   canvas.width = W;
@@ -2409,8 +2447,8 @@ function drawRaceCard(race, chart) {
   statBoxes([
     ["Best 2 laps", secsOrDash(st.best2)],
     ["Best 3 laps", secsOrDash(st.best3)],
-    ["Consistency", st.consistency === null ? "–" : "±" + secs(st.consistency)],
-    ["Total", p.laps.length ? formatTotal(pilotTotal(p)) : "–"],
+    ["Consistency", consistencyText(st)],
+    ["Total", totalText(p)],
   ], y, 120);
   y += 120 + 24;
 
@@ -2425,9 +2463,10 @@ function drawRaceCard(race, chart) {
   }
 
   if (chart) {
-    panel(M, y, inner, CHART_H + 40);
-    ctx.drawImage(chart, M + 20, y + 20, inner - 40, CHART_H);
-    y += CHART_H + 40 + 24;
+    const pad = SHARE_CHART_PAD;
+    panel(M, y, inner, SHARE_CHART_H + 2 * pad);
+    ctx.drawImage(chart, M + pad, y + pad, inner - 2 * pad, SHARE_CHART_H); // the size it was laid out for
+    y += SHARE_CHART_H + 2 * pad + 24;
   }
 
   // lap list: down each column, "vs best" beside every lap
@@ -2442,7 +2481,7 @@ function drawRaceCard(race, chart) {
       const top = y + row * ROW;
       const t = laps[k];
       const isBest = t === st.best;
-      if (isBest) panel(x, top, colW - 16, ROW - 6, "rgba(34, 197, 94, 0.16)");
+      if (isBest) panel(x, top, colW - 16, ROW - 6, SHARE.band);
       const base = top + ROW / 2 + 8;
       text(String(k + 1), x + 56, base, 24, SHARE.muted, 600, "right");
       text(secs(t), x + (cols === 3 ? 172 : 220), base, 28, isBest ? SHARE.best : SHARE.strong, 700, "right");
@@ -2480,7 +2519,7 @@ async function raceImage(race) {
   let chart = null;
   if (laps.length >= 2) {
     const st = pilotStats(race.pilots[0]);
-    const svg = lapChartSvg(laps, { width: SHARE_WIDTH - 2 * 56 - 40, height: 440, scale: 2.2, font: 24, target: race.target || 0,
+    const svg = lapChartSvg(laps, { width: SHARE_WIDTH - 2 * (SHARE_MARGIN + SHARE_CHART_PAD), height: SHARE_CHART_H, scale: 2.2, font: 24, target: race.target || 0,
       best3From: st.best3From }, SHARE_CHART_COLORS);
     chart = await svgToImage(svg).catch((e) => {
       console.error(e);

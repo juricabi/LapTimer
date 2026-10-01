@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0f172a" />
   <title>LapTimer</title>
   <link rel="icon" type="image/png" href="favicon.ico" />
-  <link rel="stylesheet" type="text/css" href="style.css?v=c643916a" />
+  <link rel="stylesheet" type="text/css" href="style.css?v=99c928f3" />
   <script src="smoothie.js?v=74872da2"></script>
 </head>
 
@@ -57,13 +57,13 @@
             <select id="pilotChannel" aria-label="Channel" autocomplete="off"></select>
           </div>
           <div class="pilot-target">
-            <label for="targetLap">Target lap</label>
+            <label for="targetLap">Target lap<small>for the next races</small></label>
             <input type="text" id="targetLap" inputmode="decimal" placeholder="Off" autocomplete="off" aria-describedby="targetHint" />
             <span class="unit">s</span>
           </div>
         </div>
         <p class="hint warn" id="pilotHint" hidden>No channel yet: pick a band and channel.</p>
-        <p class="hint" id="targetHint">With a target lap, every lap is announced against it ("plus 0.40", "On target"). Empty = off; saved with the pilot.</p>
+        <p class="hint" id="targetHint">A race keeps the target it started with, so set it before Start. Every lap is announced against it ("plus 0.40", "On target"). Empty = off; saved with the pilot.</p>
         <div id="savedPilotsBlock" class="field" hidden>
           <span class="field-label">Saved pilots</span>
           <div id="savedPilots" class="chips"></div>
@@ -133,7 +133,7 @@
         <label class="switch-row">
           <span>
             <span class="switch-title">Announce delta</span><br />
-            <span class="hint">Say how much faster or slower than your best lap. With a target lap set (Pilot, above), every lap is compared with the target instead.</span>
+            <span class="hint">Say how much faster or slower than your best lap. With a target lap (Pilot, above), every lap is announced against the target instead, whether this is on or off.</span>
           </span>
           <span class="switch"><input type="checkbox" id="anDelta" /><span class="slider"></span></span>
         </label>
@@ -312,7 +312,7 @@
     <div id="rsPilot" class="rs-pilot"></div>
   </div>
 
-  <script src="script.js?v=a5165855"></script>
+  <script src="script.js?v=538bf851"></script>
 </body>
 
 </html>

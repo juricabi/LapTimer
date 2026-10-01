@@ -965,9 +965,18 @@ table tr.best-lap td:nth-child(2)::after {
 
 .pilot-target label {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   font-size: 14px;
   font-weight: 600;
-  color: var(--muted);
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.pilot-target label small {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);         /* 4.8:1 */
 }
 
 .pilot-target input[type="text"] {
@@ -1080,6 +1089,7 @@ body:not(.config-ready) [data-needs-config] > :not(.save-status) {
 }
 
 .lap-chart-plot {
+  height: 170px;       /* CHART_HEIGHT in script.js: fixed, so drawing never resizes it */
   touch-action: pan-y; /* the page still scrolls; a sideways drag moves along the laps */
   cursor: crosshair;
 }
@@ -1087,7 +1097,7 @@ body:not(.config-ready) [data-needs-config] > :not(.save-status) {
 .lap-chart-plot svg {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
 }
 
 /* ───────── History ───────── */

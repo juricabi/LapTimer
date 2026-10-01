@@ -32,7 +32,7 @@ static void serviceRound(uint32_t currentTimeMs) {
     config.handleEeprom(currentTimeMs, !timer.isRacing());
     monitor.checkBatteryState(currentTimeMs, config.getAlarmThreshold());
     if (timer.savePending) {
-        history.save(timer, config.getTargetLapMs());
+        history.save(timer);
     }
     buzzer.handleBuzzer(currentTimeMs);
     led.handleLed(currentTimeMs);

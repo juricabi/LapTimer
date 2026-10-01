@@ -62,6 +62,8 @@ void LapTimer::raceToJson(JsonObject out)
     out["raceLaps"] = raceLaps;
     out["date"] = startEpochSec;
     out["edits"] = editCount;
+    if (raceTargetMs)
+        out["target"] = raceTargetMs; // the pace target this race started with
     JsonObject p = out["pilots"].to<JsonArray>().add<JsonObject>();
     p["name"] = raceName;
     p["freq"] = raceFreq;
@@ -109,6 +111,7 @@ void LapTimer::start(uint32_t epochSec)
     raceEnter = conf->getEnterRssi();
     raceExit = conf->getExitRssi();
     strlcpy(raceName, conf->getPilotName(), sizeof(raceName));
+    raceTargetMs = conf->getTargetLapMs();
     startEpochSec = epochSec;
     editCount = 0;
     // A race always wins over a channel scan: stop it so the receiver listens to the pilot

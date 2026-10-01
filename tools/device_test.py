@@ -96,10 +96,13 @@ try:
     req("/timer/stop", {})
     time.sleep(0.3)
 
-    req("/config", {"countdown": True})
+    req("/config", {"countdown": True, "target": 45000})
     time.sleep(1.2)
     req("/timer/start", {})
     time.sleep(0.3)
+    req("/config", {"target": 30000})  # a change during the race applies from the next one
+    race_target = req("/api/race")[1].get("target")
+    check("race keeps the pace target it started with", race_target == 45000, race_target)
     st, _ = req("/api/spectrum?start=1")
     check("scan refused during the countdown", st == 409 and status()["state"] == 1, st)
     time.sleep(3.2)

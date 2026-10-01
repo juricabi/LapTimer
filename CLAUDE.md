@@ -31,8 +31,10 @@ Every change goes through all steps; a step is done when its check passes.
   `CONFIG_VERSION` and give the new fields defaults in the migration in `Config::load`, one
   step per version (`if (version < 4) conf.targetLapMs = 0;`), so users keep their settings
   through updates. A step's defaults must not run for newer versions: `setRaceDefaults()` for
-  every older version would have wiped the v3 race settings at v4. Versions 1 and 2 were
-  multi-pilot development layouts; version 3 keeps their v0 fields only. `fromJson` changes
+  every older version would have wiped the v3 race settings at v4. Going back a version, a
+  firmware from 1.2.0 on keeps the fields it knows from a newer layout (up to
+  `CONFIG_VERSION_NEWEST_KEPT`); 1.1.0 and older reset all settings then. Versions 1 and 2
+  were multi-pilot development layouts; version 3 keeps their v0 fields only. `fromJson` changes
   only keys that are present, and the page sends only changed settings — two open phones
   rely on this.
 - **Race data** changes only on the timing core in `LapTimer::update`. The web server (core 0,
@@ -62,10 +64,13 @@ Every change goes through all steps; a step is done when its check passes.
   write goes through `RaceHistory::writeJson` (temp file + rename) under the history lock.
   Files are read into memory before sending: LittleFS can't replace a file that is open.
   A race file has its own `name` (rename, 32 bytes; `pilots[].name` is the pilot) and the
-  pace `target` in use when it was saved; both only when set, and both in the history list
-  (`addSummary`) where the page needs them.
+  pace `target` it started with, both only when set. The history list (`addSummary`)
+  has the `name`; the `target` only the race file.
 - **Pace target** (`targetLapMs`, `/config` key `target`, 0 = off, 3-600 s): only the page uses
   it (callouts, "vs target", chart); the timing core doesn't. Saved pilots store it when set.
+  A race takes it at its start like the other race settings (`LapTimer::start`; owner's
+  choice: a change applies from the next race) and reports it in `/api/race` and the saved
+  race; the page uses the race's (`raceTarget`), the setting only before any race.
 - **WiFi passwords** stay on the timer; `/config` and `/api/wifi/saved` return names only.
 - **UI**: design tokens in `style.css` with contrast ratios noted beside them — text ≥ 4.5:1,
   controls ≥ 3:1, touch targets ≥ 44 px; plain CSS/JS, no new libraries.

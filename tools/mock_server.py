@@ -154,8 +154,8 @@ def save_race():
     rid = max(RACES, default=0) + 1
     RACES[rid] = {"id": rid, "date": R["date"], "mode": R["mode"], "cd": R["cd"], "raceMs": R["raceMs"],
                   "raceLaps": R["raceLaps"], "pilots": race_pilots()}
-    if CONFIG["target"]:
-        RACES[rid]["target"] = CONFIG["target"]  # the pace target in use when it was saved
+    if R.get("target"):
+        RACES[rid]["target"] = R["target"]  # the pace target the race started with
     S["savedId"], S["savedRace"] = rid, R["race"]
 
 
@@ -258,9 +258,12 @@ class H(SimpleHTTPRequestHandler):
                                    "edits": S["edits"], "cfg": S["rev"], "boot": S["boot"], "prof": S["prof"],
                                    "rssi": rssi(t), "laps": len(p["laps"]), "fin": int(p["fin"])})
             if u.path == "/api/race":
-                return self._json({"race": R["race"], "state": R["state"], "mode": R["mode"], "cd": R["cd"],
-                                   "raceMs": R["raceMs"], "raceLaps": R["raceLaps"], "date": R["date"],
-                                   "edits": S["edits"], "pilots": race_pilots()})
+                race = {"race": R["race"], "state": R["state"], "mode": R["mode"], "cd": R["cd"],
+                        "raceMs": R["raceMs"], "raceLaps": R["raceLaps"], "date": R["date"],
+                        "edits": S["edits"], "pilots": race_pilots()}
+                if R.get("target"):
+                    race["target"] = R["target"]
+                return self._json(race)
             if u.path == "/api/rssi":
                 seq = t // 25
                 since = int(q.get("since", ["0"])[0])
@@ -350,7 +353,7 @@ class H(SimpleHTTPRequestHandler):
                     return self._json({"status": "busy"}, 409)
                 R.update({"race": R["race"] + 1, "mode": CONFIG["raceMode"], "cd": CONFIG["countdown"],
                           "raceMs": CONFIG["raceSec"] * 1000, "raceLaps": CONFIG["raceLaps"], "timeUp": False,
-                          "date": int(q.get("t", ["0"])[0]),
+                          "date": int(q.get("t", ["0"])[0]), "target": CONFIG["target"],
                           "pilot": {"name": CONFIG["name"], "freq": CONFIG["freq"], "laps": [], "fin": False, "last": 0}})
                 S["edits"] = 0
                 if R["cd"]:

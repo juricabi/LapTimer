@@ -234,7 +234,7 @@ bool RaceHistory::deleteOldest(JsonDocument &index)
     return true;
 }
 
-void RaceHistory::save(LapTimer &timer, uint32_t targetLapMs)
+void RaceHistory::save(LapTimer &timer)
 {
     if (!ready)
     {
@@ -249,9 +249,7 @@ void RaceHistory::save(LapTimer &timer, uint32_t targetLapMs)
     doc.remove("race");
     doc.remove("state");
     doc.remove("edits");
-    doc["id"] = id;
-    if (targetLapMs)
-        doc["target"] = targetLapMs; // the pace target this race was flown against
+    doc["id"] = id; // the race's pace target (if any) comes with it from raceToJson
 
     // make room (count and free space), then write race + index
     JsonDocument index;
