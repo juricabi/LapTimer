@@ -245,6 +245,7 @@ ui.targetLap.addEventListener("change", () => {
     pilot.target = ms;
     pilotTouched = true; // remembered with the saved pilot once the timer has it
     if (raceData) renderRacePilot(raceData);
+    renderRaceControls(); // the target under the clock
   }
   ui.targetLap.value = formatTarget(pilot.target);
 });
@@ -949,6 +950,9 @@ function renderRaceControls() {
   if (mode === MODE.TIMED) info += " · " + formatMinSec(live ? Math.round(status.raceMs / 1000) : +ui.raceTime.value || 0);
   if (mode === MODE.LAPS) info += " · " + (live ? status.raceLaps : +ui.raceLaps.value || 0) + " laps";
   if (live ? status.cd : ui.countdown.checked) info += " · countdown";
+  // the pace target: the race's own once it started, before that the one it will take
+  const target = live && raceData && raceData.race === status.race ? raceData.target || 0 : pilot.target;
+  if (target) info += " · target " + secs(target);
   $("raceInfo").textContent = info;
 }
 

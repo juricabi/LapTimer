@@ -118,6 +118,10 @@ try:
     check("race rename refused while racing (flash write)", st == 409, st)
     req("/timer/stop", {})
     time.sleep(0.3)
+    race_target = req("/api/race")[1].get("target")
+    next_target = req("/config")[1].get("target")
+    check("after Stop the race keeps its target, the next race takes the new one",
+          race_target == 45000 and next_target == 30000, (race_target, next_target))
     st, _ = req("/api/spectrum?start=1")
     wait_scan_done()
     _, spec = req("/api/spectrum")

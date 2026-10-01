@@ -70,7 +70,9 @@ Every change goes through all steps; a step is done when its check passes.
   it (callouts, "vs target", chart); the timing core doesn't. Saved pilots store it when set.
   A race takes it at its start like the other race settings (`LapTimer::start`; owner's
   choice: a change applies from the next race) and reports it in `/api/race` and the saved
-  race; the page uses the race's (`raceTarget`), the setting only before any race. Start
+  race; the page uses the race's (`raceTarget`), the setting only before any race. The line
+  under the clock shows the running race's target, while idle the next race's (like mode and
+  time there), so after Stop it can differ from the finished race's stats. Start
   sends a settings change still waiting for its 600 ms save first (`flushSettings`), or the
   race would start with the old value (this holds for all race settings). Its
   callouts have their own switch (`anTarget`, settings v5, on by default), live like the
