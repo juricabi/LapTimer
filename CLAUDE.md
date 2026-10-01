@@ -1,306 +1,195 @@
 # LapTimer
 
-ESP32 FPV lap timer. Firmware in `src/` + `lib/` (PlatformIO env `PhobosLT`); the web page in
-`data/` is served from LittleFS. `main` is the latest stable release (tagged `vX.Y.Z`); work
-happens on a feature branch and is merged after it has been tested on a real timer.
+ESP32 FPV lap timer: an RX5808 receiver measures the drone's video signal and a pass through
+the gate counts a lap. Firmware in `src/` + `lib/` (PlatformIO env `PhobosLT`); the web page in
+`data/` (plain HTML/CSS/JS) is served from LittleFS to phones at the field. `main` is the latest
+release (tagged `vX.Y.Z`); work happens on a feature branch, merged after it was tested on a real
+timer. `docs/` has the measurements behind the radio decisions; `README.md` is for users.
 
 ## Change loop
 
 Every change goes through all steps; a step is done when its check passes.
 
-1. **Build** — `pio run -e PhobosLT` (firmware) and `pio run -e PhobosLT -t buildfs` (web).
-   Done: both print SUCCESS, and every file in `data/` is non-empty.
-2. **Look** (web changes) — `python tools/mock_server.py`, open `http://127.0.0.1:8765/` at
-   390 px width, check light and dark theme and every tab the change touches. Keep the mock's
-   endpoints in step with `lib/WEBSERVER/api.cpp`. Then the page test suite, headless:
-   `node tools/run_page_test.js [sections]` (`tools/page_test.js`: layout at 390 px in both
-   themes, Setup, Race, a race keeping its settings, Calibrate, History, connection loss and
-   restart, mic help, update page; each section starts from `/mock/reset`). A new page feature
-   gets its checks there. Done: no console errors, layout fits, every check PASS.
-3. **Deploy** — `python tools/ota_upload.py <timer-ip> fw fs` (firmware first). The IP is much
-   faster than `laptimer.local` on Windows. Done: "back online" after each file, and "web files
-   verified" after `fs` (the tool fetches every file of `data/` and compares sizes).
-4. **Verify on the timer** — `python tools/device_test.py <timer-ip>`; for boot/WiFi changes
-   also `python tools/boot_log.py <port> 25 --reset` over several boots. Done: all checks PASS.
-   With a drone, `python tools/rssi_log.py <timer-ip> <seconds>` records the RSSI and the
-   counted passes. Report what could not be verified (lap detection needs a drone through the
-   gate).
-5. **Review** — for larger batches run a code review of `main...<branch>` and fix what holds up.
+1. **Build**: `pio run -e PhobosLT` and `pio run -e PhobosLT -t buildfs`. Both SUCCESS, no
+   empty file in `data/`.
+2. **Look and test the page** (web changes): `python tools/mock_server.py`, open
+   `http://127.0.0.1:8765/` at 390 px, light and dark theme, every tab touched. Then the page
+   suite, headless: `node tools/run_page_test.js [sections]`. No console errors, every check PASS.
+3. **Deploy**: `python tools/ota_upload.py <timer-ip> fw fs` (firmware first; the IP, not
+   `laptimer.local`). "back online" after each file, "web files verified" after `fs`.
+4. **Verify on the timer**: `python tools/device_test.py <timer-ip>`; boot/WiFi changes also
+   `python tools/boot_log.py <port> 25 --reset` over 20+ boots. Say what couldn't be verified
+   (lap detection needs a drone through the gate).
+5. **Review** larger batches (`main...<branch>`) and fix what holds up.
 6. **Commit and push** the branch. A release: merge to `main`, tag, GitHub release with
-   `laptimer-vX.Y.Z-firmware.bin` and `laptimer-vX.Y.Z-littlefs.bin` attached.
+   `laptimer-vX.Y.Z-firmware.bin` and `laptimer-vX.Y.Z-littlefs.bin`.
 
-## Rules
+## Design principles
 
-- **Settings layout** (`laptimer_config_t`) is append-only: add fields at the end, bump
-  `CONFIG_VERSION` and give the new fields defaults in the migration in `Config::load`, one
-  step per version (`if (version < 4) conf.targetLapMs = 0;`), so users keep their settings
-  through updates. A step's defaults must not run for newer versions: `setRaceDefaults()` for
-  every older version would have wiped the v3 race settings at v4. Going back a version, a
-  firmware from 1.2.0 on keeps the fields it knows from a newer layout (up to
-  `CONFIG_VERSION_NEWEST_KEPT`); 1.1.0 and older reset all settings then. Versions 1 and 2
-  were multi-pilot development layouts; version 3 keeps their v0 fields only. `fromJson` changes
-  only keys that are present, and the page sends only changed settings — two open phones
-  rely on this.
-- **Race data** changes only on the timing core in `LapTimer::update`. The web server (core 0,
-  pinned with `CONFIG_ASYNC_TCP_RUNNING_CORE=0`; unpinned it preempted RSSI sampling) queues
-  commands with `requestStart/requestStop/requestClear/requestEdit`. Values shared between the
-  cores are `volatile`, and a request stores its data before its flag (the compiler otherwise
-  reorders plain stores past a volatile one; the buzzer once switched a fresh beep off that way).
-- **Timing core stalls**: web replies are built in memory (`sendJson`, `String`), never with
-  `AsyncResponseStream` (drained byte by byte, O(n^2)). Flash writes stall both cores, so
-  settings reach EEPROM only outside a race; saved pilots, lap fixes, clearing the history and
-  WiFi list changes are refused during a race (409 `racing`; the page sends saved pilots
-  afterwards), and a new race starts only after the last one is saved.
-- **Settings from the page** are applied to a copy, checked (exit < enter, race limits, UTF-8
-  names cut at a whole character) and then published: the timing core reads them at any moment.
-  Every value stays within the page's control ranges (race 30-600 s, 1-30 laps, min lap 1-20 s,
-  speech rate 0.1-2, alarm 0-4.2 V, Enter 51-255 / Exit 50-254, also for saved pilots): another
-  phone, an older page or the API can't set a value a slider would show differently.
-- **Connection**: after 5 s without an answer to `/api/status` (`STATUS_LOST_MS`) the page says
-  "No connection to the timer" under the clock and "Offline" in the top bar; the race clock keeps
-  running (the race does too). Start gives up after two unanswered tries ("No answer"); only a
-  409 (still saving the last race) is retried longer, and Start stays off meanwhile (`starting`:
-  a second tap said "Get ready" twice). Start first sends a settings change that is waiting,
-  on its way or failed (`flushSettings` waits for `savingNow`, then saves any diff): a start on
-  a second connection could overtake the save. With no channel (a new timer: 1111, receiver
-  off) Start is refused with the reason. A failed `/api/race` is fetched again with the next
-  status (the one after the last pass left the old laps on screen). The WiFi list, the timer
-  info and History load again once the timer answers (they were loaded once, or showed "No
-  saved races yet"). A restart during a race lost it: `/restart` answers 409 then, and a
-  restart the page notices mid-race shows `#raceLostNote`.
-- **Multi-device**: `POST /config` replies `{base, rev}`; a page adopts `rev` only if `base` is
-  the revision it knew, otherwise it reloads. `/api/status` carries `boot` (random per start)
-  and `prof` (saved-pilot revision). Saved pilots change one at a time
-  (`/api/profiles/save|remove`). On the page, × asks first; a pilot forgotten while flying as
-  it is not remembered again until its name is typed; a chip's press keeps the focus in a name
-  being typed (leaving the field remembered the half-typed name and rebuilt the chips under
-  the finger, so the tap was lost); forgetting one when full remembers the pilot that didn't
-  fit. 507 means full only for a save (a remove's 507 is a failed flash write). Lap fixes carry `expect` and get 409 when stale. A race the
-  page shows but the timer no longer has (another phone's Delete all, the oldest dropped for a
-  new one, a web-files update): opening, renaming, fixing or exporting it says so above the
-  list (`raceGone`, checked with a 404 on `/api/races?id=`) and the list reloads.
-- **Race wins over a channel scan**: starting a race cancels a scan; a scan is refused during
-  a race, the countdown or a queued start. A cancelled scan reports "not running" with progress
-  0: the page then asks for the status at once ("Stopped: a race started"), as its last poll
-  can be from just before the start; otherwise it showed the cut-off scan as complete.
-- **Auto-calibration** takes the level "between passes" from readings at least 1.5 s from every
-  pass, or a third of the time between passes when laps are shorter: with laps under 3 s nothing
-  was 1.5 s from a pass and it said "Passes don't stand out yet" for ever.
-- **Cache busting** is automatic: `tools/stamp_versions.py` runs before every PlatformIO build
-  and stamps `?v=<content hash>` on `style.css` / `script.js` in `index.html` and `update.html`.
-  Those two pages are served uncached, the CSS/JS cached for a day. Keep new assets in the
-  script's `ASSETS` list.
-- **Storage**: a web-files (LittleFS) update replaces race history and saved pilots; settings
-  (EEPROM) and saved WiFi networks (NVS) survive both kinds of update. Every race/profile
-  write goes through `RaceHistory::writeJson` (temp file + rename) under the history lock.
-  Files are read into memory before sending: LittleFS can't replace a file that is open.
-  A race file has its own `name` (rename, 32 bytes; `pilots[].name` is the pilot) and the
-  pace `target` it started with, both only when set. The history list (`addSummary`)
-  has the `name`; the `target` only the race file.
-- **Pace target** (`targetLapMs`, `/config` key `target`, 0 = off, 3-600 s): only the page uses
-  it (callouts, "vs target", chart); the timing core doesn't. Saved pilots store it when set.
-  A race takes it at its start like the other race settings (`LapTimer::start`; owner's
-  choice: a change applies from the next race) and reports it in `/api/race` and the saved
-  race; the page uses the race's (`raceTarget`), the setting only before any race. The line
-  under the clock shows the running race's target, while idle the next race's (like mode and
-  time there), so after Stop it can differ from the finished race's stats. Start
-  sends a settings change still waiting for its 600 ms save first (`flushSettings`), or the
-  race would start with the old value (this holds for all race settings). Its
-  callouts: Announcer → "Then compare with" Nothing / Best lap / Target, one choice stored as
-  `anDelta`/`anTarget` (settings v5; an upgrade keeps `anDelta`, target off). They never are
-  both on: the page sends one, `fromJson` turns the other off (the one switched on wins).
-  It is independent of "Announce each lap" (Beep + Target: a beep, then "minus 0.30"), and
-  live like the other announcer settings. Laps that arrive together (no connection for a
-  while, the phone asleep) say only the newest, and a lap's callouts not spoken yet when the
-  next lap comes are dropped (`queueSpeak(text, "lap")`): with short laps the queue grew and
-  the callouts fell further behind. Voice off stops the speech and empties the queue.
-- **WiFi passwords** stay on the timer; `/config` and `/api/wifi/saved` return names only. With a
-  password the ESP32 joins only WPA2 networks, so the timer (and the page, with the reason)
-  takes none (open), 8-63 characters or 64 hex digits; picking an open network in the scan
-  clears the password. The list holds 5 and a sixth forgets the oldest (maybe the one in use):
-  the page asks first, naming it.
-- **UI**: design tokens in `style.css` with contrast ratios noted beside them — text ≥ 4.5:1,
-  controls ≥ 3:1, touch targets ≥ 44 px; plain CSS/JS, no new libraries.
-- **Lap chart and share image**: `lapChartSvg` builds one SVG string for both. Its colours go
-  in `style` attributes (`var()` is ignored in SVG presentation attributes) and are checked on
-  the best-3 band too. The share image is a canvas in the dark theme's colours (`SHARE` in
-  `script.js`, kept in step with the dark tokens); the chart is drawn on it from a Blob URL
-  (no `foreignObject`, no external files, so the canvas stays saveable). On the timer's http
-  page `navigator.share`/`clipboard` don't exist (secure contexts only). Like voice commands,
-  the feature appears with the insecure-origins flag (or https, or 127.0.0.1): `shareMenu`
-  then makes the History button "Share image" and opens the share menu; without it "Save
-  image" opens the picture full screen (press and hold: the phone's own share/save menu, plus
-  Download) with the flag steps (`secureFlagSteps`, shared with the mic help) on Chromium.
-  A share refused because the tap is too old falls back to that screen, which has a Share
-  button for a fresh tap. Text is copied with `execCommand("copy")` (`copyText`).
-- **Voice**: Web Speech API in a normal browser tab. Set `utterance.lang = "en-US"`; on Android
-  leave the voice object unset (forcing one makes Chrome/Brave silent). Speech starts after a tap.
+**1. Nothing may stall the timing core.** Core 1 samples the RSSI (6 500-10 600 readings/s) and
+is the only place race data changes (`LapTimer::update`). The web server runs on core 0
+(`CONFIG_ASYNC_TCP_RUNNING_CORE=0`; unpinned it preempted sampling) and only queues commands
+(`requestStart/Stop/Clear/Edit`): shared values are `volatile`, and a request stores its data
+before its flag (the compiler reorders plain stores past a volatile one). Flash writes stall
+both cores, so during a race the timer refuses everything that writes flash or ends the race
+(saved pilots, lap fixes, rename, Delete all, WiFi list, restart: 409 `racing`) and writes
+settings to EEPROM only afterwards; the page sends saved pilots after the race. Replies are
+built in memory (`sendJson`), never with `AsyncResponseStream` (O(n^2)). All ADC reads stay on
+core 1 (`analogRead()` isn't safe across cores: the battery read on core 0 froze every second
+boot).
 
-## Pitfalls already paid for
+**2. A race owns its settings.** `LapTimer::start` copies mode, time, laps, countdown, minimum
+lap, channel, pilot name and pace target; the race reports them (`/api/race`, `/api/status`, the
+saved file) and the page shows the race's own (`raceTarget`, `shownRaceSettings`), the settings
+only before a race. Changes apply from the next race; Enter/Exit apply live (calibrating during
+a race) unless another pilot was picked meanwhile (other name or channel), then the race's own.
+Start first sends any settings change still waiting, on its way or failed (`flushSettings`),
+sends one start at a time, and is refused with the reason when there is no channel. A new race
+starts only after the last one is saved. A race wins over a channel scan: starting one
+cancels a scan, and a scan is refused during a race.
 
-- **ESP32 async WiFi scan**: the library reports `WIFI_SCAN_FAILED` after 6 s (20 × 300 ms)
-  while a full scan takes ~5.95 s, longer on the first boot after an update. Treat "failed"
-  within 12 s as still running (the boot scan in `webserver.cpp`).
-- **RX5808 lock time**: after every frequency change it reads nothing until locked, then the
-  full RSSI at once: 36 ms typically, up to 44.5 ms over 150 switches, the same for a 5 or
-  155 MHz jump, and ~1% don't lock within 100 ms. Channel changes and the channel scan wait
-  `RX_LOCK_MS` (50). Measure a module with `GET /api/debug/step?from=5740&to=5800` (VTX on
-  5800; add `&hops=60` for lock-time statistics), then `GET /api/debug/step`.
-- **Multi-pilot on one RX5808** was built (1-4 pilots hopping channels) and removed: with the
-  lock time each pilot is read only every ~105 ms (2 pilots) to ~210 ms (4), and a fast whoop
-  pass falls between the readings. The PhobosLT_4ch fork waits 8 ms, which reads an unlocked
-  receiver. Several pilots need a receiver each.
-- **RX5808 reset**: after a reset (register 0xF) it ignores writes for 20-50 ms and stays deaf
-  until the power register is written again. Reset only at start-up with `RX5808_RESET_MS`
-  after it; wake from power down with `setupRxModule()` only. Check the RSSI after a restart.
-  In its reset state all blocks are on: `init()` leaves it there (`RESET_STATE_FREQ_MHZ`), and
-  the first `scan()` after WiFi started tunes it or, with the receiver set to off, powers it down.
-- **Channels in two bands**: the timer stores only MHz, and 5880 is both F8 and R7. The page's
-  `bandChannel(freq, preferBand)` keeps the band the picker shows, or switching band jumps.
-- **Transmit power fade** (classic ESP32): the tuned RX5808 (oscillator at (f-479)/2, ~2.65
-  GHz) leaks into the ESP32's transmit power detector. libphy's power loop
-  (`tx_pwctrl_background`, every 5th frame sent) reads too much power and steps its gain byte
-  (`chip7_sleep_params[184]`, `[185]`, int8) down with no lower limit; it wraps from -128 to
-  +127, so the hotspot faded ~30 dB over 2-10 min, vanished and came back full, over and over.
-  Pilot channels 5769, 5800, 5843, 5880, 5917 faded; 5658, 5732, 5865 didn't; the WiFi channel
-  made no difference. A station hides it (the radio sleeps between beacons). Second effect: the
-  first WiFi start after boot calibrates the transmitter (`tx_rf_ana_gain`), and the RX5808
-  disturbs that too: tuned to 5800 it came out random (0x5a/0x5f/0x7a), powered down 0x75 and
-  weak (-74 dBm), left in its reset state 0x5f every boot. Fix: `RX5808::init` leaves it in
-  reset and `LapTimer::scan` keeps it untuned until the web server calls `enableReceiver()`
-  after WiFi started (at most `RECEIVER_WAIT_MAX_MS`); `holdTxGain` (webserver.cpp) switches
-  the loop off (`phy_set_most_tpw_disbg = 1`) and applies gain byte `TX_GAIN_BYTE` 19 (the
-  loop's own maximum; its start value 0 is ~4 dB weaker) with `tx_gain_table_set()`. The
-  library clears the flag whenever it applies a TX power (WiFi start, mode change), so
-  `handleWebUpdate` holds it again. Result: -54..-62 dBm at 1-2 m, steady (routers -50..-56).
-  Trade-off: no temperature compensation (it is part of the loop). Dead ends: holding the
-  loop after a 20 s settle (-60..-89, varied with hidden state), longer settles, resetting
-  `tx_pwctrl_track_num`, a WiFi restart, parking the receiver on 5865, libphy's fixed-power
-  mode (only below ~13.5 dBm), more power (requests cap at 18 dBm). Check `/api/debug/load`
-  (`txLoop` 0, `txGain` 19, `txAnaGain` the same every boot), compare levels with
-  `POST /api/debug/txgain?k=`, measure with `tools/hotspot_signal.py` (beacon dBm; Windows'
-  "Signal %" hides fading); `docs/hotspot.md` has the measurements. The C3/S3 libphy lacks
-  these symbols: not handled, not measured.
-- **Boot freeze**: `analogRead()` reconfigures the ADC on every call (pin mux, attenuation,
-  touch) without a lock across cores. With the battery read on core 0 during the RSSI
-  sampling on core 1, about every second boot froze silently (both cores stuck, no WiFi,
-  serial output cut mid-line); receiver off at boot or any added print/watchdog hid it
-  (timing). All ADC reads stay on core 1: `BatteryMonitor::sampleAdc` runs in `loop()`, and
-  `/api/debug/load` has no `temperatureRead()`. Test boots in bulk: `boot_log.py --reset`
-  20+ times and count those reaching "Connecting to WiFi network".
-- **Hotspot DHCP**: the ESP32's built-in DHCP server (ESP-IDF 4.4) broadcasts its OFFER/ACK;
-  WiFi doesn't acknowledge or retry broadcasts, and the first one after a phone joined was
-  often lost (packet capture: address after 3-40 s or never; Android gives up). The hotspot
-  uses `lib/HOTSPOTDHCP` instead, which replies by unicast to the phone's MAC through
-  `esp_wifi_internal_tx` (Espressif's later fix, esp-idf #12580, needs static ARP entries,
-  compiled out here). Second failure: the built-in server forgets its leases on a restart while
-  phones keep theirs (2 h), and a phone on a static address is invisible to it, so the next
-  device got an address already in use and both got each other's replies (page loads
-  sometimes, no live RSSI). `HotspotDhcp` keeps its leases in RTC memory (kept across a
-  software restart: the page's Restart, an update; cleared by a power cycle or an EN reset,
-  which the classic ESP32 treats as power-on), probes each address with ARP before offering or
-  acknowledging it (`inUseByOther`; a used one is set aside for 10 min), tries an address
-  derived from the MAC first, and sends every reply, the NAK too, as a frame to the phone's
-  MAC. Only the client's own MAC counts as its own in the ARP check (a repeater's shared MAC
-  would let two devices behind it share an address; tried and reverted). Test from a PC WiFi adapter on the hotspot: `ipconfig /release` + `/renew` timings,
-  `pktmon` for the packets, `/api/debug/aplog` for the timer's side (types: 0 joined,
-  1 assigned, 2 left, 3 offered, 4 refused, 5 in use by another device, 6 send failed, 7/8 leases
-  kept/cleared at start); `tools/fake_dhcp.py` (a DISCOVER or REQUEST with a made-up MAC)
-  shows what the server does with an address a static device holds.
-- **WiFi radio settings** are ignored before WiFi has started (`WiFi.setTxPower`,
-  `esp_wifi_set_protocol` in `init()` never applied). Leave the transmit power at its default
-  maximum: asking for 19.5 dBm gives 18 dBm (the ESP32 rounds down to fixed steps). The
-  hotspot runs at 20 MHz with power save off, in AP+STA mode so a network scan never switches
-  modes (that restarts the hotspot and drops phones), and the page's scan goes one channel at
-  a time. Link tests made before the transmit power fix (above) are unreliable: its dropouts looked
-  like scan, bandwidth or DHCP trouble. `/api/debug/load` shows the real radio settings;
-  `/api/debug/hotspot` switches to the hotspot until the next restart.
-- **Voice commands** (Chrome's `SpeechRecognition`): recognition runs on Google's servers, so
-  the phone needs internet on the timer's network — none on the timer's own hotspot, and
-  mobile data doesn't help (Android then loses the timer); they work on home WiFi or with the
-  timer on the phone's hotspot. Brave blocks the service (`navigator.brave`). On plain http
-  Chrome refuses the microphone until the page's address is in
-  `chrome://flags/#unsafely-treat-insecure-origin-as-secure` (a page can't open chrome://
-  links: the mic card shows it to copy). Chrome ends a session after silence (`no-speech`,
-  then `end`): reopen at once, the short gap is Chrome's. A doomed session fires `start`
-  before its error, which made the icon blink red and green: after a failure it turns green
-  only once a session has held 5 s. Recovery is silent (reachability fetch, `online`
-  event), no retry button. Voice and Voice commands are per phone (localStorage), in
-  Setup → This phone; the announcer settings are on the timer.
-- **Android and `.local`**: Android doesn't resolve mDNS names reliably, least of all on its
-  own hotspot. `laptimer.local` works on laptops and iPhones; on Android use the IP.
-- **Sampling rate**: `analogRead()` takes ~90 us per RSSI reading (setup repeated on every
-  call, code run from flash), so 6 500-10 600 samples/s depending on where the linker places
-  code (padding alone moved it 11%), not on heat, WiFi or the transmit gain. Enough for lap
-  detection. Compare builds only A/B on the same timer (`/api/debug/load` samplesPerSec).
-  `docs/sampling.md` has the measurements and a parked faster option (register reads from
-  IRAM averaged into a fixed 100 us filter step; branch `perf/fast-adc`, not flown).
-- **Captive portal**: tried and rejected — the sign-in window has no speech and blocks the
-  normal browser. The hotspot uses private `192.168.4.1`, shown in the WiFi name, no DNS redirect.
-- **Connection dropped near boot (open)**: in the first minute after a boot, a request that
-  writes flash (saved pilot, settings) occasionally gets its connection closed or reset
-  (`device_test.py` failed ~3 in 30 runs near boot, 0 in 10 runs later; no reboot, no
-  crash in the serial log; the previous release: 0 in 8 near boot, not conclusive). The page
-  retries saved-pilot and settings saves, so users see no effect. Root cause not found.
-- **Web-files upload can leave files missing**: once, after `ota_upload.py fs` reported the
-  timer back online, `style.css` and `update.html` answered 404 while the other four files
-  were fine (cause not found; the image was accepted and the MD5 checked). The tool now
-  fetches every file of `data/` after an upload and compares sizes: upload again if it
-  complains. A page without its stylesheet or the update page's 404 means exactly this.
-- **USB flashing** on the owner's board: auto-reset fails, so hold BOOT and tap EN; set
-  `upload_speed = 115200` in `targets/PhobosLT.ini` (its 460800 dropped mid-write). Prefer WiFi updates. Opening the serial port (e.g.
-  `boot_log.py` without `--reset`) can still restart the board: don't mistake that for a crash.
-- **Browser tests**: a background tab runs timers about once a second, so scripted tests there
-  look slow or "frozen"; a tab hidden or covered for minutes is slowed to about once a minute
-  (the page test suite crawled in the owner's covered Chrome window): run it headless with
-  `tools/run_page_test.js`, which also emulates the dark theme and page focus (without it
-  `focus()`/`blur()` fire no events, and a test of leaving a field passed on a buggy page). A
-  real tap blurs a focused field before its click: a test of tapping while typing calls
-  `blur()` itself unless the press was `preventDefault`ed. Read the clock as
-  `clockText()`, not `#timer`: the screen copy is refreshed by a 50 ms timer. After starting a
-  race, wait for `raceData.race === status.race`: the page shows the previous race until
-  `/api/race` answers. Reloading a test file into the same page fails silently (its `const`s
-  exist): load the page again. On Windows kill a headless Chrome with `taskkill /T` (its child
-  processes stay otherwise). Screenshots of a background tab can show a stale frame. Chrome keeps a
-  page zoom per address, so resizing the window didn't give a 390 px page: load the app in a
-  390 × 844 `<iframe>` on the same origin (e.g. over `/mock/log`). The console tool doesn't see
-  the iframe's messages: collect `error`/`unhandledrejection` with listeners. Light theme with
-  a dark OS: delete the `prefers-color-scheme` rule from the stylesheet via CSSOM. Screenshots
-  timed out about every second call: retry. `mock_server.py --host 0.0.0.0` serves phones.
-  `T.post()` gives the HTTP status as `code` (a reply's own `status` field overwrote it). The
-  mock's `/mock/slow?config=` and `/mock/busy?start=` make a save still on its way and a busy
-  start. The race screen adds a history entry for Back; ✕ steps back over it, and that step
-  lands later (`raceScreenOwnBack`: opened again meanwhile, the entry is added again).
-- **Saved races without a drone**: `python tools/noise_races.py <timer-ip>` sets Enter/Exit just
-  inside the RSSI noise (floor 50-53: 52/51), so noise counts passes, records five test races
-  (practice, timed, laps, a long one with a merged "crash" lap, one lap; named "Test · ...")
-  and restores all settings. Enter/Exit apply live during a race (calibrating), unless another
-  pilot was picked meanwhile (name or channel: the next one getting ready); then the race's own
-  (on the same channel the next pilot's were used and laps stopped). `--thresholds` tests both
-  on the timer. `device_test.py` needs a saved race for its rename checks. Record them
-  after the last web-files upload: an `fs` upload deletes the history (it happened once).
-- **Scripted file edits**: write the edit script to a file and run it — shell heredocs mangle
-  `\n` escapes and Windows paths. Read a file fully before opening it for writing
-  (`open(p, "w")` truncates first; that once emptied `data/update.html`).
+**3. The timer is the truth, phones are views.** Several phones may be open. The page sends
+only changed settings and `fromJson` changes only keys present; `POST /config` replies
+`{base, rev}` and a page adopts `rev` only if `base` is the revision it knew, otherwise it
+reloads. `/api/status` carries `boot` (random per start), `cfg` and `prof` (settings and
+saved-pilot revisions), so pages notice restarts and other phones. Saved pilots change one at a
+time (`/api/profiles/save|remove`), lap fixes carry `expect` (409 when stale), and a race
+another phone deleted is said so (`raceGone`). Lists the page shows (WiFi, timer info, History)
+load again by themselves once the timer answers.
 
-## Known gaps (audit 2026-10-01, not fixed)
+**4. Check at both ends, within what the page can show.** Values stay inside the page's
+controls: race 30-600 s, 1-30 laps, minimum lap 1-20 s, speech rate 0.1-2, alarm 0-4.2 V,
+announce type 0-4, Enter 51-255 / Exit 50-254 with exit < enter, target 0 or 3-600 s, names cut
+at a whole UTF-8 character (pilot 20 bytes, race 32). The page checks first and says why; the
+firmware checks again (another phone, an older page, the API), also for saved pilots. Settings
+from the page are applied to a copy, checked, then published (the timing core reads them any
+moment). WiFi: with a password the ESP32 joins only WPA2, so passwords are empty, 8-63
+characters or 64 hex digits; passwords never leave the timer.
 
-- A hidden network is tried only if it is the newest saved one (`webserver.cpp`, no saved
-  network seen in the scan). The scan keeps 24 results in channel order, not the strongest.
-- The WiFi list is written to NVS as count, then list: a power cut between them loses it.
-- Settings are published to the timing core as a plain struct copy: a sample can see a new
-  Enter with an old Exit (one sample). Old stored values aren't checked at load.
-- A lap fix checks only the tapped lap (`expect`); a merge also uses the next lap.
-- A dropped firmware upload can make the next one fail (ElegantOTA/Updater state); the
-  web-files image isn't checked with a hash. Restart, Forget all and uploads need no login.
-- History doesn't show another phone's rename or fix until it is opened again.
-- No wake lock: the phone's screen sleeps on the race screen (Wake Lock needs a secure origin).
+**5. Stored data survives updates.** The settings layout (`laptimer_config_t`) is append-only:
+new fields at the end, `CONFIG_VERSION` bumped, defaults in `Config::load` one step per version
+(`if (version < 4) conf.targetLapMs = 0;`), never a step that runs for newer versions
+(`setRaceDefaults()` for every older version wiped the v3 race settings at v4). From 1.2.0 a
+firmware keeps the fields it knows from a newer layout (`CONFIG_VERSION_NEWEST_KEPT`). Versions
+1-2 were multi-pilot development layouts. Settings live in EEPROM and WiFi networks in NVS
+(both survive updates); races and saved pilots are files on LittleFS, so a web-files update
+clears them. Every race/profile write goes through `RaceHistory::writeJson` (temp file + rename)
+under the history lock; files are read into memory before sending (LittleFS can't replace an
+open file).
+
+**6. Fail visibly, recover quietly, never lose work silently.** After 5 s without
+`/api/status` the page says "No connection to the timer" and "Offline"; the race clock keeps
+running. Refusals say why ("After the race", "Not during a race", "Password: 8-63
+characters"). Anything that would drop data asks first (a full WiFi list forgets the oldest; ×
+on a saved pilot). Recovery needs no button (retries, reachability checks). A timer restart
+during a race is reported (`#raceLostNote`). Find and reproduce root causes rather than adding
+retries that hide them.
+
+**7. The announcer is current, not complete.** Callouts that would come late are dropped: laps
+that arrive together say only the newest, and a lap's callouts not spoken when the next lap
+comes are removed (`queueSpeak(text, "lap")`). "Then compare with" is one choice (Nothing / Best
+lap / Target, stored as `anDelta`/`anTarget`; `fromJson` keeps only the one switched on). Voice
+and voice commands are per phone (localStorage); the announcer settings are on the timer. Web
+Speech: `utterance.lang = "en-US"`, on Android no voice object (forcing one makes Chrome/Brave
+silent), speech only after a tap.
+
+**8. A phone UI on plain http.** 390 px first, light and dark; design tokens in `style.css`
+with contrast noted (text ≥ 4.5:1, controls ≥ 3:1), touch targets ≥ 44 px, plain CSS/JS, no
+libraries. Overlays (race screen, race picture) add a history entry so Android's Back closes
+them. On http there is no share, clipboard, microphone or wake lock: those features appear when
+the page is a secure origin (the Chrome flag `unsafely-treat-insecure-origin-as-secure`, shown
+by `secureFlagSteps`), otherwise a fallback (the race picture full screen to press and hold;
+copy with `execCommand`). The chart (`lapChartSvg`) is one SVG for the page and the share image;
+its colours go in `style` attributes (`var()` doesn't work in SVG presentation attributes); the
+share image is a canvas in the dark theme's colours (`SHARE`) with the chart drawn from a Blob
+URL (no `foreignObject` or outside files, or the canvas can't be saved). `index.html` and
+`update.html` are served uncached and `tools/stamp_versions.py` stamps `?v=<hash>` on the CSS/JS
+at every build (cached a day; keep new assets in its `ASSETS`).
+
+## Testing
+
+- **A bug gets a test that fails first**, then the fix. A new page feature gets its checks in
+  `tools/page_test.js` (sections: layout, setup, race, raceSettings, raceEdges, calibrate,
+  history, historyEdges, connection, voice, update; each starts from `/mock/reset`).
+- **The mock** (`tools/mock_server.py`) mirrors `lib/WEBSERVER/api.cpp`, refusals included:
+  keep them in step. Helpers under `/mock/` (reset, reboot, offline, fail, slow, busy, passes,
+  lap, full, saveerr, info, vbat, oldrace, log) make the states a test needs. Unlike a new
+  timer it starts with a channel. `--host 0.0.0.0` serves phones.
+- **Writing page tests**: run headless (`run_page_test.js`): a background or covered tab runs
+  timers once a second or slower. The runner emulates focus (without it `focus()`/`blur()` fire
+  no events). A real tap blurs a focused field before its click: simulate that with `blur()`.
+  Read the clock with `clockText()`; after a start wait for `raceData.race === status.race`.
+  `T.post()` returns the HTTP status as `code`. Reload the page rather than the test file. Kill a
+  leftover headless Chrome with `taskkill /T`. Screenshots at 390 px: headless Chrome with
+  `Emulation.setDeviceMetricsOverride` (a desktop window keeps its page zoom).
+- **On the timer**: `device_test.py` (API checks, cleans up after itself; its rename checks need
+  a saved race). `noise_races.py` records test races from RSSI noise (Enter/Exit just inside the
+  noise; `--one` one race, `--thresholds` tests Enter/Exit during a race); when every channel is
+  too quiet it records nothing. Record races after the last web-files upload. With a drone:
+  `rssi_log.py`. Radio: `hotspot_signal.py` (beacon dBm), `fake_dhcp.py`, `boot_log.py`.
+
+## Hardware and radio facts (measured, don't relearn)
+
+- **RX5808**: after a frequency change it reads nothing until locked (36 ms typical, up to
+  45 ms, ~1% over 100 ms): wait `RX_LOCK_MS` (50). Measure with `/api/debug/step`. After a
+  reset (register 0xF) it ignores writes for 20-50 ms and stays deaf until the power register
+  is written: reset only at start-up; wake with `setupRxModule()`. Frequency 1111 = off (a new
+  timer's default).
+- **One receiver, one pilot.** Multi-pilot by hopping channels was built and removed: with the
+  lock time each pilot is read every 105-210 ms and a fast pass falls between the readings.
+- **Channels**: the timer stores MHz only; 5880 is F8 and R7, so the page keeps the band its
+  picker shows (`bandChannel(freq, preferBand)`).
+- **Transmit power fade** (classic ESP32): the tuned RX5808 disturbs libphy's transmit power
+  loop and the first WiFi calibration, so the hotspot faded away every few minutes. Fix: the
+  receiver stays untuned until WiFi has started (`enableReceiver()`), and `holdTxGain` turns the
+  loop off and sets gain byte 19, again after every WiFi start or mode change
+  (`handleWebUpdate`). Trade-off: no temperature compensation. Check `/api/debug/load`
+  (`txLoop` 0, `txGain` 19). Measurements and the dead ends tried: `docs/hotspot.md`. ESP32-C3/S3
+  not handled.
+- **Hotspot**: its own DHCP server (`lib/HOTSPOTDHCP`, unicast replies, leases kept across a
+  restart, ARP check before handing out an address): the built-in one lost replies and handed
+  out addresses in use (`docs/hotspot.md`). AP+STA mode so a network scan never restarts the
+  hotspot; the page's scan goes one channel at a time. Fixed address `192.168.4.1` in the WiFi
+  name, no captive portal (its sign-in window has no speech and blocks the browser).
+- **WiFi**: radio settings before WiFi has started are ignored. Transmit power stays at its
+  maximum (requests are capped at 18 dBm). The async scan reports `WIFI_SCAN_FAILED` after 6 s
+  while a full scan takes ~6 s: treat "failed" within 12 s as still running.
+- **Sampling**: `analogRead()` takes ~90 µs; the rate depends on where the linker places code
+  (padding moved it 11%). Compare builds only A/B on one timer (`docs/sampling.md`; faster
+  register reads parked on branch `perf/fast-adc`).
+- **Phones**: Android doesn't resolve `laptimer.local` reliably (use the IP). Voice commands
+  (Chrome `SpeechRecognition`) need internet (not on the timer's hotspot) and the Chrome flag on
+  http; Brave blocks them. Chrome ends a session after silence: reopen at once; after a
+  failure the mic turns green only once a session held 5 s.
+
+## Open issues and known gaps
+
+- **Connection dropped near boot**: in the first minute after a boot a request that writes
+  flash occasionally gets its connection reset (no crash, no reboot). The page retries; root
+  cause not found.
+- **Web-files upload**: once two files were missing after an upload that reported success;
+  `ota_upload.py` now compares every file (upload again if it complains).
+- Not fixed (audit 2026-10-01): a hidden network is tried only if it is the newest saved one;
+  the scan keeps 24 results in channel order, not the strongest; the WiFi list is written as
+  count then list (a power cut between loses it); settings reach the timing core as a plain
+  struct copy (one sample can see new Enter with old Exit), and stored values aren't checked
+  at load; a lap fix checks only the tapped lap; a dropped firmware upload can make the next
+  fail, and the web-files image has no hash check; no login for restart/update; History
+  doesn't show another phone's rename or fix until reopened; no wake lock on the race screen.
+
+## Working here
+
+- USB flashing on the owner's board: hold BOOT and tap EN, `upload_speed = 115200`; prefer
+  WiFi updates. Opening the serial port can restart the board (not a crash).
+- Edit with scripts written to files: shell heredocs mangle `\n`, quotes and Windows paths.
+  Read a file fully before rewriting it (`open(p, "w")` once emptied `data/update.html`).
+- A web-files upload clears the timer's saved pilots: save them from `/api/profiles` first and
+  send them back with `/api/profiles/save`.
 
 ## Owner preferences
 
 - Tests on Android with Brave; UI text and voice in English.
-- Likes things automatic and simple: settings auto-save, one buzzer beep per lap, no captive
-  portal, one pilot per timer (saved pilots to switch who flies).
-- Responsiveness over power saving: both cores run flat out at 240 MHz (resting a core or a
-  lower clock were tried and dropped).
-- Wants root causes found and reproduced, not retries that hide them.
+- Automatic and simple: settings auto-save, one buzzer beep per lap, no captive portal, one
+  pilot per timer (saved pilots to switch who flies).
+- Responsiveness over power saving: both cores at 240 MHz.
+- Root causes found and reproduced, not retries that hide them; every bug confirmed by a test.

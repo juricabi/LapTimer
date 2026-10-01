@@ -118,3 +118,22 @@ until the next WiFi start, to compare levels; without `k` it applies 19 again.
   AP+STA mode so a scan never restarts it.
 - **Radio settings.** 20 MHz channel width, power save off, maximum transmit power (the radio
   caps requests at its highest target, 18 dBm).
+
+## For developers: the DHCP server (`lib/HOTSPOTDHCP`)
+
+- Replies (OFFER, ACK and NAK) go as frames to the phone's MAC through `esp_wifi_internal_tx`.
+  Espressif's later fix for the broadcast problem (esp-idf #12580) needs static ARP entries
+  and is compiled out of this framework.
+- Leases are kept in RTC memory: they survive a software restart (the page's Restart, an
+  update) and are cleared by a power cycle or an EN reset, which the classic ESP32 treats as
+  power-on.
+- Before offering or acknowledging an address it asks with ARP whether another device uses it
+  (`inUseByOther`); a used address is set aside for 10 min. It tries an address derived from
+  the phone's MAC first. Only the client's own MAC counts as its own in the ARP check: taking
+  the radio's MAC too (a repeater answers for the devices behind it) would let two of them
+  share an address (tried and reverted).
+- Testing from a PC WiFi adapter on the hotspot: `ipconfig /release` + `/renew` for timings,
+  `pktmon` for the packets, `GET /api/debug/aplog` for the timer's side (types: 0 joined,
+  1 assigned, 2 left, 3 offered, 4 refused, 5 in use by another device, 6 send failed, 7/8
+  leases kept/cleared at start). `tools/fake_dhcp.py` sends a DISCOVER or REQUEST with a
+  made-up MAC, to see what the server does with an address a device with a fixed address holds.
