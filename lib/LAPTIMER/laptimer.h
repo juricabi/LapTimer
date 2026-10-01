@@ -152,7 +152,7 @@ class LapTimer {
     char raceName[21] = "";
     uint8_t raceEnter = 0;
     uint8_t raceExit = 0;
-    uint32_t raceTargetMs = 0;        // pace target (0 = none): only reported, the page uses it
+    volatile uint32_t raceTargetMs = 0; // pace target (0 = none): only reported, the page uses it
     volatile uint16_t editCount = 0;  // lap corrections since the race started
     volatile uint32_t raceStartMs = 0;
     uint32_t startEpochSec = 0;

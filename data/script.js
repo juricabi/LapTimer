@@ -494,6 +494,19 @@ function scheduleSave() {
   }, 600);
 }
 
+// The timer takes the race settings (pace target too) when a race starts: a change still
+// waiting to be sent goes first, or the race would start with the old value
+async function flushSettings() {
+  if (document.activeElement === ui.targetLap) ui.targetLap.blur(); // a typed target is taken on "change"
+  if (!saveTimer) return;
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  const ok = await saveConfig();
+  setSaveState(ok ? "saved" : "error");
+  if (ok) rememberPilot();
+  else saveRetryTimer = setTimeout(scheduleSave, 5000);
+}
+
 function setSaveState(state) {
   const text = {
     loading: "Loading settings…",
@@ -1174,6 +1187,7 @@ async function startRace() {
   const button = $("startRaceButton");
   if (button.disabled) return;
   button.disabled = true; // until the next status render (a second tap said "Get ready" again)
+  await flushSettings();
   for (let attempt = 0; attempt < 8; attempt++) {
     const t = Math.floor(Date.now() / 1000);
     const r = await fetchTimeout("/timer/start?t=" + t, { method: "POST" }).catch(() => null);
@@ -2192,30 +2206,34 @@ function lapChartSvg(laps, opts, colors) {
 // A chart on the page: tap (or drag along it) to read a lap. The tapped lap stays selected
 // when the chart is drawn again (a new lap, a lap fix) under the same key.
 const chartSelection = new Map(); // key → lap index
-const mountedCharts = new Set();
+
+// The plot's width, measured the way the ResizeObserver reports it (clientWidth rounds
+// differently at fractional widths, which drew every chart twice)
+function plotWidth(plot) {
+  return Math.round(plot.getBoundingClientRect().width);
+}
 
 // Every chart is drawn for its plot's width: when it first gets one (a chart made on a hidden
 // tab or before it was on the page) and whenever the width changes. The plot's height is
-// fixed in CSS, so drawing never changes the size that is watched.
+// fixed in CSS, so drawing never changes the size that is watched. A plot taken off the page
+// (the Race tab redrawn, a history race closed) reports size 0 once more: it is let go then.
 const chartResize = new ResizeObserver((entries) => {
   for (const entry of entries) {
-    const chart = entry.target.lapChart;
+    const plot = entry.target;
+    if (!plot.isConnected) {
+      chartResize.unobserve(plot);
+      continue;
+    }
     const width = Math.round(entry.contentRect.width);
-    if (chart && width && width !== chart.width) drawLapChart(chart);
+    if (plot.lapChart && width && width !== plot.lapChart.width) drawLapChart(plot.lapChart);
   }
 });
 
 function mountLapChart(wrap, laps, opts, key) {
-  for (const c of mountedCharts) {
-    if (c.wrap.isConnected) continue;
-    chartResize.unobserve(c.plot); // replaced by a new render: let it go
-    mountedCharts.delete(c);
-  }
   wrap.innerHTML = '<p class="lap-chart-readout" aria-live="polite"></p><div class="lap-chart-plot"></div>';
   const plot = wrap.lastChild;
   const chart = { wrap, plot, laps, opts, key, width: 0, layout: null };
   plot.lapChart = chart;
-  mountedCharts.add(chart);
   const pick = (e) => {
     const rect = plot.getBoundingClientRect();
     if (!rect.width || !chart.layout) return;
@@ -2235,7 +2253,7 @@ function mountLapChart(wrap, laps, opts, key) {
 }
 
 function drawLapChart(chart) {
-  chart.width = chart.plot.clientWidth; // 0 while hidden: drawn again once it has a width
+  chart.width = plotWidth(chart.plot); // 0 while hidden: drawn again once it has a width
   const opts = { ...chart.opts, width: chart.width || 320, height: CHART_HEIGHT, cursor: true };
   chart.layout = lapChartLayout(chart.laps, opts);
   chart.plot.innerHTML = lapChartSvg(chart.laps, opts, CHART_COLORS);
@@ -2269,8 +2287,10 @@ function showChartSelection(chart) {
 // ═══════════════════════════════════════════════════════════════════
 //  Share a race: image and text
 // ═══════════════════════════════════════════════════════════════════
-// On plain http (the timer) phones offer neither the share menu nor the clipboard API, so the
-// image is downloaded and shared from the gallery; on https it goes to the share menu.
+// On plain http (the timer) phones offer neither the share menu nor the clipboard API: the
+// picture opens full screen to press and hold (the phone's own share/save menu) or download,
+// and text is copied the old way. With the share menu (https, or the browser flag as for voice
+// commands) History's button becomes "Share image" (see shareMenu).
 
 // The dark theme's tokens from style.css (keep them in step): the image is always dark
 const SHARE = {
@@ -2339,10 +2359,10 @@ function copyText(text) {
   const area = el("textarea");
   area.value = text;
   area.readOnly = true; // no keyboard popping up on a phone
-  area.style.cssText = "position:fixed;top:0;left:-9999px;opacity:0";
+  area.style.cssText = "position:fixed;top:0;left:0;opacity:0"; // on screen, invisible: iOS copies from it
   document.body.appendChild(area);
   area.select();
-  area.setSelectionRange(0, text.length);
+  area.setSelectionRange(0, text.length); // iOS
   let ok = false;
   try {
     ok = document.execCommand("copy");
@@ -2551,7 +2571,8 @@ function canShareFile(file) {
   }
 }
 const shareMenu = canShareFile(new File([""], "race.png", { type: "image/png" }));
-const hasSecureFlag = /Chrome\//.test(navigator.userAgent); // Chrome, Brave, Edge (not on iOS)
+// Chrome, Brave, Edge (they have the flags page); not iOS, Samsung Internet, Opera, in-app views
+const hasSecureFlag = /Chrome\//.test(navigator.userAgent) && !/SamsungBrowser|OPR\/|YaBrowser|UCBrowser|; wv\)/.test(navigator.userAgent);
 
 // "chrome://flags/…" and the page's address, each with a Copy button (a page can't open
 // chrome:// links); wireCopyButtons makes the buttons work
@@ -2647,20 +2668,30 @@ function showImagePreview(file, title, withChart, returnFocus) {
   if (!shareable) buttons.style.gridTemplateColumns = "1fr";
   overlay.append(head, scroll, buttons);
 
-  const done = () => {
+  // The page behind can't be reached (inert: no Tab into it), and Android's Back button closes
+  // the picture instead of leaving the timer's page: opening it adds a history entry
+  const behind = [...document.body.children];
+  const done = (fromBack) => {
     overlay.remove();
     URL.revokeObjectURL(url);
+    for (const e of behind) e.inert = false;
     document.documentElement.classList.remove("image-preview-open");
     document.removeEventListener("keydown", onKey);
+    window.removeEventListener("popstate", onBack);
+    if (!fromBack && history.state && history.state.imagePreview) history.back();
     if (returnFocus) returnFocus.focus();
   };
   const onKey = (e) => {
-    if (e.key === "Escape") done();
+    if (e.key === "Escape") done(false);
   };
-  close.addEventListener("click", done);
+  const onBack = () => done(true);
+  close.addEventListener("click", () => done(false));
   document.addEventListener("keydown", onKey);
+  for (const e of behind) e.inert = true;
   document.body.appendChild(overlay);
   document.documentElement.classList.add("image-preview-open");
+  history.pushState({ imagePreview: true }, "");
+  window.addEventListener("popstate", onBack);
   close.focus();
 }
 

@@ -70,7 +70,9 @@ Every change goes through all steps; a step is done when its check passes.
   it (callouts, "vs target", chart); the timing core doesn't. Saved pilots store it when set.
   A race takes it at its start like the other race settings (`LapTimer::start`; owner's
   choice: a change applies from the next race) and reports it in `/api/race` and the saved
-  race; the page uses the race's (`raceTarget`), the setting only before any race. Its
+  race; the page uses the race's (`raceTarget`), the setting only before any race. Start
+  sends a settings change still waiting for its 600 ms save first (`flushSettings`), or the
+  race would start with the old value (this holds for all race settings). Its
   callouts have their own switch (`anTarget`, settings v5, on by default), live like the
   other announcer settings; with it on they replace the delta to the best lap.
 - **WiFi passwords** stay on the timer; `/config` and `/api/wifi/saved` return names only.
