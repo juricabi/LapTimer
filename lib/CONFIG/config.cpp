@@ -41,6 +41,8 @@ void Config::load(void)
             setRaceDefaults(); // v0 (and the v1/v2 development layouts): v0 fields only
         if (version < 4)
             conf.targetLapMs = 0;
+        if (version < 5)
+            conf.announceTarget = true; // a target set is meant to be heard
         conf.version = CONFIG_VERSION | CONFIG_MAGIC;
         modified = true;
         write();
@@ -82,6 +84,7 @@ void Config::toJsonDoc(JsonDocument &config)
     config["anType"] = conf.announcerType;
     config["anRate"] = conf.announcerRate;
     config["anDelta"] = conf.announceDelta;
+    config["anTarget"] = conf.announceTarget;
     config["buzzerOn"] = conf.buzzerOn;
     config["enterRssi"] = conf.enterRssi;
     config["exitRssi"] = conf.exitRssi;
@@ -178,6 +181,7 @@ void Config::fromJson(JsonObject source)
     changed |= updateField(source, "anType", conf.announcerType);
     changed |= updateField(source, "anRate", conf.announcerRate);
     changed |= updateField(source, "anDelta", conf.announceDelta);
+    changed |= updateField(source, "anTarget", conf.announceTarget);
     changed |= updateField(source, "buzzerOn", conf.buzzerOn);
     changed |= updateField(source, "enterRssi", conf.enterRssi);
     changed |= updateField(source, "exitRssi", conf.exitRssi);
@@ -317,6 +321,7 @@ void Config::setDefaults(void)
     strlcpy(conf.pilotName, "", sizeof(conf.pilotName));
     setRaceDefaults();
     conf.targetLapMs = 0;
+    conf.announceTarget = true;
     modified = true;
     write();
 }

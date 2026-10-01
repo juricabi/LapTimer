@@ -72,7 +72,7 @@ try:
     check("long name cut at a whole character", name == "ŠĐČĆŽšđčćž", name)
 
     # pace target: 0 = off, otherwise kept within 3-600 s; saving other settings leaves it alone
-    check("settings have the pace target", "target" in original, sorted(original))
+    check("settings have the pace target and its announce switch", "target" in original and "anTarget" in original, sorted(original))
     targets = []
     for value in (45000, 1000, 999999, 0):
         req("/config", {"target": value})

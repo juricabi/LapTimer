@@ -21,7 +21,7 @@ DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 LOCK = threading.Lock()
 
 CONFIG = {
-    "freq": 5800, "minLap": 50, "alarm": 0, "anType": 2, "anRate": 10, "anDelta": True, "buzzerOn": True,
+    "freq": 5800, "minLap": 50, "alarm": 0, "anType": 2, "anRate": 10, "anDelta": True, "anTarget": True, "buzzerOn": True,
     "enterRssi": 120, "exitRssi": 100, "name": "Maverick",
     "raceMode": 0, "raceSec": 60, "raceLaps": 5, "countdown": False, "target": 0,
 }

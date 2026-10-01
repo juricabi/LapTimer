@@ -198,6 +198,7 @@ const ui = {
   announcer: $("announcerSelect"),
   rate: $("rate"),
   anDelta: $("anDelta"),
+  anTarget: $("anTarget"),
   voiceToggle: $("voiceToggle"),
   buzzer: $("buzzerToggle"),
   alarm: $("alarmThreshold"),
@@ -325,6 +326,7 @@ function applyConfig(config) {
   ui.announcer.selectedIndex = config.anType;
   ui.rate.value = (config.anRate / 10).toFixed(1);
   ui.anDelta.checked = !!config.anDelta;
+  ui.anTarget.checked = config.anTarget !== false; // on unless switched off
   ui.buzzer.checked = !!config.buzzerOn;
   ui.alarm.value = (config.alarm / 10).toFixed(1);
   [updateRaceTimeLabel, updateRaceLapsLabel, updateMinLapLabel, updateRateLabel, updateAlarmLabel].forEach((f) => f());
@@ -395,6 +397,7 @@ function configBody() {
     anType: ui.announcer.selectedIndex,
     anRate: Math.round(announcerRate * 10),
     anDelta: ui.anDelta.checked,
+    anTarget: ui.anTarget.checked,
     buzzerOn: ui.buzzer.checked,
   };
 }
@@ -1078,8 +1081,8 @@ function announceLap(p, n, target) {
   if (type === "none") return;
   const previousBest = previous.length ? Math.min(...previous) : null;
   if (previousBest !== null && lapMs < previousBest) queueSpeak("Best lap");
-  if (target) {
-    // with a pace target, every lap is compared with it (instead of the best lap)
+  if (target && ui.anTarget.checked) {
+    // with a pace target announced, every lap is compared with it (instead of the best lap)
     const d = lapMs - target;
     queueSpeak(Math.abs(d) <= ON_TARGET_MS ? "On target" : (d > 0 ? "plus " : "minus ") + (Math.abs(d) / 1000).toFixed(2));
   } else if (previousBest !== null && ui.anDelta.checked) {
@@ -1841,7 +1844,7 @@ function renderHistoryDetail(container, race, editing, summary) {
   });
   const renameButton = el("button", "btn btn-ghost", "Rename");
   renameButton.addEventListener("click", () => openRename(container, race, summary, renameButton));
-  const imageButton = el("button", "btn btn-ghost", "Save image");
+  const imageButton = el("button", "btn btn-ghost", "Share image");
   imageButton.addEventListener("click", () => shareRaceImage(race, imageButton));
   const exportButton = el("button", "btn btn-ghost", "Export CSV");
   exportButton.addEventListener("click", () => downloadCsv([race], "laptimer-race-" + race.id + ".csv"));
@@ -2535,6 +2538,27 @@ async function raceImage(race) {
   }
 }
 
+// The share menu (navigator.share) exists only on a secure page: https, or the timer's address
+// in the browser's "insecure origins treated as secure" flag. Otherwise the picture is shown
+// full screen: press and hold it for the phone's own menu (Android "Share image", iOS
+// "Share…" / "Save to Photos"), or Download.
+function canShareFile(file) {
+  try {
+    return !!(navigator.canShare && navigator.share && navigator.canShare({ files: [file] }));
+  } catch (e) {
+    return false;
+  }
+}
+
+async function shareFile(file, title) {
+  try {
+    await navigator.share({ files: [file], title });
+    return "shared";
+  } catch (e) {
+    return e.name === "AbortError" ? "cancelled" : "failed"; // failed: e.g. the tap is too long ago
+  }
+}
+
 async function shareRaceImage(race, button) {
   if (button.disabled) return;
   button.disabled = true;
@@ -2542,26 +2566,68 @@ async function shareRaceImage(race, button) {
   try {
     const { blob, withChart } = await raceImage(race);
     const file = new File([blob], `laptimer-race-${race.id}.png`, { type: "image/png" });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try {
-        await navigator.share({ files: [file], title: raceTitle(race) });
-        showButtonStatus(button, "Shared ✓", 2000);
-      } catch (e) {
-        if (e.name === "AbortError") showButtonStatus(button, button.dataset.label, 1);
-        else {
-          downloadBlob(blob, file.name);
-          showButtonStatus(button, "Saved ✓", 2500);
-        }
-      }
-    } else {
-      downloadBlob(blob, file.name);
-      showButtonStatus(button, withChart ? "Saved ✓" : "Saved, no chart", 2500);
-    }
+    const result = canShareFile(file) ? await shareFile(file, raceTitle(race)) : "failed";
+    showButtonStatus(button, button.dataset.label, 1);
+    if (result === "shared") showButtonStatus(button, "Shared ✓", 2000);
+    else if (result === "failed") showImagePreview(file, raceTitle(race), withChart, button);
   } catch (e) {
     console.error(e);
     showButtonStatus(button, "Could not draw it");
   }
   button.disabled = false;
+}
+
+function showImagePreview(file, title, withChart, returnFocus) {
+  const url = URL.createObjectURL(file);
+  const shareable = canShareFile(file);
+  const overlay = el("div", "image-preview");
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", "Race image");
+  const head = el("div", "image-preview-head");
+  const hint = el("p", "", shareable ? "Share it, or press and hold the picture to save it."
+    : "Press and hold the picture to share or save it.");
+  if (!withChart) hint.textContent += " (The chart could not be drawn on it.)";
+  const close = el("button", "rs-close", "✕");
+  close.type = "button";
+  close.setAttribute("aria-label", "Close");
+  head.append(hint, close);
+  const scroll = el("div", "image-preview-scroll");
+  const img = el("img");
+  img.src = url;
+  img.alt = title + ": race image";
+  scroll.appendChild(img);
+  const buttons = el("div", "button-row");
+  if (shareable) {
+    const share = el("button", "btn", "Share");
+    share.type = "button";
+    share.addEventListener("click", async () => {
+      if ((await shareFile(file, title)) === "failed") showButtonStatus(share, "Not possible here", 2500);
+    });
+    buttons.appendChild(share);
+  }
+  const download = el("button", "btn btn-ghost", "Download");
+  download.type = "button";
+  download.addEventListener("click", () => downloadBlob(file, file.name));
+  buttons.appendChild(download);
+  if (!shareable) buttons.style.gridTemplateColumns = "1fr";
+  overlay.append(head, scroll, buttons);
+
+  const done = () => {
+    overlay.remove();
+    URL.revokeObjectURL(url);
+    document.documentElement.classList.remove("image-preview-open");
+    document.removeEventListener("keydown", onKey);
+    if (returnFocus) returnFocus.focus();
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") done();
+  };
+  close.addEventListener("click", done);
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(overlay);
+  document.documentElement.classList.add("image-preview-open");
+  close.focus();
 }
 
 // ═══════════════════════════════════════════════════════════════════

@@ -70,7 +70,9 @@ Every change goes through all steps; a step is done when its check passes.
   it (callouts, "vs target", chart); the timing core doesn't. Saved pilots store it when set.
   A race takes it at its start like the other race settings (`LapTimer::start`; owner's
   choice: a change applies from the next race) and reports it in `/api/race` and the saved
-  race; the page uses the race's (`raceTarget`), the setting only before any race.
+  race; the page uses the race's (`raceTarget`), the setting only before any race. Its
+  callouts have their own switch (`anTarget`, settings v5, on by default), live like the
+  other announcer settings; with it on they replace the delta to the best lap.
 - **WiFi passwords** stay on the timer; `/config` and `/api/wifi/saved` return names only.
 - **UI**: design tokens in `style.css` with contrast ratios noted beside them — text ≥ 4.5:1,
   controls ≥ 3:1, touch targets ≥ 44 px; plain CSS/JS, no new libraries.
@@ -79,8 +81,11 @@ Every change goes through all steps; a step is done when its check passes.
   the best-3 band too. The share image is a canvas in the dark theme's colours (`SHARE` in
   `script.js`, kept in step with the dark tokens); the chart is drawn on it from a Blob URL
   (no `foreignObject`, no external files, so the canvas stays saveable). On the timer's http
-  page `navigator.share`/`clipboard` don't exist: the image is downloaded, text copied with
-  `execCommand("copy")`.
+  page `navigator.share`/`clipboard` don't exist (secure contexts only): Share image tries
+  `navigator.share` when it exists (https, the insecure-origins flag, 127.0.0.1), otherwise
+  (or when the tap is too old for it) the picture opens full screen, where press-and-hold
+  gives the phone's own share/save menu, plus Download (and Share again, a fresh tap). Text
+  is copied with `execCommand("copy")`.
 - **Voice**: Web Speech API in a normal browser tab. Set `utterance.lang = "en-US"`; on Android
   leave the voice object unset (forcing one makes Chrome/Brave silent). Speech starts after a tap.
 
