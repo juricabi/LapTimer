@@ -280,11 +280,14 @@ button.chip-icon:focus-visible {
   font-weight: 600;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background-color 0.15s, color 0.15s;
+  /* no fade: with one, the old tab stayed lit for ~150 ms after a tap (both tabs highlighted) */
 }
 
-.tablinks:hover {
-  color: var(--text);
+/* only where a pointer really hovers: on a phone a tapped button keeps :hover */
+@media (hover: hover) {
+  .tablinks:hover {
+    color: var(--text);
+  }
 }
 
 .tablinks.active {
