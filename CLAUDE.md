@@ -144,8 +144,11 @@ at every build (cached a day; keep new assets in its `ASSETS`).
   loop and the first WiFi calibration, so the hotspot faded away every few minutes. Fix: the
   receiver stays untuned until WiFi has started (`enableReceiver()`), and `holdTxGain` turns the
   loop off and sets gain byte 19, again after every WiFi start or mode change
-  (`handleWebUpdate`). Trade-off: no temperature compensation. Check `/api/debug/load`
-  (`txLoop` 0, `txGain` 19). Measurements and the dead ends tried: `docs/hotspot.md`. ESP32-C3/S3
+  (`handleWebUpdate`). Trade-off: no temperature compensation. The analog gain from the
+  start-up calibration depends on the board's temperature (cold 0x5f, warm 0x75, ~15 dB
+  weaker; the RX5808 made no difference): held at 0x5f or stronger (`TX_ANA_GAIN_WEAKEST`).
+  Check `/api/debug/load` (`txLoop` 0, `txGain` 19, `txAnaGain` ending ≤ `5f`, `txAnaCal`
+  the start's own). Measurements and the dead ends tried: `docs/hotspot.md`. ESP32-C3/S3
   not handled.
 - **Hotspot**: its own DHCP server (`lib/HOTSPOTDHCP`, unicast replies, leases kept across a
   restart, ARP check before handing out an address): the built-in one lost replies and handed
@@ -168,6 +171,12 @@ at every build (cached a day; keep new assets in its `ASSETS`).
 - **Connection dropped near boot**: in the first minute after a boot a request that writes
   flash occasionally gets its connection reset (no crash, no reboot). The page retries; root
   cause not found.
+- **Heap corruption crash** (2026-10-04): `device_test.py` restarted the timer in 2 of 6 runs
+  (once during rapid settings saves, once at "start during a scan", logged with
+  `boot_log.py <port> 420` alongside): `CORRUPT HEAP: Bad tail`, assert in `multi_heap_free`
+  from AsyncTCP's `_async_service_task`. A run on the firmware before the analog-gain hold
+  broke off near the same step (not logged). Root cause not found. An interrupted device test
+  leaves its test settings on the timer.
 - **Web-files upload**: once two files were missing after an upload that reported success;
   `ota_upload.py` now compares every file (upload again if it complains).
 - Not fixed (audit 2026-10-01): a hidden network is tried only if it is the newest saved one;

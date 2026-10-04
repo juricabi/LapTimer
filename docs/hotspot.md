@@ -60,7 +60,9 @@ calibrates its transmitter (an analog gain, `tx_rf_ana_gain`). The RX5808 distur
 | Left as after power-up (reset state) | 0x5f every boot | -56 to -62 dBm |
 
 This, and wherever the loop had left the gain byte, is why the first fix (switch the loop off
-after a 20 s settle) kept a level that varied from start to start, -60 to -89 dBm.
+after a 20 s settle) kept a level that varied from start to start, -60 to -89 dBm. 0x5f is also
+the library's value before calibrating, and the board's temperature turned out to matter more
+than the receiver (see "Warm starts" below).
 
 **What the firmware does** (classic ESP32):
 1. At power-up the RX5808 stays in its reset state (`RX5808::init`) and the receiver stays
@@ -72,6 +74,8 @@ after a 20 s settle) kept a level that varied from start to start, -60 to -89 dB
    library's start value 0 is about 4 dB weaker. The library clears the flag whenever it
    applies a transmit power (WiFi start, mode change); the web server then holds the gain
    again.
+3. The analog gain from the start-up calibration is kept at 0x5f or stronger
+   (`TX_ANA_GAIN_WEAKEST`, also in `holdTxGain`): a warm start calibrates it ~15 dB weaker.
 
 Result on 5800 MHz: beacons at -54 to -62 dBm at 1-2 m, steady, the same after a short or a
 long time as a station first; a PC joins in about 1 s, 4 of 712 pings lost over 3 minutes,
@@ -88,16 +92,43 @@ the library's fixed-power mode (`esp_wifi_set_max_tx_power` reaches it only belo
 -82 dBm at 8.5 dBm), asking for more power (the radio caps requests at 18 dBm), another WiFi
 channel.
 
+**Warm starts (2026-10-04).** The analog gain (`tx_rf_ana_gain`, its low byte; higher is
+weaker, about 0.5 dB a step) is set at the first WiFi start by `cal_rf_ana_gain` in libphy,
+from the same power detector, and on the test board it depends on the board's temperature:
+
+| Start | Analog gain | Beacons at 1 m |
+|---|---|---|
+| Cold (unplugged, cooled with a fan) | 0x5f (left at the library's value) | -59 to -73 dBm |
+| After 5-10 minutes of running | 0x5a | -61 to -67 dBm |
+| Warm (restart, update, or power cycle of a warm board), 14 of 14 starts | 0x75 | -71 to -81 dBm |
+
+A warm start comes after an update, a restart from the page, a swapped power bank, or a timer
+in the sun: range dropped to a few metres. Not the cause: the RX5808 at start-up (reset as
+now, untouched, reset and woken, powered down: 0x75 in all, two starts each), a restart vs a
+power cycle, the stored calibration (`esp_phy_erase_cal_data_in_nvs` and a calibration from
+scratch on a warm board: 0x75). Setting the byte while running changes the level at once
+(same start: 0x75 -76 dBm, 0x5f -68, 0x45 -60). The firmware keeps it at 0x5f or stronger after
+every WiFi start; a board that calibrates stronger keeps its own value. With 0x5f held after a
+warm start: -65 to -71 dBm, device test passes.
+
+Not explained: an earlier cold start that evening reached -53 to -60 dBm at 0x5f (and 10 m
+through several walls with a phone), 8-10 dB more than the held 0x5f later. The calibration sets
+more than this byte, or the stored calibration matters (a test had rewritten it on a warm
+board). Stronger than 0x5f (`?a=0x45`, +8 dB) works on beacons; untested whether the
+transmitter stays clean for fast data rates.
+
 **ESP32-C3 / S3.** Their radio libraries don't have these symbols: the fix isn't applied
 there and they haven't been measured.
 
-**Checking it.** `GET /api/debug/load` shows `"txLoop":0`, `"txGain":19`, and `txAnaGain`
-the same on every boot (ending in `5f` on the test board). `POST /api/debug/hotspot` switches a
+**Checking it.** `GET /api/debug/load` shows `"txLoop":0`, `"txGain":19`, `txAnaGain`
+ending in `5f` or lower (the analog gain in use) and `txAnaCal` (what this start calibrated:
+`75` on a warm start of the test board, `5f` cold). `POST /api/debug/hotspot` switches a
 timer on your WiFi to its hotspot until the next restart; then run
 `python tools/hotspot_signal.py 600 10` on a Windows PC with WiFi (it can stay on another
 network) and watch the level for 10 minutes. Windows' "Signal %" is smoothed and hides fading;
-the tool reads each beacon's dBm. `POST /api/debug/txgain?k=<gain>` sets another gain byte
-until the next WiFi start, to compare levels; without `k` it applies 19 again.
+the tool reads each beacon's dBm. `POST /api/debug/txgain?k=<gain>&a=<analog gain>` sets another gain byte and analog gain
+until the next WiFi start, to compare levels; without parameters it applies the held values
+again.
 
 ## Other hotspot fixes (v1.1.0 re-release)
 

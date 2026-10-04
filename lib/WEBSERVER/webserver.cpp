@@ -18,22 +18,38 @@ static HotspotDhcp hotspotDhcp;
 // and jumps back every few minutes. So the loop stays off (phy_set_most_tpw_disbg) and the
 // byte is set to TX_GAIN_BYTE and applied. The library clears the flag whenever it applies a
 // TX power (WiFi start, mode change): holdTxGain() runs again then.
+// The analog gain calibrated at the first WiFi start (cal_rf_ana_gain, from the same power
+// detector) depends on the board's temperature: a warm start (an update, a restart, a swapped
+// power bank) chose 0x75 instead of 0x5f, ~15 dB weaker. It is kept at TX_ANA_GAIN_WEAKEST or
+// stronger; a board that calibrates stronger keeps its own value.
 extern "C" uint8_t phy_set_most_tpw_disbg;
 extern "C" uint8_t chip7_sleep_params[];
+extern "C" uint32_t tx_rf_ana_gain;
 extern "C" uint32_t phy_enter_critical(void);
 extern "C" void phy_exit_critical(uint32_t);
 extern "C" void tx_gain_table_set(void);
-static void holdTxGain(int8_t gain = TX_GAIN_BYTE)
+uint8_t txAnaCalibrated = 0; // the start-up calibration's own analog gain (/api/debug/load)
+static bool txAnaKnown = false;
+// ana >= 0: that analog gain instead, until the next hold (/api/debug/txgain?a=, to compare levels)
+static void holdTxGain(int8_t gain = TX_GAIN_BYTE, int ana = -1)
 {
     phy_set_most_tpw_disbg = 1;
     uint32_t state = phy_enter_critical();
     chip7_sleep_params[184] = gain;
     chip7_sleep_params[185] = gain;
-    tx_gain_table_set();
+    if (!txAnaKnown)
+    {
+        txAnaCalibrated = tx_rf_ana_gain & 0xFF; // the first WiFi start has calibrated it
+        txAnaKnown = true;
+    }
+    if (ana < 0)
+        ana = min<uint8_t>(txAnaCalibrated, TX_ANA_GAIN_WEAKEST);
+    tx_rf_ana_gain = (tx_rf_ana_gain & ~0xFFu) | (uint8_t)ana;
+    tx_gain_table_set(); // applies the analog gain too (correct_rf_ana_gain_new)
     phy_exit_critical(state);
 }
 #else
-static void holdTxGain(int8_t gain = TX_GAIN_BYTE) { (void)gain; } // the other chips' radio libraries differ
+static void holdTxGain(int8_t gain = TX_GAIN_BYTE, int ana = -1) { (void)gain; (void)ana; } // the other chips' radio libraries differ
 #endif
 void logHotspotEvent(uint8_t type, const uint8_t *mac, uint32_t ip); // api.cpp (diagnostics)
 static IPAddress ipAddress;
@@ -188,7 +204,8 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
     }
     if (txGainRequest != TX_GAIN_NONE)
     {
-        holdTxGain(txGainRequest); // /api/debug/txgain
+        holdTxGain(txGainRequest, txAnaRequest); // /api/debug/txgain
+        txAnaRequest = -1;
         txGainRequest = TX_GAIN_NONE;
     }
     pageScanStep(currentTimeMs);

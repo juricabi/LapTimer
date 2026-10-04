@@ -76,12 +76,15 @@ extern "C" uint8_t phy_set_most_tpw_disbg; // see webserver.cpp, holdTxGain
 extern "C" uint8_t chip7_sleep_params[];
 static int txPowerLoopOn() { return phy_set_most_tpw_disbg ? 0 : 1; }
 static int txGainByte() { return (int8_t)chip7_sleep_params[184]; }
-extern "C" uint32_t tx_rf_ana_gain; // calibrated at the first WiFi start after boot
+extern "C" uint32_t tx_rf_ana_gain; // calibrated at the first WiFi start after boot, then held
 static uint32_t txAnaGain() { return tx_rf_ana_gain; }
+extern uint8_t txAnaCalibrated; // webserver.cpp, holdTxGain
+static uint8_t txAnaCal() { return txAnaCalibrated; }
 #else
 static int txPowerLoopOn() { return -1; } // not handled on this chip
 static int txGainByte() { return 0; }
 static uint32_t txAnaGain() { return 0; }
+static uint8_t txAnaCal() { return 0; }
 #endif
 
 static uint32_t paramU32(AsyncWebServerRequest *request, const char *name, uint32_t fallback)
@@ -256,19 +259,21 @@ void Webserver::registerApi()
         esp_wifi_get_protocol(WIFI_IF_STA, &protoSta);
         esp_wifi_get_bandwidth(WIFI_IF_AP, &bwAp);
         esp_wifi_get_ps(&ps);
-        char buf[320];
+        char buf[352];
         snprintf(buf, sizeof(buf),
                  "{\"samplesPerSec\":%u,\"core0RoundsPerSec\":%u,\"cpuMhz\":%u,"
                  "\"wifiMode\":%d,\"txPowerDbm\":%.2f,\"protoAp\":%u,\"protoSta\":%u,\"bwAp\":%d,\"ps\":%d,"
-                 "\"channel\":%d,\"apClients\":%d,\"txLoop\":%d,\"txGain\":%d,\"txAnaGain\":\"%08x\"}",
+                 "\"channel\":%d,\"apClients\":%d,\"txLoop\":%d,\"txGain\":%d,\"txAnaGain\":\"%08x\",\"txAnaCal\":\"%02x\"}",
                  timer->getSamplesPerSec(), core0RoundsPerSec, getCpuFrequencyMhz(),
-                 mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), txPowerLoopOn(), txGainByte(), txAnaGain());
+                 mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), txPowerLoopOn(), txGainByte(), txAnaGain(), txAnaCal());
         request->send(200, "application/json", buf); });
 
     // Diagnostics: apply the held transmit gain again, or another value (?k=, until the next
-    // WiFi start), to compare levels (/api/debug/load shows txGain)
+    // WiFi start), to compare levels (/api/debug/load shows txGain). ?a=<0-255> sets the analog
+    // gain byte too (higher = weaker; txAnaGain, its start-up calibration is txAnaCal)
     server.on("/api/debug/txgain", HTTP_POST, [this](AsyncWebServerRequest *request)
               {
+        txAnaRequest = request->hasParam("a") ? constrain(strtol(request->getParam("a")->value().c_str(), nullptr, 0), 0, 255) : -1;
         txGainRequest = request->hasParam("k") ? constrain(atoi(request->getParam("k")->value().c_str()), -60, 30) : TX_GAIN_BYTE;
         sendOk(request); });
 

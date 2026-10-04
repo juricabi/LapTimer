@@ -58,6 +58,12 @@ try:
           (rev0, answer))
     check("status has boot id, saved-pilot revision, rssi and laps",
           s0.get("boot", 0) > 0 and all(k in s0 for k in ("prof", "rssi", "laps", "fin")) and status()["boot"] == s0["boot"])
+    # transmitter held (classic ESP32, docs/hotspot.md): power loop off, gain byte 19, and the
+    # start-up analog gain never weaker than 0x5f (a warm start calibrates 0x75, ~15 dB weaker)
+    _, load = req("/api/debug/load")
+    ana = int(load.get("txAnaGain", "0"), 16) & 0xFF
+    check("transmitter held: power loop off, gain 19, analog gain 0x5f or stronger",
+          load.get("txLoop") == 0 and load.get("txGain") == 19 and ana <= 0x5F, load)
     _, graph = req("/api/rssi?since=0")
     check("RSSI history is one series", isinstance(graph.get("rssi"), list) and len(graph["rssi"]) > 0)
     raw = urllib.request.urlopen(BASE + "/config", timeout=5).read().decode()

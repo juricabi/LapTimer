@@ -25,6 +25,10 @@
 // above +19; 0 is its value after boot, about 4 dB weaker (measured)
 #define TX_GAIN_BYTE 19
 #define TX_GAIN_NONE -1000
+// weakest start-up analog gain kept (low byte of tx_rf_ana_gain, higher = weaker, ~0.5 dB a
+// step): the radio library's own value before calibrating. The owner's board keeps it when
+// started cold and calibrates 0x75 when started warm, ~15 dB weaker
+#define TX_ANA_GAIN_WEAKEST 0x5f
 
 class Webserver {
    public:
@@ -74,5 +78,6 @@ class Webserver {
     bool apPowerSave = false;
     volatile bool hotspotRequested = false; // /api/debug/hotspot, applied in handleWebUpdate
     volatile int txGainRequest = TX_GAIN_NONE; // /api/debug/txgain, applied in handleWebUpdate
+    volatile int txAnaRequest = -1;            // /api/debug/txgain?a=, stored before txGainRequest
 
 };
