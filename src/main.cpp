@@ -4,14 +4,8 @@
 #include "webserver.h"
 #include "wifilist.h"
 #include <ElegantOTA.h>
-#include <esp_sleep.h>
 
-// Radio calibration (classic ESP32, docs/hotspot.md: Stored calibration): the first WiFi start
-// after a reset calibrates the transmitter, and a warm board came out up to 12 dB weaker. A
-// start that wakes from deep sleep skips that and uses the calibration stored in flash
-// (esp_phy_load_cal_and_init), so every start first sleeps 1 ms. /api/debug/phyhop?on=0 starts
-// without it until a power cycle (diagnostics).
-RTC_NOINIT_ATTR uint32_t phyHopOff;
+#include "radiocal.h"
 
 static RX5808 rx(PIN_RX5808_RSSI, PIN_RX5808_DATA, PIN_RX5808_SELECT, PIN_RX5808_CLOCK);
 static Config config;
@@ -64,12 +58,7 @@ static void initParallelTask() {
 }
 
 void setup() {
-#if CONFIG_IDF_TARGET_ESP32
-    if (phyHopOff != PHY_HOP_OFF && esp_reset_reason() != ESP_RST_DEEPSLEEP) {
-        esp_sleep_enable_timer_wakeup(1000);
-        esp_deep_sleep_start();
-    }
-#endif
+    RadioCal::beginBoot(); // may restart through deep sleep: before anything else
     DEBUG_INIT;
     config.init();
     rx.init();

@@ -124,7 +124,8 @@ at every build (cached a day; keep new assets in its `ASSETS`).
   leftover headless Chrome with `taskkill /T`. Screenshots at 390 px: headless Chrome with
   `Emulation.setDeviceMetricsOverride` (a desktop window keeps its page zoom).
 - **On the timer**: `device_test.py` (API checks, cleans up after itself; its rename checks need
-  a saved race). `noise_races.py` records test races from RSSI noise (Enter/Exit just inside the
+  a saved race). `cal_test.py <port> <ip>` (the kept radio calibration: power-ons through the
+  serial port's RTS line). `noise_races.py` records test races from RSSI noise (Enter/Exit just inside the
   noise; `--one` one race, `--thresholds` tests Enter/Exit during a race); when every channel is
   too quiet it records nothing. Record races after the last web-files upload. With a drone:
   `rssi_log.py`. Radio: `hotspot_signal.py` (beacon dBm), `fake_dhcp.py`, `boot_log.py`.
@@ -146,12 +147,15 @@ at every build (cached a day; keep new assets in its `ASSETS`).
   loop off and sets gain byte 19, again after every WiFi start or mode change
   (`handleWebUpdate`). Trade-off: no temperature compensation. The start-up calibration
   depends on the board's temperature: a warm board calibrated up to 12 dB weaker (the RX5808
-  made no difference). So every start sleeps 1 ms first (`setup()`): waking from deep sleep,
-  the radio uses its calibration stored in flash. The analog gain is a code of libphy's table
-  (`TX_ANA_CODES`, the number says nothing about strength), held at 0x5f or stronger.
-  Check `/api/debug/load` (`txLoop` 0, `txGain` 19, `txAnaGain` ending in `7f`/`6f`/`5f`,
-  `rst` 8). Measurements and the dead ends tried: `docs/hotspot.md`. ESP32-C3/S3
-  not handled.
+  made no difference). So the calibration is kept at its best (`lib/RADIOCAL`): a power-on
+  calibrates in full, and the result replaces the best only if its analog gain code ranks
+  stronger (libphy's table, `RadioCal::rank`; the number says nothing about strength),
+  otherwise the best is put back and the timer restarts through deep sleep; every other start
+  sleeps 1 ms first and reuses the stored best (woken from deep sleep the library doesn't
+  calibrate). The gain in use is held at 0x5f or stronger. Check `/api/debug/load` (`txLoop`
+  0, `txGain` 19, `cal` reused/better/same/restored, `txAnaCal` = `calBest`);
+  `tools/cal_test.py <port> <ip>` forces each outcome. Measurements and the dead ends tried:
+  `docs/hotspot.md`. ESP32-C3/S3 not handled.
 - **Hotspot**: its own DHCP server (`lib/HOTSPOTDHCP`, unicast replies, leases kept across a
   restart, ARP check before handing out an address): the built-in one lost replies and handed
   out addresses in use (`docs/hotspot.md`). AP+STA mode so a network scan never restarts the

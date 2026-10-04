@@ -2,9 +2,9 @@
 #include <ArduinoJson.h>
 #include <AsyncJson.h>
 #include <esp_wifi.h>
-#include <esp_phy_init.h>
 
 #include "debug.h"
+#include "radiocal.h"
 #include "webserver.h"
 
 extern AsyncWebServer server;
@@ -72,7 +72,6 @@ void logHotspotEvent(uint8_t type, const uint8_t *mac, uint32_t ip)
     logApEvent(type, mac, ip);
 }
 extern volatile uint32_t core0RoundsPerSec;
-extern uint32_t phyHopOff; // main.cpp: start without deep sleep (diagnostics)
 #if CONFIG_IDF_TARGET_ESP32
 extern "C" uint8_t phy_set_most_tpw_disbg; // see webserver.cpp, holdTxGain
 extern "C" uint8_t chip7_sleep_params[];
@@ -80,14 +79,12 @@ static int txPowerLoopOn() { return phy_set_most_tpw_disbg ? 0 : 1; }
 static int txGainByte() { return (int8_t)chip7_sleep_params[184]; }
 extern "C" uint32_t tx_rf_ana_gain; // calibrated at the first WiFi start after boot, then held
 static uint32_t txAnaGain() { return tx_rf_ana_gain; }
-extern uint8_t txAnaCalibrated; // webserver.cpp, holdTxGain
-static uint8_t txAnaCal() { return txAnaCalibrated; }
 #else
 static int txPowerLoopOn() { return -1; } // not handled on this chip
 static int txGainByte() { return 0; }
 static uint32_t txAnaGain() { return 0; }
-static uint8_t txAnaCal() { return 0; }
 #endif
+extern uint8_t txAnaCalibrated; // webserver.cpp, holdTxGain
 
 static uint32_t paramU32(AsyncWebServerRequest *request, const char *name, uint32_t fallback)
 {
@@ -261,23 +258,23 @@ void Webserver::registerApi()
         esp_wifi_get_protocol(WIFI_IF_STA, &protoSta);
         esp_wifi_get_bandwidth(WIFI_IF_AP, &bwAp);
         esp_wifi_get_ps(&ps);
-        char buf[384];
+        char buf[416];
         snprintf(buf, sizeof(buf),
                  "{\"samplesPerSec\":%u,\"core0RoundsPerSec\":%u,\"cpuMhz\":%u,"
                  "\"wifiMode\":%d,\"txPowerDbm\":%.2f,\"protoAp\":%u,\"protoSta\":%u,\"bwAp\":%d,\"ps\":%d,"
-                 "\"channel\":%d,\"apClients\":%d,\"txLoop\":%d,\"txGain\":%d,\"txAnaGain\":\"%08x\",\"txAnaCal\":\"%02x\",\"rst\":%d}",
+                 "\"channel\":%d,\"apClients\":%d,\"txLoop\":%d,\"txGain\":%d,\"txAnaGain\":\"%08x\",\"txAnaCal\":\"%02x\",\"calBest\":\"%02x\",\"cal\":\"%s\",\"rst\":%d}",
                  timer->getSamplesPerSec(), core0RoundsPerSec, getCpuFrequencyMhz(),
-                 mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), txPowerLoopOn(), txGainByte(), txAnaGain(), txAnaCal(), (int)esp_reset_reason());
+                 mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), txPowerLoopOn(), txGainByte(), txAnaGain(), txAnaCalibrated, RadioCal::bestCode(), RadioCal::lastEvent(), (int)esp_reset_reason());
         request->send(200, "application/json", buf); });
 
     // Diagnostics: apply the held transmit gain again, or another value (?k=, until the next
     // WiFi start), to compare levels (/api/debug/load shows txGain). ?a=<code> sets the analog
-    // gain too, one of the calibration's codes (webserver.cpp, TX_ANA_CODES; txAnaGain, its
-    // start-up calibration is txAnaCal)
+    // gain too, one of the calibration's codes (lib/RADIOCAL; txAnaGain, its start-up
+    // calibration is txAnaCal)
     server.on("/api/debug/txgain", HTTP_POST, [this](AsyncWebServerRequest *request)
               {
         int ana = request->hasParam("a") ? strtol(request->getParam("a")->value().c_str(), nullptr, 0) : -1;
-        if (request->hasParam("a") && !isTxAnaCode(ana))
+        if (request->hasParam("a") && !RadioCal::isCode(ana))
         {
             request->send(400, "application/json", "{\"status\":\"a: not a calibration code\"}");
             return;
@@ -286,13 +283,15 @@ void Webserver::registerApi()
         txGainRequest = request->hasParam("k") ? constrain(atoi(request->getParam("k")->value().c_str()), -60, 30) : TX_GAIN_BYTE;
         sendOk(request); });
 
-    // Diagnostics: ?on=0 makes the next starts (until a power cycle) calibrate the radio instead
-    // of using the stored calibration (main.cpp, phyHopOff), to compare. phyerase: the next
-    // start calibrates from scratch and stores that for good, so only on a cold timer
-    // (docs/hotspot.md: Stored calibration); not during a race (409 racing): it writes flash
+    // Diagnostics for the kept radio calibration (lib/RADIOCAL). phyhop?on=0: the next starts
+    // (until a power cycle) calibrate as the library does, to compare. phyerase: forget the
+    // stored calibration and the best; the next start calibrates and keeps its result.
+    // calbest?code=: only the recorded code of the best, to force the next power-on's outcome
+    // (0x00: the new calibration wins, 0x7f: the best is put back). The two writes to flash are
+    // refused during a race (409 racing).
     server.on("/api/debug/phyhop", HTTP_POST, [this](AsyncWebServerRequest *request)
               {
-        phyHopOff = paramU32(request, "on", 1) ? 0 : PHY_HOP_OFF;
+        RadioCal::setHop(paramU32(request, "on", 1) != 0);
         sendOk(request); });
     server.on("/api/debug/phyerase", HTTP_POST, [this](AsyncWebServerRequest *request)
               {
@@ -301,8 +300,23 @@ void Webserver::registerApi()
             request->send(409, "application/json", "{\"status\":\"racing\"}");
             return;
         }
-        esp_err_t err = esp_phy_erase_cal_data_in_nvs();
-        request->send(200, "application/json", String("{\"status\":\"OK\",\"err\":") + (int)err + "}"); });
+        bool ok = RadioCal::forget();
+        request->send(ok ? 200 : 500, "application/json", ok ? "{\"status\":\"OK\"}" : "{\"status\":\"failed\"}"); });
+    server.on("/api/debug/calbest", HTTP_POST, [this](AsyncWebServerRequest *request)
+              {
+        if (timer->isRacing())
+        {
+            request->send(409, "application/json", "{\"status\":\"racing\"}");
+            return;
+        }
+        int code = request->hasParam("code") ? strtol(request->getParam("code")->value().c_str(), nullptr, 0) : -1;
+        if (!RadioCal::isCode(code))
+        {
+            request->send(400, "application/json", "{\"status\":\"code: not a calibration code\"}");
+            return;
+        }
+        bool ok = RadioCal::setBestCode(code);
+        request->send(ok ? 200 : 409, "application/json", ok ? "{\"status\":\"OK\"}" : "{\"status\":\"no best kept yet\"}"); });
 
     // Diagnostics: switch to the timer's own hotspot until the next restart (saved networks stay).
     // bw=20|40 and ps=0|1 override its channel width and power save, for comparisons.

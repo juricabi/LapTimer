@@ -65,9 +65,11 @@ try:
     ana = int(load.get("txAnaGain", "0"), 16) & 0xFF
     check("transmitter held: power loop off, gain 19, analog gain 0x5f or stronger",
           load.get("txLoop") == 0 and load.get("txGain") == 19 and ana in (0x7F, 0x6F, 0x5F), load)
-    # every start goes through 1 ms of deep sleep, so the radio uses its stored calibration
-    # instead of calibrating again on a warm board (esp_reset_reason 8: woke from deep sleep)
-    check("this start used the stored radio calibration (woke from deep sleep)", load.get("rst") == 8, load.get("rst"))
+    # the calibration is kept at its best (lib/RADIOCAL): this start reused the best, made a new
+    # one, or calibrated the same; either way the calibration in use is the best kept
+    check("radio calibration kept at its best: known outcome, in use = best",
+          load.get("cal") in ("reused", "restored", "adopted", "better", "same") and load.get("txAnaCal") == load.get("calBest"),
+          (load.get("cal"), load.get("txAnaCal"), load.get("calBest")))
     _, graph = req("/api/rssi?since=0")
     check("RSSI history is one series", isinstance(graph.get("rssi"), list) and len(graph["rssi"]) > 0)
     raw = urllib.request.urlopen(BASE + "/config", timeout=5).read().decode()

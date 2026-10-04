@@ -430,7 +430,7 @@ class H(SimpleHTTPRequestHandler):
             if u.path == "/api/debug/load":
                 return self._json({"samplesPerSec": 8400, "core0RoundsPerSec": 100000, "cpuMhz": 240, "wifiMode": 1,
                                    "txPowerDbm": 19.5, "protoAp": 7, "protoSta": 7, "bwAp": 2, "ps": 1, "channel": 1,
-                                   "apClients": 0, "txLoop": 0, "txGain": 19, "txAnaGain": "0120005f", "txAnaCal": "5f", "rst": 8})
+                                   "apClients": 0, "txLoop": 0, "txGain": 19, "txAnaGain": "0120005f", "txAnaCal": "5f", "calBest": "5f", "cal": "reused", "rst": 8})
             if u.path == "/api/debug/aplog":
                 return self._json({"now": now_ms(), "events": []})
             if u.path == "/ota/start":  # update.html / ElegantOTA: a GET, then POST /ota/upload

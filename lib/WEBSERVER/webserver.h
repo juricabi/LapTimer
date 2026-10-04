@@ -6,7 +6,7 @@
 #include "laptimer.h"
 #include "wifilist.h"
 
-#define FIRMWARE_VERSION "1.2.1"
+#define FIRMWARE_VERSION "1.2.2"
 
 #define WIFI_CONNECTION_TIMEOUT_MS 60000
 #define WIFI_UNSEEN_TIMEOUT_MS 20000  // joining a network the scan didn't see (hidden or starting up)
@@ -25,12 +25,10 @@
 // above +19; 0 is its value after boot, about 4 dB weaker (measured)
 #define TX_GAIN_BYTE 19
 #define TX_GAIN_NONE -1000
-// weakest start-up analog gain kept (low byte of tx_rf_ana_gain, a code of libphy's table:
-// webserver.cpp, TX_ANA_CODES): the radio library's own value before calibrating. The owner's
-// board keeps it when started cold and calibrates 0x75 (-8.5 dB) when started warm
+// weakest analog gain used (low byte of tx_rf_ana_gain, a code of libphy's table, ranked by
+// RadioCal::rank): the radio library's own value before calibrating. The owner's board keeps
+// it when started cold and calibrates 0x75 (-8.5 dB) when started warm
 #define TX_ANA_GAIN_WEAKEST 0x5f
-bool isTxAnaCode(int code); // one of the codes the radio library's calibration uses
-#define PHY_HOP_OFF 0x50484F46 // main.cpp, phyHopOff: start without deep sleep (diagnostics)
 
 class Webserver {
    public:

@@ -74,9 +74,11 @@ than the receiver (see "Warm starts and the stored calibration" below).
    library's start value 0 is about 4 dB weaker. The library clears the flag whenever it
    applies a transmit power (WiFi start, mode change); the web server then holds the gain
    again.
-3. Every start first sleeps 1 ms (`setup()` in `src/main.cpp`): a start that wakes from deep
-   sleep uses the radio calibration stored in flash instead of calibrating again, which a warm
-   board did up to 12 dB weaker (below).
+3. The calibration is kept at its best (`lib/RADIOCAL`, below): a power-on calibrates in full
+   and the result is kept only if it ranks stronger than the best so far, otherwise the best is
+   put back; every other start first sleeps 1 ms, because a start that wakes from deep sleep
+   uses the stored calibration instead of calibrating again, which a warm board did up to
+   12 dB weaker.
 4. The analog gain is kept at 0x5f or stronger (`TX_ANA_GAIN_WEAKEST`, also in `holdTxGain`).
 
 Result on 5800 MHz: beacons at -54 to -62 dBm at 1-2 m, steady, the same after a short or a
@@ -133,13 +135,9 @@ The fastest data rate (72.2 Mbps) and no ping loss in all of them; device test 4
 starts clean (`boot_log.py --reset`); the time until a PC is back on the hotspot is the same
 (18-23 s, the PC's own reconnect).
 
-- The calibration is stored once: at the first start with none in flash (a new board, a full
-  erase, or a failed checksum), as a full calibration. A board is usually cold then. To redo
-  it: `POST /api/debug/phyerase`, unplug, let the timer cool (20 min), power it again. A full
-  calibration on a hot board stored 0x75 and -71 to -80 dBm.
 - Trade-off: the start-up calibration no longer follows the temperature (on this board it went
-  the wrong way). `POST /api/debug/phyhop?on=0` makes the next starts calibrate as before,
-  until a power cycle, to compare.
+  the wrong way). `POST /api/debug/phyhop?on=0` makes the next starts calibrate as the library
+  does, until a power cycle, to compare.
 - Codes outside the table (0x45 tried first: +10 dB on beacons) make the library look up a
   gain it doesn't have and compute from a register that was never set: `/api/debug/txgain`
   refuses them.
@@ -147,9 +145,31 @@ starts clean (`boot_log.py --reset`); the time until a PC is back on the hotspot
 **ESP32-C3 / S3.** Their radio libraries don't have these symbols: the fix isn't applied
 there and they haven't been measured.
 
+**Kept at its best (2026-10-05, v1.2.2).** In v1.2.1 which calibration got stored was chance:
+the first start with none in flash, cold or warm (a library experiment stored a warm one, and
+v1.2.1 reused it at -70 dBm until a cold start redid it by hand). Now the firmware keeps the
+best (`lib/RADIOCAL`). The analog gain code a calibration picks comes from the same
+power-detector measurement as the rest of it, so it ranks calibrations (table above). At a
+power-on the stored calibration is erased first, so the library calibrates in full and stores
+the result itself; the firmware compares the code with the best kept (NVS namespace `phybest`,
+the library's three entries copied as they are, never interpreted): stronger becomes the best,
+weaker is replaced by the best (copied back) and the timer restarts through deep sleep (about
+2 s), the same code changes nothing. Every other start (restart, update, watchdog) sleeps 1 ms
+first and reuses the stored best. So the first cold power-on sets a strong best by itself and
+it only ever gets better. `POST /api/debug/phyerase` forgets both; the next start calibrates
+and keeps its result.
+
+`tools/cal_test.py <port> <host>` forces both outcomes on a warm board: the recorded code of
+the best set to 0x00 and to 0x7f (`/api/debug/calbest`), a power-on through the serial port's
+RTS line each time ("better", then "restored" with reset reason 8), a plain power-on, a
+restart ("reused").
+
 **Checking it.** `GET /api/debug/load` shows `"txLoop":0`, `"txGain":19`, `txAnaGain` ending
-in `7f`, `6f` or `5f` (the analog gain in use), `txAnaCal` (this start's own: the stored one,
-`5a` on the test board) and `"rst":8` (woke from deep sleep: stored calibration). `POST /api/debug/hotspot` switches a
+in `7f`, `6f` or `5f` (the analog gain in use), `txAnaCal` (the code this start calibrated or
+loaded), `calBest` (the best's code; the two are equal after every start) and `cal`, what this
+start did: `reused` (the best, without calibrating), `restored` (calibrated weaker, the best put
+back), `adopted` (the first best), `better` (a new best), `same`; `plain` with `phyhop?on=0`,
+`none` on other chips. `POST /api/debug/hotspot` switches a
 timer on your WiFi to its hotspot until the next restart; then run
 `python tools/hotspot_signal.py 600 10` on a Windows PC with WiFi (it can stay on another
 network) and watch the level for 10 minutes. Windows' "Signal %" is smoothed and hides fading;
