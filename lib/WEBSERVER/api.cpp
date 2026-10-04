@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <AsyncJson.h>
 #include <esp_wifi.h>
+#include <esp_phy_init.h>
 
 #include "debug.h"
 #include "webserver.h"
@@ -71,6 +72,7 @@ void logHotspotEvent(uint8_t type, const uint8_t *mac, uint32_t ip)
     logApEvent(type, mac, ip);
 }
 extern volatile uint32_t core0RoundsPerSec;
+extern uint32_t phyHopOff; // main.cpp: start without deep sleep (diagnostics)
 #if CONFIG_IDF_TARGET_ESP32
 extern "C" uint8_t phy_set_most_tpw_disbg; // see webserver.cpp, holdTxGain
 extern "C" uint8_t chip7_sleep_params[];
@@ -259,23 +261,48 @@ void Webserver::registerApi()
         esp_wifi_get_protocol(WIFI_IF_STA, &protoSta);
         esp_wifi_get_bandwidth(WIFI_IF_AP, &bwAp);
         esp_wifi_get_ps(&ps);
-        char buf[352];
+        char buf[384];
         snprintf(buf, sizeof(buf),
                  "{\"samplesPerSec\":%u,\"core0RoundsPerSec\":%u,\"cpuMhz\":%u,"
                  "\"wifiMode\":%d,\"txPowerDbm\":%.2f,\"protoAp\":%u,\"protoSta\":%u,\"bwAp\":%d,\"ps\":%d,"
-                 "\"channel\":%d,\"apClients\":%d,\"txLoop\":%d,\"txGain\":%d,\"txAnaGain\":\"%08x\",\"txAnaCal\":\"%02x\"}",
+                 "\"channel\":%d,\"apClients\":%d,\"txLoop\":%d,\"txGain\":%d,\"txAnaGain\":\"%08x\",\"txAnaCal\":\"%02x\",\"rst\":%d}",
                  timer->getSamplesPerSec(), core0RoundsPerSec, getCpuFrequencyMhz(),
-                 mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), txPowerLoopOn(), txGainByte(), txAnaGain(), txAnaCal());
+                 mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), txPowerLoopOn(), txGainByte(), txAnaGain(), txAnaCal(), (int)esp_reset_reason());
         request->send(200, "application/json", buf); });
 
     // Diagnostics: apply the held transmit gain again, or another value (?k=, until the next
-    // WiFi start), to compare levels (/api/debug/load shows txGain). ?a=<0-255> sets the analog
-    // gain byte too (higher = weaker; txAnaGain, its start-up calibration is txAnaCal)
+    // WiFi start), to compare levels (/api/debug/load shows txGain). ?a=<code> sets the analog
+    // gain too, one of the calibration's codes (webserver.cpp, TX_ANA_CODES; txAnaGain, its
+    // start-up calibration is txAnaCal)
     server.on("/api/debug/txgain", HTTP_POST, [this](AsyncWebServerRequest *request)
               {
-        txAnaRequest = request->hasParam("a") ? constrain(strtol(request->getParam("a")->value().c_str(), nullptr, 0), 0, 255) : -1;
+        int ana = request->hasParam("a") ? strtol(request->getParam("a")->value().c_str(), nullptr, 0) : -1;
+        if (request->hasParam("a") && !isTxAnaCode(ana))
+        {
+            request->send(400, "application/json", "{\"status\":\"a: not a calibration code\"}");
+            return;
+        }
+        txAnaRequest = ana;
         txGainRequest = request->hasParam("k") ? constrain(atoi(request->getParam("k")->value().c_str()), -60, 30) : TX_GAIN_BYTE;
         sendOk(request); });
+
+    // Diagnostics: ?on=0 makes the next starts (until a power cycle) calibrate the radio instead
+    // of using the stored calibration (main.cpp, phyHopOff), to compare. phyerase: the next
+    // start calibrates from scratch and stores that for good, so only on a cold timer
+    // (docs/hotspot.md: Stored calibration); not during a race (409 racing): it writes flash
+    server.on("/api/debug/phyhop", HTTP_POST, [this](AsyncWebServerRequest *request)
+              {
+        phyHopOff = paramU32(request, "on", 1) ? 0 : PHY_HOP_OFF;
+        sendOk(request); });
+    server.on("/api/debug/phyerase", HTTP_POST, [this](AsyncWebServerRequest *request)
+              {
+        if (timer->isRacing())
+        {
+            request->send(409, "application/json", "{\"status\":\"racing\"}");
+            return;
+        }
+        esp_err_t err = esp_phy_erase_cal_data_in_nvs();
+        request->send(200, "application/json", String("{\"status\":\"OK\",\"err\":") + (int)err + "}"); });
 
     // Diagnostics: switch to the timer's own hotspot until the next restart (saved networks stay).
     // bw=20|40 and ps=0|1 override its channel width and power save, for comparisons.

@@ -59,11 +59,15 @@ try:
     check("status has boot id, saved-pilot revision, rssi and laps",
           s0.get("boot", 0) > 0 and all(k in s0 for k in ("prof", "rssi", "laps", "fin")) and status()["boot"] == s0["boot"])
     # transmitter held (classic ESP32, docs/hotspot.md): power loop off, gain byte 19, and the
-    # start-up analog gain never weaker than 0x5f (a warm start calibrates 0x75, ~15 dB weaker)
+    # start-up analog gain never weaker than 0x5f: a code of libphy's table, where the number
+    # says nothing about strength (0x7f +2.5 dB, 0x6f +1.25, 0x5f 0, 0x5a -4.5, 0x75 -8.5)
     _, load = req("/api/debug/load")
     ana = int(load.get("txAnaGain", "0"), 16) & 0xFF
     check("transmitter held: power loop off, gain 19, analog gain 0x5f or stronger",
-          load.get("txLoop") == 0 and load.get("txGain") == 19 and ana <= 0x5F, load)
+          load.get("txLoop") == 0 and load.get("txGain") == 19 and ana in (0x7F, 0x6F, 0x5F), load)
+    # every start goes through 1 ms of deep sleep, so the radio uses its stored calibration
+    # instead of calibrating again on a warm board (esp_reset_reason 8: woke from deep sleep)
+    check("this start used the stored radio calibration (woke from deep sleep)", load.get("rst") == 8, load.get("rst"))
     _, graph = req("/api/rssi?since=0")
     check("RSSI history is one series", isinstance(graph.get("rssi"), list) and len(graph["rssi"]) > 0)
     raw = urllib.request.urlopen(BASE + "/config", timeout=5).read().decode()
@@ -157,6 +161,10 @@ try:
     check("saved pilots refused while racing (flash write)", st == 409, st)
     st, _ = req("/api/races/rename", {"id": 1, "name": "During the race"})
     check("race rename refused while racing (flash write)", st == 409, st)
+    # only against a firmware that has the guard: on one without, this erases the stored radio
+    # calibration and the next start stores a new one, weaker if the board is warm
+    st, _ = req("/api/debug/phyerase", {})
+    check("radio calibration erase refused while racing (flash write)", st == 409, st)
     boot0 = status()["boot"]
     st, _ = req("/restart", {})
     time.sleep(1.5)

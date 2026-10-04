@@ -144,11 +144,13 @@ at every build (cached a day; keep new assets in its `ASSETS`).
   loop and the first WiFi calibration, so the hotspot faded away every few minutes. Fix: the
   receiver stays untuned until WiFi has started (`enableReceiver()`), and `holdTxGain` turns the
   loop off and sets gain byte 19, again after every WiFi start or mode change
-  (`handleWebUpdate`). Trade-off: no temperature compensation. The analog gain from the
-  start-up calibration depends on the board's temperature (cold 0x5f, warm 0x75, ~15 dB
-  weaker; the RX5808 made no difference): held at 0x5f or stronger (`TX_ANA_GAIN_WEAKEST`).
-  Check `/api/debug/load` (`txLoop` 0, `txGain` 19, `txAnaGain` ending ≤ `5f`, `txAnaCal`
-  the start's own). Measurements and the dead ends tried: `docs/hotspot.md`. ESP32-C3/S3
+  (`handleWebUpdate`). Trade-off: no temperature compensation. The start-up calibration
+  depends on the board's temperature: a warm board calibrated up to 12 dB weaker (the RX5808
+  made no difference). So every start sleeps 1 ms first (`setup()`): waking from deep sleep,
+  the radio uses its calibration stored in flash. The analog gain is a code of libphy's table
+  (`TX_ANA_CODES`, the number says nothing about strength), held at 0x5f or stronger.
+  Check `/api/debug/load` (`txLoop` 0, `txGain` 19, `txAnaGain` ending in `7f`/`6f`/`5f`,
+  `rst` 8). Measurements and the dead ends tried: `docs/hotspot.md`. ESP32-C3/S3
   not handled.
 - **Hotspot**: its own DHCP server (`lib/HOTSPOTDHCP`, unicast replies, leases kept across a
   restart, ARP check before handing out an address): the built-in one lost replies and handed

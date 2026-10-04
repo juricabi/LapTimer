@@ -20,14 +20,28 @@ static HotspotDhcp hotspotDhcp;
 // TX power (WiFi start, mode change): holdTxGain() runs again then.
 // The analog gain calibrated at the first WiFi start (cal_rf_ana_gain, from the same power
 // detector) depends on the board's temperature: a warm start (an update, a restart, a swapped
-// power bank) chose 0x75 instead of 0x5f, ~15 dB weaker. It is kept at TX_ANA_GAIN_WEAKEST or
-// stronger; a board that calibrates stronger keeps its own value.
+// power bank) chose 0x75 instead of 0x5f. It is kept at TX_ANA_GAIN_WEAKEST or stronger; a
+// board that calibrates stronger keeps its own value.
 extern "C" uint8_t phy_set_most_tpw_disbg;
 extern "C" uint8_t chip7_sleep_params[];
 extern "C" uint32_t tx_rf_ana_gain;
 extern "C" uint32_t phy_enter_critical(void);
 extern "C" void phy_exit_critical(uint32_t);
 extern "C" void tx_gain_table_set(void);
+// The analog gain codes the calibration chooses from, strongest first (libphy's table in
+// correct_rf_ana_gain_new; ~0.25 dB steps relative to 0x5f: +10 +5 0 -8 -18 -25 -34 -44 -55 -65
+// -71 -84 -96 -113 -127 -151). The number says nothing about strength (0x5a is weaker than
+// 0x5f), and a code outside the table makes the library compute from an unset value.
+static const uint8_t TX_ANA_CODES[] = {0x7f, 0x6f, 0x5f, 0x7a, 0x5a, 0x69, 0x75, 0x55,
+                                       0x74, 0x54, 0x44, 0x60, 0x40, 0x20, 0x10, 0x00};
+static int txAnaRank(int code) // its place in TX_ANA_CODES, -1 if it isn't one
+{
+    for (size_t i = 0; i < sizeof(TX_ANA_CODES); i++)
+        if (TX_ANA_CODES[i] == code)
+            return i;
+    return -1;
+}
+bool isTxAnaCode(int code) { return txAnaRank(code) >= 0; }
 uint8_t txAnaCalibrated = 0; // the start-up calibration's own analog gain (/api/debug/load)
 static bool txAnaKnown = false;
 // ana >= 0: that analog gain instead, until the next hold (/api/debug/txgain?a=, to compare levels)
@@ -43,13 +57,17 @@ static void holdTxGain(int8_t gain = TX_GAIN_BYTE, int ana = -1)
         txAnaKnown = true;
     }
     if (ana < 0)
-        ana = min<uint8_t>(txAnaCalibrated, TX_ANA_GAIN_WEAKEST);
+    {
+        int rank = txAnaRank(txAnaCalibrated);
+        ana = rank >= 0 && rank <= txAnaRank(TX_ANA_GAIN_WEAKEST) ? txAnaCalibrated : TX_ANA_GAIN_WEAKEST;
+    }
     tx_rf_ana_gain = (tx_rf_ana_gain & ~0xFFu) | (uint8_t)ana;
     tx_gain_table_set(); // applies the analog gain too (correct_rf_ana_gain_new)
     phy_exit_critical(state);
 }
 #else
 static void holdTxGain(int8_t gain = TX_GAIN_BYTE, int ana = -1) { (void)gain; (void)ana; } // the other chips' radio libraries differ
+bool isTxAnaCode(int code) { (void)code; return false; }
 #endif
 void logHotspotEvent(uint8_t type, const uint8_t *mac, uint32_t ip); // api.cpp (diagnostics)
 static IPAddress ipAddress;
