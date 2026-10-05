@@ -956,7 +956,7 @@ table tr.best-lap td:nth-child(2)::after {
 
 .pilot-freq {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 2fr 3fr; /* "Band F" is short, "Channel 4 · 5800" is not */
   gap: var(--space-2);
 }
 

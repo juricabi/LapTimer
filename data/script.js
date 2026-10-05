@@ -219,7 +219,18 @@ const updateRateLabel = bindRange(ui.rate, (v) => v.toFixed(1), (v) => (announce
 const updateAlarmLabel = bindRange(ui.alarm, (v) => (v == 0 ? "Off" : v.toFixed(1) + "v"));
 
 ui.pilotBand.innerHTML = BANDS.map((b, n) => `<option value="${n}">Band ${b}</option>`).join("");
-ui.pilotChannel.innerHTML = [1, 2, 3, 4, 5, 6, 7, 8].map((c) => `<option value="${c - 1}">Channel ${c}</option>`).join("");
+// The channel options carry the frequency of the band shown ("Channel 4 · 5800"; the pill
+// next to the name says MHz), so a pilot who knows the frequency finds it without a table;
+// built again whenever the band changes
+let channelOptionsBand = -1;
+function renderChannelOptions() {
+  const band = +ui.pilotBand.value;
+  if (band === channelOptionsBand) return;
+  channelOptionsBand = band;
+  ui.pilotChannel.innerHTML = FREQ_TABLE[band].map((f, c) => `<option value="${c}">Channel ${c + 1} · ${f}</option>`).join("");
+}
+ui.pilotBand.value = 4;
+renderChannelOptions();
 
 ui.pilotName.addEventListener("input", () => {
   const name = truncateUtf8(ui.pilotName.value, NAME_MAX_BYTES);
@@ -266,6 +277,7 @@ function renderPilot() {
   $("targetHint").textContent = TARGET_HINT;
   const bc = bandChannel(pilot.freq, +ui.pilotBand.value);
   ui.pilotBand.value = bc ? bc.band : 4;
+  renderChannelOptions(); // the frequencies of this band
   // no channel (a new timer has none): none shown, or the one shown couldn't be picked (no change)
   if (bc) ui.pilotChannel.value = bc.channel;
   else ui.pilotChannel.selectedIndex = -1;
@@ -899,11 +911,40 @@ function openTab(tab) {
 let status = null; // latest /api/status
 let statusAtMs = 0; // local time when it arrived
 // No answer from the timer for this long: the page says so (polls come every 250-600 ms and
-// give up after 4 s, so one slow answer doesn't count)
+// give up after 4 s, so one slow answer doesn't count). Counted from the last answer or from
+// the moment the page came back to the front: in the background the browser slows the polls
+// (Chrome: once a second, after 5 minutes once a minute), so the last answer is old when the
+// page returns, and "Offline" showed although the timer had answered every poll it got.
 const STATUS_LOST_MS = 5000;
+let visibleAtMs = 0; // the page came back to the front (visibilitychange)
 
 function connectionLost() {
-  return !!status && Date.now() - statusAtMs > STATUS_LOST_MS;
+  return !!status && Date.now() - Math.max(statusAtMs, visibleAtMs) > STATUS_LOST_MS;
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  visibleAtMs = Date.now();
+  renderConnection(); // an "Offline" from the background goes at once; the next poll answers in a moment
+});
+
+// Connection gaps, to find out why "Offline" shows (Setup → Timer): when each began, how long
+// it lasted, whether the page was in front, and what the polls reported meanwhile
+const connGaps = [];
+let gapBeganAt = 0;
+let gapHidden = false;
+let gapFailures = 0;
+let gapLastError = "";
+function notePollFailure(err) {
+  gapFailures++;
+  gapLastError = err && err.name === "AbortError" ? "gave up after 4 s" : "connection failed";
+}
+function renderGaps() {
+  const shown = connGaps.slice(-3).map((g) => {
+    const at = new Date(g.at).toTimeString().slice(0, 8);
+    return `${at} · ${Math.max(1, Math.round(g.ms / 1000))} s · page in ${g.hidden ? "background" : "front"} · ${g.fails} ${g.fails === 1 ? "poll" : "polls"} ${g.err || "failed"}`;
+  });
+  const more = connGaps.length - shown.length;
+  $("infoGaps").textContent = shown.length ? shown.join("\n") + (more ? `\n(+${more} earlier)` : "") : "none since the page opened";
 }
 
 // The battery chip in the top bar shows "Offline" while the timer can't be reached
@@ -912,6 +953,15 @@ function renderConnection() {
   const lost = connectionLost();
   if (lost === shownLost) return;
   shownLost = lost;
+  if (lost) {
+    gapBeganAt = statusAtMs; // the silence began at the last answer
+    gapHidden = document.hidden;
+  } else {
+    connGaps.push({ at: gapBeganAt, ms: Date.now() - gapBeganAt, hidden: gapHidden || document.hidden, fails: gapFailures, err: gapLastError });
+    gapFailures = 0;
+    gapLastError = "";
+    renderGaps();
+  }
   const chip = $("bvolt");
   chip.classList.toggle("chip-offline", lost);
   chip.title = lost ? "No connection to the timer" : "Battery voltage";
@@ -961,7 +1011,10 @@ function pollStatus() {
   const fast = currentTab === "race" || currentTab === "calib" || !$("raceScreen").hidden;
   fetchJson("/api/status")
     .then(handleStatus)
-    .catch((err) => console.debug("/api/status failed:", err))
+    .catch((err) => {
+      notePollFailure(err);
+      console.debug("/api/status failed:", err);
+    })
     .finally(() => setTimeout(pollStatus, fast ? 250 : 600));
 }
 

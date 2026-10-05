@@ -302,11 +302,17 @@ PAGE_TEST.setup = async (T) => {
   T.check("a named pilot is remembered as a saved pilot", goose && goose.freq === 5800, goose);
   T.check("its chip is the active one", T.$$("#savedPilots .chip-pilot.active").map((c) => c.textContent).join().startsWith("Goose"));
 
+  // the channel options carry the frequencies of the band shown (F now: Goose flies F4)
+  const channelOptions = () => [...T.$("#pilotChannel").options].map((o) => o.textContent);
+  T.check("channel options show the band's frequencies (F: Channel 4 · 5800)",
+    channelOptions()[3] === "Channel 4 · 5800" && channelOptions()[7] === "Channel 8 · 5880", channelOptions());
   // band and channel: 5880 is F8 and R7; the band shown stays
   T.setValue("#pilotBand", "4");
   T.setValue("#pilotChannel", "6");
   await T.saved();
   T.check("R7 picked: 5880 MHz saved", (await T.config()).freq === 5880 && T.text("#pilotFreq") === "5880", T.text("#pilotFreq"));
+  T.check("after the band change the options show R's frequencies (Channel 7 · 5880)",
+    channelOptions()[6] === "Channel 7 · 5880" && channelOptions()[0] === "Channel 1 · 5658", channelOptions());
   await T.otherPhone({ minLap: 55 }); // a reload of the settings from another phone
   await T.until(() => T.$("#minLap").value === "5.5");
   T.check("after a reload 5880 still shows as R7 (not F8)", T.$("#pilotBand").value === "4" && T.$("#pilotChannel").value === "6",
@@ -1466,7 +1472,23 @@ PAGE_TEST.connection = async (T) => {
   await T.tab("race");
   T.check("back: status and battery again", await T.until(() => T.text("#raceStatus") === "Ready" && T.text("#bvolt") === "4.1V", 5000) &&
     !T.$("#bvolt").classList.contains("chip-offline"));
+  T.check("the gap is logged in Setup → Timer: when, how long, page in front, what the polls reported",
+    /^\d\d:\d\d:\d\d · \d+ s · page in front · \d+ polls? (gave up after 4 s|connection failed)$/.test(T.text("#infoGaps")), T.text("#infoGaps"));
   T.check("back: the setting is saved by itself", await T.until(() => T.saveState() === "saved", 10000) && (await T.config()).countdown === true);
+  // back from the background: there the browser slows the polls, so the last answer is old
+  // when the page returns; that is not "Offline" (it showed, for a moment or more)
+  Object.defineProperty(T.w.document, "hidden", { get: () => true, configurable: true });
+  T.w.document.dispatchEvent(new T.w.Event("visibilitychange"));
+  await T.mock("offline?on=1"); // no answers while "in the background"
+  await T.sleep(6000);
+  await T.mock("offline?on=0");
+  Object.defineProperty(T.w.document, "hidden", { get: () => false, configurable: true });
+  T.w.document.dispatchEvent(new T.w.Event("visibilitychange"));
+  T.check("back to the front after a pause: no 'Offline' for the stale answer",
+    T.text("#bvolt") !== "Offline" && T.text("#raceStatus") !== "No connection to the timer", [T.text("#bvolt"), T.text("#raceStatus")]);
+  delete T.w.document.hidden;
+  T.check("and the polls answer again", await T.until(() => T.text("#bvolt") === "4.1V" && T.text("#raceStatus") === "Ready", 5000),
+    [T.text("#bvolt"), T.text("#raceStatus")]);
   // offline during a race: the clock keeps running, the status says so, laps come back after
   await T.otherPhone({ countdown: false });
   await T.w.startRace();
