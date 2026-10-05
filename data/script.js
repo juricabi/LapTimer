@@ -867,10 +867,117 @@ $("forgetWifiButton").addEventListener("click", async (e) => {
   $("wifiForgotten").hidden = false;
 });
 
+// ── Internet name (DuckDNS): the timer sends its address when it is on a network with internet ──
+let ddnsRetry = null;
+let ddnsPoll = null;
+let ddnsState = null;
+let ddnsWatchUntil = 0; // after "Update now": the status is read again every second until then
+
+function agoText(s) {
+  if (s < 0) return "";
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.round(s / 60) + " min ago";
+  return Math.round(s / 3600) + " h ago";
+}
+
+function renderDdns(d) {
+  ddnsState = d;
+  const name = $("ddnsName");
+  if (document.activeElement !== name) name.value = d.name || "";
+  $("ddnsToken").placeholder = d.token ? "Token: set (hidden) · empty keeps it" : "Token from duckdns.org";
+  const host = d.name ? d.name + ".duckdns.org" : "";
+  const status = $("ddnsStatus");
+  status.textContent = "";
+  switch (d.state) {
+    case "off":
+      status.textContent = "Not set. Enter the name and the token from duckdns.org, then Save.";
+      break;
+    case "no-network":
+      status.textContent = `${host} · waits for a network with internet (the timer is on its own hotspot now).`;
+      break;
+    case "waiting":
+      status.textContent = `${host} · the address goes to DuckDNS in a moment.`;
+      break;
+    case "updating":
+      status.textContent = `${host} · sending the address…`;
+      break;
+    case "ok": {
+      // the address to open, as a link (a full-size tap target, like "Firmware update")
+      const link = el("a", "link-small", `http://${host}`);
+      link.href = `http://${host}`;
+      status.append(`${d.result || "updated"} ${agoText(d.okAgoS)} · ${d.ip} · `, link);
+      break;
+    }
+    default:
+      status.textContent = `${host} · ${d.result || "failed"} (${agoText(d.tryAgoS)}) · tries again by itself.`;
+  }
+  clearTimeout(ddnsPoll);
+  const watching = Date.now() < ddnsWatchUntil;
+  if (d.state === "updating" || d.state === "waiting" || watching) ddnsPoll = setTimeout(loadDdns, watching ? 1000 : 2000);
+}
+
+async function loadDdns() {
+  clearTimeout(ddnsRetry);
+  try {
+    renderDdns(await fetchJson("/api/ddns"));
+  } catch (e) {
+    ddnsRetry = retryUnanswered(e, loadDdns); // a 404: older firmware without it
+  }
+}
+
+// the name as DuckDNS shows it: lower case, ".duckdns.org" and "http://" dropped
+function ddnsNameOf(text) {
+  let s = text.trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0].trim();
+  if (s.endsWith(".duckdns.org")) s = s.slice(0, -".duckdns.org".length);
+  return s;
+}
+
+$("ddnsSaveButton").addEventListener("click", async (e) => {
+  const button = e.target;
+  const name = ddnsNameOf($("ddnsName").value);
+  const token = $("ddnsToken").value.replace(/\s/g, "").toLowerCase();
+  if (name && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) {
+    showButtonStatus(button, "Name: letters, digits and - (as on duckdns.org)");
+    return;
+  }
+  if (token && !/^[0-9a-f-]{20,64}$/.test(token)) {
+    showButtonStatus(button, "Token: the one shown on duckdns.org");
+    return;
+  }
+  if (name && !token && !(ddnsState && ddnsState.token)) {
+    showButtonStatus(button, "Enter the token from duckdns.org");
+    return;
+  }
+  if (!name && !confirm("Remove the internet name and its token from the timer?")) return;
+  try {
+    await postJson("/api/ddns/save", { name, token });
+    $("ddnsToken").value = "";
+    showButtonStatus(button, name ? "Saved ✓" : "Removed", 3000);
+    loadDdns();
+  } catch (err) {
+    showButtonStatus(button, err.status === 409 ? "Not during a race" : err.status === 400 ? "Not accepted by the timer" : "Could not save");
+  }
+});
+
+$("ddnsUpdateButton").addEventListener("click", async (e) => {
+  const button = e.target;
+  try {
+    await postJson("/api/ddns/update");
+    showButtonStatus(button, "Sending…", 2000);
+    // said at once, and the status read every second until the outcome is there
+    $("ddnsStatus").textContent = `${ddnsState && ddnsState.name ? ddnsState.name + ".duckdns.org" : ""} · sending the address…`;
+    ddnsWatchUntil = Date.now() + 12000;
+    loadDdns();
+  } catch (err) {
+    showButtonStatus(button, err.status === 409 ? "Needs a network with internet" : err.status === 400 ? "Set a name first" : "No answer from the timer");
+  }
+});
+
 // ── Device info (firmware updates are on update.html) ──
 let infoRetry = null;
 async function loadInfo() {
   clearTimeout(infoRetry);
+  loadDdns(); // shown with the device info: at the start and after a restart
   try {
     const info = await fetchJson("/api/info");
     $("infoVersion").textContent = info.version;

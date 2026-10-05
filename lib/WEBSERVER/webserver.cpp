@@ -31,6 +31,7 @@ extern "C" uint32_t phy_enter_critical(void);
 extern "C" void phy_exit_critical(uint32_t);
 extern "C" void tx_gain_table_set(void);
 static bool txAnaKnown = false;
+static int heldAna = -1; // the analog gain last applied: the library may restore the calibrated one
 // ana >= 0: that analog gain instead, until the next hold (/api/debug/txgain?a=, to compare levels)
 static void holdTxGain(int8_t gain = TX_GAIN_BYTE, int ana = -1)
 {
@@ -49,6 +50,7 @@ static void holdTxGain(int8_t gain = TX_GAIN_BYTE, int ana = -1)
         ana = rank >= 0 && rank <= RadioCal::rank(TX_ANA_GAIN_WEAKEST) ? txAnaCalibrated : TX_ANA_GAIN_WEAKEST;
     }
     tx_rf_ana_gain = (tx_rf_ana_gain & ~0xFFu) | (uint8_t)ana;
+    heldAna = ana;
     tx_gain_table_set(); // applies the analog gain too (correct_rf_ana_gain_new)
     phy_exit_critical(state);
 }
@@ -67,10 +69,11 @@ static const char *wifi_ap_password = "laptimer";
 static const char *wifi_ap_address = "192.168.4.1";
 String wifi_ap_ssid;
 
-void Webserver::init(Config *config, LapTimer *lapTimer, RaceHistory *raceHistory, WifiList *networks, BatteryMonitor *batMonitor, Buzzer *buzzer, Led *l)
+void Webserver::init(Config *config, LapTimer *lapTimer, RaceHistory *raceHistory, WifiList *networks, BatteryMonitor *batMonitor, Buzzer *buzzer, Led *l, Ddns *internetName)
 {
     history = raceHistory;
     wifiList = networks;
+    ddns = internetName;
 
     ipAddress.fromString(wifi_ap_address);
 
@@ -215,8 +218,10 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
     }
     pageScanStep(currentTimeMs);
 #if CONFIG_IDF_TARGET_ESP32
-    if (wifiMode != WIFI_OFF && !phy_set_most_tpw_disbg)
-        holdTxGain(); // the library applied a TX power again, which let its loop run
+    // the library applied a TX power again (which let its loop run), or restored the
+    // calibrated analog gain (as a station waking from modem sleep did): hold again
+    if (wifiMode != WIFI_OFF && (!phy_set_most_tpw_disbg || (int)(tx_rf_ana_gain & 0xFF) != heldAna))
+        holdTxGain();
 #endif
 
     // Power-up scan for saved networks: join the strongest one in range, or use the hotspot
@@ -354,6 +359,9 @@ void Webserver::handleWebUpdate(uint32_t currentTimeMs)
             wifiMode = WIFI_STA;
             WiFi.setHostname(wifi_hostname); // hostname must be set before the mode is set to STA
             WiFi.mode(wifiMode);
+            // no modem sleep as a station either: the page's polls answer at once, and the
+            // sleep's wake-ups restored the calibrated analog gain over the held one
+            esp_wifi_set_ps(WIFI_PS_NONE);
             holdTxGain(); // fixed transmit gain (see its declaration)
             RadioCal::afterWifiStart(txAnaCalibrated); // keeps the best calibration; may restart
             timer->enableReceiver(); // the transmitter is calibrated now

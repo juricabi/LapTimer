@@ -211,6 +211,18 @@
       </div>
 
       <div class="card">
+        <h2>Internet name</h2>
+        <p class="hint">On a phone's hotspot the timer gets a different address every time, and Android can't find <b>laptimer.local</b> there. With a free name from <b>duckdns.org</b> the timer sends its address to DuckDNS whenever it joins a network with internet, and <b>http://<i>name</i>.duckdns.org</b> opens this page from that phone. Enter the name and the token from duckdns.org, then Save: the token stays on the timer and is never shown again (leave it empty to keep it when you change the name). Save with an empty name to remove name and token.</p>
+        <input type="text" id="ddnsName" data-local maxlength="80" placeholder="Name (without .duckdns.org)" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="DuckDNS name" />
+        <input type="password" id="ddnsToken" data-local maxlength="64" placeholder="Token from duckdns.org" autocomplete="off" aria-label="DuckDNS token" />
+        <div class="button-row">
+          <button id="ddnsSaveButton" class="btn btn-ghost">Save</button>
+          <button id="ddnsUpdateButton" class="btn btn-ghost">Update now</button>
+        </div>
+        <p id="ddnsStatus" class="note">Not set. Enter the name and the token from duckdns.org, then Save.</p>
+      </div>
+
+      <div class="card">
         <h2>Timer</h2>
         <dl class="info-grid">
           <dt>Firmware</dt><dd id="infoVersion">–</dd>
@@ -317,7 +329,7 @@
     <div id="rsPilot" class="rs-pilot"></div>
   </div>
 
-  <script src="script.js?v=3b59a717"></script>
+  <script src="script.js?v=085677c7"></script>
 </body>
 
 </html>

@@ -14,7 +14,7 @@
 // downloads, copied text and speech are caught, voice commands are off (no microphone request).
 
 const PAGE_TEST_SECTIONS = ["layout", "setup", "race", "raceSettings", "raceEdges", "calibrate", "history", "historyEdges", "connection", "voice",
-  "update"];
+  "ddns", "update"];
 
 async function pageTest(only) {
   const T = pageTestHarness();
@@ -1547,6 +1547,75 @@ PAGE_TEST.voice = async (T) => {
 };
 
 // ── Firmware update page ──
+// ── Internet name (DuckDNS): checks at both ends, every outcome said, the token never shown ──
+PAGE_TEST.ddns = async (T) => {
+  await T.mock("info?mode=wifi");
+  await T.open();
+  await T.tab("config");
+  T.check("not set: says so and what to do", T.text("#ddnsStatus") === "Not set. Enter the name and the token from duckdns.org, then Save.", T.text("#ddnsStatus"));
+  T.setValue("#ddnsName", "Bad Name!");
+  T.setValue("#ddnsToken", "0123456789abcdef-0123-4567-89ab");
+  T.$("#ddnsSaveButton").click();
+  await T.sleep(100);
+  T.check("a name DuckDNS can't have is refused on the page", T.text("#ddnsSaveButton").startsWith("Name:"), T.text("#ddnsSaveButton"));
+  T.setValue("#ddnsName", "http://LapTimer-Jura.duckdns.org/");
+  T.setValue("#ddnsToken", "short");
+  T.$("#ddnsSaveButton").click();
+  await T.sleep(100);
+  T.check("a token that can't be one is refused", T.text("#ddnsSaveButton").startsWith("Token:"), T.text("#ddnsSaveButton"));
+  T.setValue("#ddnsToken", "0123456789ABCDEF-0123-4567-89ab ");
+  T.$("#ddnsSaveButton").click();
+  T.check("saved: the name as DuckDNS shows it, the token field emptied and marked set",
+    await T.until(() => T.$("#ddnsName").value === "laptimer-jura" && T.$("#ddnsToken").placeholder.startsWith("Token: set"), 3000),
+    [T.$("#ddnsName").value, T.$("#ddnsToken").placeholder]);
+  T.check("the token never comes back from the timer", !JSON.stringify(await T.get("/api/ddns")).includes("0123456789abcdef"));
+  T.check("while sending: says so", T.text("#ddnsStatus").includes("sending the address"), T.text("#ddnsStatus"));
+  T.check("updated: when, the address, and the name as a link to open", await T.until(() => /^updated just now · 192\.168\.1\.50 · http:\/\/laptimer-jura\.duckdns\.org$/.test(T.text("#ddnsStatus")), 5000) &&
+    T.$("#ddnsStatus a").getAttribute("href") === "http://laptimer-jura.duckdns.org" && T.$("#ddnsStatus a").classList.contains("link-small"),
+    [T.text("#ddnsStatus"), T.$("#ddnsStatus a") && T.$("#ddnsStatus a").getAttribute("href")]);
+  T.$("#ddnsUpdateButton").click();
+  await T.sleep(80);
+  T.check("Update now: 'sending the address…' at once", T.text("#ddnsStatus").includes("sending the address…"), T.text("#ddnsStatus"));
+  T.check("and 'updated just now' when it is through", await T.until(() => T.text("#ddnsStatus").startsWith("updated just now"), 5000), T.text("#ddnsStatus"));
+  await T.mock("ddns?result=ko");
+  T.$("#ddnsUpdateButton").click();
+  T.check("refused by DuckDNS: the reason, and that it tries again", await T.until(() => T.text("#ddnsStatus").includes("refused by duckdns.org: check the name and the token") &&
+    T.text("#ddnsStatus").endsWith("tries again by itself."), 5000), T.text("#ddnsStatus"));
+  await T.mock("ddns?result=down");
+  T.$("#ddnsUpdateButton").click();
+  T.check("DuckDNS down: said so", await T.until(() => T.text("#ddnsStatus").includes("duckdns.org did not answer in time"), 5000), T.text("#ddnsStatus"));
+  await T.mock("ddns?result=nointernet");
+  T.$("#ddnsUpdateButton").click();
+  T.check("a network without internet: said so", await T.until(() => T.text("#ddnsStatus").includes("no internet on this network"), 5000), T.text("#ddnsStatus"));
+  await T.mock("info?mode=hotspot");
+  await T.open();
+  await T.tab("config");
+  T.check("on the timer's own hotspot: waits for a network with internet", await T.until(() => T.text("#ddnsStatus").includes("waits for a network with internet"), 3000), T.text("#ddnsStatus"));
+  T.$("#ddnsUpdateButton").click();
+  await T.sleep(200);
+  T.check("Update now on the hotspot: 'Needs a network with internet'", T.text("#ddnsUpdateButton") === "Needs a network with internet", T.text("#ddnsUpdateButton"));
+  // saving writes flash: not during a race
+  await T.mock("info?mode=wifi");
+  await T.w.startRace();
+  await T.until(() => T.v("isRacing()"), 3000);
+  T.setValue("#ddnsName", "other-name");
+  T.$("#ddnsSaveButton").click();
+  await T.sleep(300);
+  T.check("saving during a race: refused, says why", T.text("#ddnsSaveButton") === "Not during a race", T.text("#ddnsSaveButton"));
+  await T.w.stopRace();
+  await T.idle();
+  // the firmware checks too (an older page, another phone)
+  const bad = await T.post("/api/ddns/save", { name: "-bad-", token: "0123456789abcdef-0123-4567-89ab" });
+  T.check("the timer refuses a bad name itself", bad.code === 400, bad.code);
+  // removing: asks first, then "Not set."
+  T.setValue("#ddnsName", "");
+  T.w.confirm = () => true;
+  T.$("#ddnsSaveButton").click();
+  T.check("name removed: 'Not set.' again, the token gone too", await T.until(() => T.text("#ddnsStatus").startsWith("Not set.") && !T.$("#ddnsToken").placeholder.startsWith("Token: set"), 3000),
+    [T.text("#ddnsStatus"), T.$("#ddnsToken").placeholder]);
+  T.check("ddns: no script errors", T.errors.length === 0, T.errors);
+};
+
 PAGE_TEST.update = async (T) => {
   const w = await T.open("/update.html");
   await T.until(() => T.text("#version") !== "–", 4000);

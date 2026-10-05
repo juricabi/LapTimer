@@ -456,6 +456,46 @@ void Webserver::registerApi()
         wifiList->clear();
         sendOk(request); });
 
+    // The internet name (lib/DDNS). The token never leaves the timer; saving writes flash, so
+    // not during a race (409 racing). "Update now" only sends the address again (no flash).
+    server.on("/api/ddns", HTTP_GET, [this](AsyncWebServerRequest *request)
+              {
+        static const char *states[] = {"off", "no-network", "waiting", "updating", "ok", "failed"};
+        JsonDocument doc;
+        doc["name"] = ddns->name();
+        doc["token"] = ddns->hasToken();
+        doc["state"] = states[ddns->state()];
+        doc["result"] = ddns->configured() ? ddns->result() : ""; // a try that ended after a removal says nothing
+        doc["ip"] = ddns->lastOkMs() ? ddns->sentIp().toString() : String("");
+        uint32_t now = millis();
+        doc["tryAgoS"] = ddns->lastTryMs() ? (int)((now - ddns->lastTryMs()) / 1000) : -1;
+        doc["okAgoS"] = ddns->lastOkMs() ? (int)((now - ddns->lastOkMs()) / 1000) : -1;
+        sendJson(request, doc); });
+    // (its own path: a JSON handler on "/api/ddns" would take "/api/ddns/update" too)
+    server.addHandler(new AsyncCallbackJsonWebHandler("/api/ddns/save", [this](AsyncWebServerRequest *request, JsonVariant &json)
+                                                      {
+        if (timer->isRacing())
+        {
+            request->send(409, "application/json", "{\"status\":\"racing\"}");
+            return;
+        }
+        bool ok = ddns->set(json["name"] | "", json["token"] | "");
+        request->send(ok ? 200 : 400, "application/json", ok ? "{\"status\":\"OK\"}" : "{\"status\":\"invalid\"}"); }));
+    server.on("/api/ddns/update", HTTP_POST, [this](AsyncWebServerRequest *request)
+              {
+        if (!ddns->configured())
+        {
+            request->send(400, "application/json", "{\"status\":\"no name\"}");
+            return;
+        }
+        if (ddns->state() == Ddns::NO_NETWORK)
+        {
+            request->send(409, "application/json", "{\"status\":\"no network\"}");
+            return;
+        }
+        ddns->updateNow();
+        sendOk(request); });
+
     // Network scan for the WiFi picker. ?start=1 starts one; it runs one channel at a time in
     // handleWebUpdate (see WIFI_PAGE_SCAN_*), so phones on the hotspot keep their connection.
     server.on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest *request)

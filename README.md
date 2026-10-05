@@ -56,7 +56,8 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 **Connection**
 - Own hotspot, or up to 5 saved **WiFi networks** (the strongest in range is used), such as
   your home WiFi or your phone's hotspot at the field.
-- `http://laptimer.local` on your WiFi; firmware updates over WiFi from the page.
+- `http://laptimer.local` on your WiFi, or an **internet name** (`laptimer-jura.duckdns.org`)
+  that follows the timer onto a phone's hotspot; firmware updates over WiFi from the page.
 - Settings save automatically and stay consistent across several open phones.
 
 <p align="center">
@@ -126,14 +127,27 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
 **Your WiFi, or your phone's hotspot**
 1. **Setup → WiFi networks**: add the network (Scan helps), then **Restart timer**.
 2. Open `http://laptimer.local`, or the timer's IP (**Setup → Timer** shows it; so do your
-   router and the phone's hotspot settings). Android often doesn't resolve `laptimer.local`:
-   use the IP there.
+   router and the phone's hotspot settings). Android doesn't resolve `laptimer.local` on its
+   own hotspot (and often not elsewhere), and a phone hotspot hands out a different address
+   every time: give the timer an **internet name** instead (next section).
 3. At power-up it joins the strongest saved network in range (60 s to connect). If none is
    seen, it tries the newest one for 20 s (a hidden network, or a phone hotspot still starting),
    then starts its own hotspot.
 
 - Changes to the list, also removing the network in use, take effect at the next restart.
   **Forget all** restarts into the hotspot.
+
+**Internet name** (for a phone hotspot, or any network with internet)
+1. At [duckdns.org](https://www.duckdns.org) (free, sign in with Google or GitHub) add a
+   subdomain, e.g. `laptimer-jura`, and copy the token shown there.
+2. **Setup → Internet name**: enter the name and the token, **Save**. The token stays on the
+   timer and is never shown again (leave it empty to keep it when changing the name); saving
+   with an empty name removes name and token.
+3. Whenever the timer joins a network with internet, it sends its current address to DuckDNS,
+   and `http://laptimer-jura.duckdns.org` opens the page from the phone whose hotspot it is on
+   (and from home). The card shows the address sent and when, or why it failed (no internet
+   on the network, DuckDNS not answering, name or token refused); it tries again by itself.
+   On the timer's own hotspot there is no internet, so nothing is sent.
 - If the connected network goes away, the timer keeps timing and saving races and rejoins it
   when it's back (a short beep every minute until then). For its own hotspot instead, switch
   it off and on.

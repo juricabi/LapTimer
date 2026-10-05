@@ -65,7 +65,9 @@ at a whole UTF-8 character (pilot 20 bytes, race 32). The page checks first and 
 firmware checks again (another phone, an older page, the API), also for saved pilots. Settings
 from the page are applied to a copy, checked, then published (the timing core reads them any
 moment). WiFi: with a password the ESP32 joins only WPA2, so passwords are empty, 8-63
-characters or 64 hex digits; passwords never leave the timer.
+characters or 64 hex digits; passwords never leave the timer. The internet name (`lib/DDNS`,
+DuckDNS): name 1-63 of a-z, 0-9 and -, token 20-64 of 0-9, a-f and - (both lowercased,
+`.duckdns.org` and `http://` stripped); the token never leaves the timer either.
 
 **5. Stored data survives updates.** The settings layout (`laptimer_config_t`) is append-only:
 new fields at the end, `CONFIG_VERSION` bumped, defaults in `Config::load` one step per version
@@ -113,10 +115,10 @@ at every build (cached a day; keep new assets in its `ASSETS`).
 
 - **A bug gets a test that fails first**, then the fix. A new page feature gets its checks in
   `tools/page_test.js` (sections: layout, setup, race, raceSettings, raceEdges, calibrate,
-  history, historyEdges, connection, voice, update; each starts from `/mock/reset`).
+  history, historyEdges, connection, voice, ddns, update; each starts from `/mock/reset`).
 - **The mock** (`tools/mock_server.py`) mirrors `lib/WEBSERVER/api.cpp`, refusals included:
   keep them in step. Helpers under `/mock/` (reset, reboot, offline, fail, slow, busy, passes,
-  lap, full, saveerr, info, vbat, oldrace, log) make the states a test needs. Unlike a new
+  lap, full, saveerr, info, vbat, oldrace, log, ddns) make the states a test needs. Unlike a new
   timer it starts with a channel. `--host 0.0.0.0` serves phones.
 - **Writing page tests**: run headless (`run_page_test.js`): a background or covered tab runs
   timers once a second or slower. The runner emulates focus (without it `focus()`/`blur()` fire
@@ -166,11 +168,21 @@ at every build (cached a day; keep new assets in its `ASSETS`).
   hotspot; the page's scan goes one channel at a time. Fixed address `192.168.4.1` in the WiFi
   name, no captive portal (its sign-in window has no speech and blocks the browser).
 - **WiFi**: radio settings before WiFi has started are ignored. Transmit power stays at its
-  maximum (requests are capped at 18 dBm). The async scan reports `WIFI_SCAN_FAILED` after 6 s
+  maximum (requests are capped at 18 dBm). No modem sleep as a station either (v1.2.4): with
+  it the page's polls took 106 ms instead of 17, and every wake-up restored the calibrated
+  analog gain over the held one (`holdTxGain` now re-applies whenever the gain in use differs). The async scan reports `WIFI_SCAN_FAILED` after 6 s
   while a full scan takes ~6 s: treat "failed" within 12 s as still running.
 - **Sampling**: `analogRead()` takes ~90 µs; the rate depends on where the linker places code
   (padding moved it 11%). Compare builds only A/B on one timer (`docs/sampling.md`; faster
   register reads parked on branch `perf/fast-adc`).
+- **Phone hotspot**: Android picks a random private subnet (192.168.x.0, 10.x.y.0, ...) each
+  time its hotspot starts,
+  and its resolver answers `.local` names (Android 12+) only on a WiFi network it is a client
+  of, never over mobile data or its own hotspot. So on a phone hotspot (the only way to have
+  voice commands and the timer together) the timer is found by its internet name: on every
+  join with internet it sends its address to DuckDNS (`lib/DDNS`, a task on core 0; https
+  without a certificate check, plain http if TLS fails; retries 30 s to 10 min; every outcome
+  reported in Setup → Internet name). On its own hotspot nothing is sent.
 - **Phones**: Android doesn't resolve `laptimer.local` reliably (use the IP). Voice commands
   (Chrome `SpeechRecognition`) need internet (not on the timer's hotspot) and the Chrome flag on
   http; Brave blocks them. Chrome ends a session after silence: reopen at once; after a

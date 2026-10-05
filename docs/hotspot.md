@@ -79,7 +79,10 @@ than the receiver (see "Warm starts and the stored calibration" below).
    put back; every other start first sleeps 1 ms, because a start that wakes from deep sleep
    uses the stored calibration instead of calibrating again, which a warm board did up to
    12 dB weaker.
-4. The analog gain is kept at 0x5f or stronger (`TX_ANA_GAIN_WEAKEST`, also in `holdTxGain`).
+4. The analog gain is kept at 0x5f or stronger (`TX_ANA_GAIN_WEAKEST`, also in `holdTxGain`),
+   and held again whenever the library puts the calibrated one back: as a station in modem
+   sleep it did at every wake-up, so station mode runs without power save too (v1.2.4; the
+   page's polls went from 106 ms to 17 ms with it).
 
 Result on 5800 MHz: beacons at -54 to -62 dBm at 1-2 m, steady, the same after a short or a
 long time as a station first; a PC joins in about 1 s, 4 of 712 pings lost over 3 minutes,

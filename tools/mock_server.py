@@ -18,6 +18,7 @@ Test helpers (mock only, GET):
   /mock/full              the pilot's lap memory is full (finished + "full")
   /mock/saveerr?on=1|0    the last race could not be saved (status saveErr)
   /mock/info?mode=hotspot the timer runs its own hotspot (default wifi)
+  /mock/ddns?result=ok    how the next DuckDNS update ends: ok, ko, down, nointernet
   /mock/vbat?v=37         battery voltage in tenths of a volt
   /mock/oldrace           adds a race saved by the multi-pilot firmware (two pilots)
   /mock/log               the last settings changes (POST /config bodies)
@@ -58,6 +59,45 @@ def initial_state():
     return {"rev": 1, "boot": random.randint(1, 2**31 - 1), "prof": 1, "edits": 0, "failConfig": 0, "failSave": 0,
             "savedId": 0, "savedRace": 0, "passes": True, "lap": LAP_BASE, "offline": False, "saveErr": 0,
             "mode": "wifi", "vbat": 41, "slowConfig": 0, "busyStart": 0}
+
+
+def initial_ddns():
+    """The internet name (DuckDNS). "result" is how the next update ends (/mock/ddns?result=)."""
+    return {"name": "", "token": "", "result": "ok", "tryAt": 0, "okAt": 0, "ip": "", "failed": False, "note": ""}
+
+
+DDNS = initial_ddns()
+
+
+def ddns_state():
+    if not DDNS["name"] or not DDNS["token"]:
+        return "off"
+    if S["mode"] != "wifi":
+        return "no-network"
+    if DDNS["tryAt"] and time.time() - DDNS["tryAt"] < 1.5:
+        return "updating"
+    if DDNS["failed"]:
+        return "failed"
+    return "ok" if DDNS["okAt"] else "waiting"
+
+
+def ddns_try():
+    """An update as the timer would make it, ending as /mock/ddns?result= says."""
+    DDNS["tryAt"] = time.time()
+    r = DDNS["result"]
+    DDNS["failed"] = r != "ok"
+    if r == "ok":
+        DDNS["okAt"], DDNS["ip"], DDNS["note"] = time.time(), "192.168.1.50", "updated"
+    elif r == "ko":
+        DDNS["note"] = "refused by duckdns.org: check the name and the token"
+    elif r == "down":
+        DDNS["note"] = "duckdns.org did not answer in time"
+    else:
+        DDNS["note"] = "no internet on this network (duckdns.org not found)"
+
+
+def ddns_name_ok(name):
+    return 1 <= len(name) <= 63 and name[0] != "-" and name[-1] != "-" and all(c in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in name)
 
 
 def initial_race():
@@ -109,6 +149,8 @@ def reset_all():
     S.update(initial_state())
     R.clear()
     R.update(initial_race())
+    DDNS.clear()
+    DDNS.update(initial_ddns())
 
 
 def scan_running():
@@ -314,6 +356,9 @@ class H(SimpleHTTPRequestHandler):
             if u.path == "/mock/saveerr":
                 S["saveErr"] = 1 if q.get("on", ["1"])[0] == "1" else 0
                 return self._json({"status": "OK"})
+            if u.path == "/mock/ddns":  # how the next DuckDNS update ends: ok, ko, down, nointernet
+                DDNS["result"] = q.get("result", ["ok"])[0]
+                return self._json({"status": "OK", "result": DDNS["result"]})
             if u.path == "/mock/info":
                 S["mode"] = "hotspot" if q.get("mode", ["wifi"])[0] == "hotspot" else "wifi"
                 return self._json({"status": "OK"})
@@ -424,6 +469,13 @@ class H(SimpleHTTPRequestHandler):
                 vals = [max([55 + random.randint(0, 6)] + [int(55 + h * math.exp(-((5645 + k * 5 - f) ** 2) / 150)) for f, h in peaks])
                         if (done >= 61 or k < done) else 0 for k in range(61)]
                 return self._json({"running": running, "done": done, "total": total, "start": 5645, "step": 5, "rssi": vals})
+            if u.path == "/api/ddns":
+                now = time.time()
+                updating = ddns_state() == "updating"
+                return self._json({"name": DDNS["name"], "token": bool(DDNS["token"]), "state": ddns_state(),
+                                   "result": "" if updating else DDNS["note"], "ip": DDNS["ip"] if DDNS["okAt"] else "",
+                                   "tryAgoS": int(now - DDNS["tryAt"]) if DDNS["tryAt"] else -1,
+                                   "okAgoS": int(now - DDNS["okAt"]) if DDNS["okAt"] else -1})
             if u.path == "/api/wifi/saved":
                 connected = SAVED[0] if SAVED and S["mode"] == "wifi" else ""  # none on its own hotspot
                 return self._json({"networks": SAVED, "connected": connected, "max": MAX_WIFI_NETWORKS})
@@ -545,8 +597,41 @@ class H(SimpleHTTPRequestHandler):
                 RACES.clear()
                 S["savedId"] = S["savedRace"] = 0
                 return self._json({"status": "OK"})
-            if u.path in ("/api/wifi/saved/add", "/api/wifi/saved/remove", "/api/wifi/saved/clear") and R["state"] in RACING:
+            if u.path in ("/api/wifi/saved/add", "/api/wifi/saved/remove", "/api/wifi/saved/clear", "/api/ddns/save") and R["state"] in RACING:
                 return self._json({"status": "racing"}, 409)
+            # (the firmware's JSON handlers take sub-paths too: a save on "/api/ddns" would have
+            # caught "/api/ddns/update"; the mock routes by exact path, so keep the paths apart)
+            if u.path == "/api/ddns/save":
+                d = json.loads(body or b"{}")
+                name = (d.get("name") or "").strip().lower()
+                for prefix in ("http://", "https://"):
+                    if name.startswith(prefix):
+                        name = name[len(prefix):]
+                name = name.split("/")[0]
+                if name.endswith(".duckdns.org"):
+                    name = name[:-len(".duckdns.org")]
+                token = (d.get("token") or "").replace(" ", "").lower()
+                if not name:
+                    DDNS.update(initial_ddns())
+                    return self._json({"status": "OK"})
+                if not ddns_name_ok(name) or (token and not (20 <= len(token) <= 64 and all(c in "0123456789abcdef-" for c in token))):
+                    return self._json({"status": "invalid"}, 400)
+                if not token and not DDNS["token"]:
+                    return self._json({"status": "invalid"}, 400)
+                DDNS["name"] = name
+                if token:
+                    DDNS["token"] = token
+                DDNS.update({"okAt": 0, "ip": "", "failed": False, "note": ""})
+                if S["mode"] == "wifi":
+                    ddns_try()
+                return self._json({"status": "OK"})
+            if u.path == "/api/ddns/update":
+                if not DDNS["name"]:
+                    return self._json({"status": "no name"}, 400)
+                if S["mode"] != "wifi":
+                    return self._json({"status": "no network"}, 409)
+                ddns_try()
+                return self._json({"status": "OK"})
             if u.path == "/api/wifi/saved/add":
                 d = json.loads(body or b"{}")
                 ssid, pwd = d.get("ssid") or "", d.get("pwd") or ""

@@ -5,6 +5,7 @@
 #include "wifilist.h"
 #include <ElegantOTA.h>
 
+#include "ddns.h"
 #include "radiocal.h"
 
 static RX5808 rx(PIN_RX5808_RSSI, PIN_RX5808_DATA, PIN_RX5808_SELECT, PIN_RX5808_CLOCK);
@@ -15,6 +16,7 @@ static Led led;
 static LapTimer timer;
 static RaceHistory history;
 static WifiList wifiList;
+static Ddns ddns;
 static BatteryMonitor monitor;
 
 volatile uint32_t core0RoundsPerSec = 0;  // diagnostics (/api/debug/load): service rounds per second
@@ -31,6 +33,7 @@ static void serviceRound(uint32_t currentTimeMs) {
     buzzer.handleBuzzer(currentTimeMs);
     led.handleLed(currentTimeMs);
     ws.handleWebUpdate(currentTimeMs);
+    ddns.handle(currentTimeMs, WiFi.status() == WL_CONNECTED, WiFi.localIP()); // the internet name, on a network
     config.handleEeprom(currentTimeMs, !timer.isRacing());
     monitor.checkBatteryState(currentTimeMs, config.getAlarmThreshold());
     if (timer.savePending) {
@@ -67,7 +70,8 @@ void setup() {
     timer.init(&config, &rx, &buzzer, &led);
     monitor.init(PIN_VBAT, VBAT_SCALE, VBAT_ADD, &buzzer, &led);
     wifiList.init(&config);
-    ws.init(&config, &timer, &history, &wifiList, &monitor, &buzzer, &led);
+    ddns.init();
+    ws.init(&config, &timer, &history, &wifiList, &monitor, &buzzer, &led, &ddns);
     led.on(400);
     buzzer.beep(200);
     initParallelTask();

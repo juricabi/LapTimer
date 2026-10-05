@@ -2,11 +2,12 @@
 #include <ESPAsyncWebServer.h>
 
 #include "battery.h"
+#include "ddns.h"
 #include "history.h"
 #include "laptimer.h"
 #include "wifilist.h"
 
-#define FIRMWARE_VERSION "1.2.3"
+#define FIRMWARE_VERSION "1.2.4"
 
 #define WIFI_CONNECTION_TIMEOUT_MS 60000
 #define WIFI_UNSEEN_TIMEOUT_MS 20000  // joining a network the scan didn't see (hidden or starting up)
@@ -32,7 +33,7 @@
 
 class Webserver {
    public:
-    void init(Config *config, LapTimer *lapTimer, RaceHistory *raceHistory, WifiList *networks, BatteryMonitor *batMonitor, Buzzer *buzzer, Led *l);
+    void init(Config *config, LapTimer *lapTimer, RaceHistory *raceHistory, WifiList *networks, BatteryMonitor *batMonitor, Buzzer *buzzer, Led *l, Ddns *internetName);
     void handleWebUpdate(uint32_t currentTimeMs);
 
    private:
@@ -59,6 +60,7 @@ class Webserver {
     LapTimer *timer;
     RaceHistory *history;
     WifiList *wifiList;
+    Ddns *ddns;
     BatteryMonitor *monitor;
     Buzzer *buz;
     Led *led;

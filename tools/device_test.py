@@ -167,6 +167,8 @@ try:
     # calibration and the next start stores a new one, weaker if the board is warm
     st, _ = req("/api/debug/phyerase", {})
     check("radio calibration erase refused while racing (flash write)", st == 409, st)
+    st, _ = req("/api/ddns/save", {"name": "during-the-race", "token": "0123456789abcdef-0123-4567-89ab"})
+    check("internet name refused while racing (flash write)", st == 409, st)
     boot0 = status()["boot"]
     st, _ = req("/restart", {})
     time.sleep(1.5)
@@ -263,6 +265,23 @@ try:
     nets_after = req("/api/wifi/saved")[1]["networks"]
     check("WiFi passwords the timer can't use refused (7 characters, 64 not hex)",
           st1 == 400 and st2 == 400 and nets_after == nets_before, (st1, st2, nets_after))
+    # the internet name (DuckDNS): checked by the timer too, the token never sent back. A name
+    # the owner has set is left alone (its token can't be put back)
+    _, dd0 = req("/api/ddns")
+    check("internet name reported with a state", dd0 is not None and dd0.get("state") in ("off", "no-network", "waiting", "updating", "ok", "failed"), dd0)
+    st_bad, _ = req("/api/ddns/save", {"name": "bad name!", "token": "0123456789abcdef-0123-4567-89ab"})
+    check("internet name: a bad name refused by the timer", st_bad == 400, st_bad)
+    if dd0 and not dd0.get("name"):
+        st_ok, _ = req("/api/ddns/save", {"name": "LapTimer-Test.duckdns.org", "token": "0123456789ABCDEF-0123-4567-89ab"})
+        raw_dd = urllib.request.urlopen(BASE + "/api/ddns", timeout=5).read().decode()
+        _, dd = req("/api/ddns")
+        check("internet name saved as DuckDNS shows it, token kept but never sent",
+              st_ok == 200 and dd["name"] == "laptimer-test" and dd["token"] is True and "0123456789abcdef" not in raw_dd.lower(), (st_ok, dd))
+        st_up, up = req("/api/ddns/update", {})
+        check("update now: 'no network' on the hotspot (409), accepted on a network (200)", st_up in (200, 409), (st_up, up))
+        req("/api/ddns/save", {"name": "", "token": ""})
+        _, dd = req("/api/ddns")
+        check("internet name removed again", dd["name"] == "" and dd["token"] is False and dd["state"] == "off", dd)
 finally:
     for suffix in (" short", " long"):  # if an older firmware took them
         req("/api/wifi/saved/remove", {"ssid": WIFI_TEST + suffix})
