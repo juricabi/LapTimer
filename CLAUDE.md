@@ -60,7 +60,7 @@ load again by themselves once the timer answers.
 
 **4. Check at both ends, within what the page can show.** Values stay inside the page's
 controls: race 30-600 s, 1-30 laps, minimum lap 1-20 s, speech rate 0.1-2, alarm 0-4.2 V,
-announce type 0-4, Enter 51-255 / Exit 50-254 with exit < enter, target 0 or 3-600 s, names cut
+announce type 0-5, Enter 51-255 / Exit 50-254 with exit < enter, target 0 or 3-600 s, names cut
 at a whole UTF-8 character (pilot 20 bytes, race 32). The page checks first and says why; the
 firmware checks again (another phone, an older page, the API), also for saved pilots. Settings
 from the page are applied to a copy, checked, then published (the timing core reads them any
@@ -93,7 +93,17 @@ polls reported). Find and reproduce root causes rather than adding retries that 
 **7. The announcer is current, not complete.** Callouts that would come late are dropped: laps
 that arrive together say only the newest, and a lap's callouts not spoken when the next lap
 comes are removed (`queueSpeak(text, "lap")`). "Then compare with" is one choice (Nothing / Best
-lap / Target, stored as `anDelta`/`anTarget`; `fromJson` keeps only the one switched on). Voice
+lap / Target, stored as `anDelta`/`anTarget`; `fromJson` keeps only the one switched on). "Announce each lap" is one
+of six (`anType` 0-5, the option's position: Nothing, Beep, Lap time, 2 laps, 3 laps, Best lap
+time only: lap 1 as the first reference, then only a lap faster than every lap before it, with
+the comparison; the other laps silent). Every part refers to the value announced: with 2 or 3
+laps the comparison is with the best 2 or 3 laps or with 2 or 3 times the target, "Best 2
+laps" is said for a best pair, and nothing at all before there are that many laps. The "best"
+exclamation has its own switch (`anBest`, v6 of the settings, on by default) and comes only
+when something else is said for the lap; off, "Best lap time only" says "lap 2, 9.17" for a
+best instead of "best lap 9.17" (every lap spoken there is one). Callouts carry no pilot name (one pilot per timer;
+shorter arrives sooner). `lapCallouts()` computes the lines; the race speaks them and Setup
+shows them for four example laps (`renderAnnouncerPreview`), so the two never differ. Voice
 and voice commands are per phone (localStorage); the announcer settings are on the timer. Web
 Speech: `utterance.lang = "en-US"`, on Android no voice object (forcing one makes Chrome/Brave
 silent), speech only after a tap.

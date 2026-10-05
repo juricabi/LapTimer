@@ -43,6 +43,8 @@ void Config::load(void)
             conf.targetLapMs = 0;
         if (version < 5)
             conf.announceTarget = false; // laps keep being compared as before (best lap or not at all)
+        if (version < 6)
+            conf.announceBest = true; // "Best lap" was always said
         conf.version = CONFIG_VERSION | CONFIG_MAGIC;
         modified = true;
         write();
@@ -85,6 +87,7 @@ void Config::toJsonDoc(JsonDocument &config)
     config["anRate"] = conf.announcerRate;
     config["anDelta"] = conf.announceDelta;
     config["anTarget"] = conf.announceTarget;
+    config["anBest"] = conf.announceBest;
     config["buzzerOn"] = conf.buzzerOn;
     config["enterRssi"] = conf.enterRssi;
     config["exitRssi"] = conf.exitRssi;
@@ -194,6 +197,7 @@ void Config::fromJson(JsonObject source)
     changed |= updateField(source, "anRate", conf.announcerRate);
     changed |= updateField(source, "anDelta", conf.announceDelta);
     changed |= updateField(source, "anTarget", conf.announceTarget);
+    changed |= updateField(source, "anBest", conf.announceBest);
     // a lap is compared with the best lap or with the target, never both: the one switched
     // on now wins (an old page or a second phone can't leave both on)
     if (conf.announceDelta && conf.announceTarget)
@@ -224,7 +228,7 @@ void Config::fromJson(JsonObject source)
     keepWithin<uint8_t>(conf.raceLaps, 1, 30);
     keepWithin<uint8_t>(conf.announcerRate, 1, 20);     // 0.1-2.0
     keepWithin<uint8_t>(conf.alarm, 0, 42);             // off-4.2 V
-    keepWithin<uint8_t>(conf.announcerType, 0, 4);      // Nothing, Beep, 1-3 laps (the page's five)
+    keepWithin<uint8_t>(conf.announcerType, 0, 5);      // Nothing, Beep, 1-3 laps, Best lap only (the page's six)
     conf.targetLapMs = clampTargetLapMs(conf.targetLapMs);
     fixThresholds(conf.enterRssi, conf.exitRssi);
 
@@ -322,6 +326,7 @@ void Config::setRaceDefaults(void)
     conf.raceLaps = 3;
     conf.countdown = false;
     conf.announceDelta = false;
+    conf.announceBest = true;
 }
 
 void Config::setDefaults(void)

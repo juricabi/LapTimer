@@ -202,6 +202,7 @@ const ui = {
   raceTime: $("raceTime"),
   raceLaps: $("raceLaps"),
   countdown: $("countdown"),
+  anBest: $("anBest"),
   minLap: $("minLap"),
   announcer: $("announcerSelect"),
   rate: $("rate"),
@@ -251,6 +252,8 @@ function onFreqChange() {
 }
 ui.pilotBand.addEventListener("change", onFreqChange);
 ui.pilotChannel.addEventListener("change", onFreqChange);
+ui.announcer.addEventListener("change", renderAnnouncerPreview);
+ui.anBest.addEventListener("change", renderAnnouncerPreview);
 
 // The pace target is taken when the field is left (or Enter): saving each keystroke would
 // save 4 s on the way to 45. A value the timer doesn't accept goes back to the saved one.
@@ -361,12 +364,13 @@ setupSegmented($("lapCompare"), (v) => {
 
 function renderLapCompare() {
   setSegmented($("lapCompare"), lapCompare);
+  renderAnnouncerPreview(); // the compare choice and the target are part of it
   const hint = $("lapCompareHint");
   const noTarget = lapCompare === "target" && !pilot.target;
   hint.classList.toggle("warn", noTarget);
   hint.textContent = {
     none: "Nothing more after each lap.",
-    best: 'After each lap: how much faster or slower than your best lap ("minus 0.12"), also after a beep.',
+    best: 'After each lap: how much faster or slower than your best so far ("minus 0.12"; with 2 or 3 laps, than your best 2 or 3 laps), also after a beep.',
     target: noTarget
       ? "No target lap set (Pilot, above): nothing is said after the lap until you set one."
       : `After each lap: how far from your target lap ("plus 0.40", "On target" within 0.05 s), also after a beep.`,
@@ -398,6 +402,8 @@ function applyConfig(config) {
   ui.announcer.selectedIndex = config.anType;
   ui.rate.value = (config.anRate / 10).toFixed(1);
   lapCompare = config.anTarget ? "target" : config.anDelta ? "best" : "none"; // the timer keeps only one on
+  ui.anBest.checked = config.anBest !== false; // older firmware without it: always said
+  ui.announcer.options[5].disabled = config.anBest === undefined; // ... and without "Best lap time only" (it would clamp it to 3 laps)
   renderLapCompare();
   ui.buzzer.checked = !!config.buzzerOn;
   ui.alarm.value = (config.alarm / 10).toFixed(1);
@@ -470,6 +476,7 @@ function configBody() {
     anRate: Math.round(announcerRate * 10),
     anDelta: lapCompare === "best",
     anTarget: lapCompare === "target",
+    anBest: ui.anBest.checked,
     buzzerOn: ui.buzzer.checked,
   };
 }
@@ -1404,41 +1411,76 @@ function announceNewLaps(r, speak = true) {
   }
 }
 
-// One lap, in two independent parts: "Announce each lap" says the lap itself (nothing, a beep,
-// the lap time, 2 or 3 laps); "Then compare with" adds the delta to the best lap or to the
-// target, with any choice there (Beep + Target: a beep, then "minus 0.30"). "Best lap" comes
-// whenever something is said for the lap. target: the race's pace target (0 = none).
+// One lap, in three parts that all refer to the same thing: "Announce each lap" says a value
+// (nothing, a beep, the lap time, the last 2 or 3 laps together); "Say best" adds "Best lap",
+// "Best 2 laps" or "Best 3 laps" when that value beats every one before it (only when
+// something else is said for the lap); "Then compare with" adds the difference of that value
+// to the best one so far, or to the target (2 or 3 times the lap target). With 2 or 3 laps
+// nothing at all is said until there are that many. "Best lap time only" speaks lap 1 (the
+// first reference) and then only a lap faster than every lap before it, with the comparison;
+// the other laps stay silent. No pilot name: one pilot per timer, and a shorter callout
+// arrives sooner. target: the race's pace target per lap (0 = none).
+// What is said for lap n of `laps` ([0] is the first pass) with the announcer settings as they
+// are: {beep, lines}. The same for the race and for the preview in Setup.
+function lapCallouts(laps, n, target) {
+  const lines = [];
+  const say = (text) => lines.push(text);
+  const compare = (value, best, goal) => {
+    if (lapCompare === "target" && goal) {
+      const d = value - goal;
+      say(Math.abs(d) <= ON_TARGET_MS ? "On target" : (d > 0 ? "plus " : "minus ") + (Math.abs(d) / 1000).toFixed(2));
+    } else if (lapCompare === "best" && best !== null) {
+      const d = value - best;
+      say((d < 0 ? "minus " : "plus ") + (Math.abs(d) / 1000).toFixed(2));
+    }
+  };
+  const lapMs = laps[n];
+  const type = ui.announcer.value;
+  if (type === "best") {
+    const previousBest = n >= 2 ? Math.min(...laps.slice(1, n)) : null;
+    if (previousBest !== null && lapMs >= previousBest) return { beep: false, lines }; // not a best lap: silence
+    // with "Say best" off the word stays away here too: every lap spoken in this mode is a best
+    say(previousBest === null || !ui.anBest.checked ? `lap ${n}, ${secs(lapMs)}` : `best lap ${secs(lapMs)}`);
+    compare(lapMs, previousBest, target);
+    return { beep: false, lines };
+  }
+  const k = type === "2lap" ? 2 : type === "3lap" ? 3 : 1;
+  if (n < k) return { beep: false, lines };
+  const sum = (end) => laps.slice(end - k + 1, end + 1).reduce((a, b) => a + b, 0); // laps end-k+1 .. end
+  const value = sum(n);
+  let best = null; // the best value among the laps before this one
+  for (let i = k; i < n; i++) best = best === null ? sum(i) : Math.min(best, sum(i));
+  if (type === "1lap") say(`lap ${n}, ${secs(value)}`);
+  else if (k > 1) say(`${k} laps ${secs(value)}`);
+  const goal = target ? target * k : 0;
+  const willCompare = (lapCompare === "target" && goal) || (lapCompare === "best" && best !== null);
+  if (best !== null && value < best && ui.anBest.checked && (type !== "none" && type !== "beep" || willCompare)) {
+    say(k === 1 ? "Best lap" : `Best ${k} laps`);
+  }
+  compare(value, best, goal);
+  return { beep: type === "beep", lines };
+}
+
 function announceLap(p, n, target) {
   // callouts of an earlier lap not spoken yet (short laps, long callouts) are out of date
   speakQueue = speakQueue.filter((item) => item.kind !== "lap");
-  const say = (text) => queueSpeak(text, "lap");
-  const lapMs = p.laps[n];
-  const lapStr = secs(lapMs);
-  const who = p.name && p.name.trim() ? p.name.trim() + " " : "";
-  const previous = p.laps.slice(1, n);
-  const type = ui.announcer.value;
+  const out = lapCallouts(p.laps, n, target);
+  if (out.beep && audioEnabled) beep(100, 330, "square");
+  for (const text of out.lines) queueSpeak(text, "lap");
+}
 
-  if (type === "beep") {
-    if (audioEnabled) beep(100, 330, "square");
-  } else if (type === "1lap") {
-    say(`${who}lap ${n}, ${lapStr}`);
-  } else if (type === "2lap" && n >= 2) {
-    say(`${who}2 laps ${secs(lapMs + p.laps[n - 1])}`);
-  } else if (type === "3lap" && n >= 3) {
-    say(`${who}3 laps ${secs(lapMs + p.laps[n - 1] + p.laps[n - 2])}`);
-  }
-  const previousBest = previous.length ? Math.min(...previous) : null;
-  const sayTarget = lapCompare === "target" && !!target;
-  const sayDelta = lapCompare === "best" && previousBest !== null;
-  const lapSpoken = type === "1lap" || type === "2lap" || type === "3lap";
-  if (previousBest !== null && lapMs < previousBest && (lapSpoken || sayTarget || sayDelta)) say("Best lap");
-  if (sayTarget) {
-    const d = lapMs - target;
-    say(Math.abs(d) <= ON_TARGET_MS ? "On target" : (d > 0 ? "plus " : "minus ") + (Math.abs(d) / 1000).toFixed(2));
-  } else if (sayDelta) {
-    const d = lapMs - previousBest;
-    say((d < 0 ? "minus " : "plus ") + (Math.abs(d) / 1000).toFixed(2));
-  }
+// Setup → Announcer: what the settings would say for four example laps, so a pilot knows what
+// to expect (9.31, 9.17 a best, 9.80 slower, 8.06 a best again; the pilot's target, or 9.00)
+function renderAnnouncerPreview() {
+  const laps = [0, 9310, 9170, 9800, 8060];
+  const target = pilot.target || 9000;
+  const rows = [1, 2, 3, 4].map((n) => {
+    const out = lapCallouts(laps, n, target);
+    const parts = (out.beep ? ["beep"] : []).concat(out.lines.map((t) => `“${t}”`));
+    return `Lap ${n} · ${secs(laps[n])} → ${parts.length ? parts.join(" ") : "nothing"}`;
+  });
+  const foot = lapCompare === "target" ? [`(target ${secs(target)}${pilot.target ? "" : ", as an example"})`] : [];
+  $("announcerPreview").textContent = ["What you'll hear, for example:", ...rows, ...foot].join("\n");
 }
 
 function statBox(label, value, extraClass) {

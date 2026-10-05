@@ -462,18 +462,21 @@ PAGE_TEST.setup = async (T) => {
   // announcer and alerts
   T.setValue("#announcerSelect", "2lap");
   T.setValue("#rate", "1.5");
-  for (const [value, hint] of [["none", "Nothing more after each lap."], ["best", "best lap"], ["target", "target lap"]]) {
+  for (const [value, hint] of [["none", "Nothing more after each lap."], ["best", "your best so far"], ["target", "target lap"]]) {
     T.$(`#lapCompare [data-value="${value}"]`).click();
     T.check(`compare with ${value}: one choice, its hint`, T.$$("#lapCompare button.active").length === 1 && T.text("#lapCompareHint").includes(hint),
       T.text("#lapCompareHint"));
   }
+  T.toggle("#anBest", false);
   T.toggle("#buzzerToggle", false);
   T.setValue("#alarmThreshold", "3.3");
   T.check("alarm label 3.3v", T.$("#alarmThreshold").parentElement.querySelector(".val").textContent === "3.3v");
   await T.saved();
   cfg = await T.config();
   T.check("announcer and alerts saved", cfg.anType === 3 && cfg.anRate === 15 && cfg.anTarget === true && cfg.anDelta === false &&
-    cfg.buzzerOn === false && cfg.alarm === 33, cfg);
+    cfg.anBest === false && cfg.buzzerOn === false && cfg.alarm === 33, cfg);
+  T.toggle("#anBest", true);
+  await T.saved();
   T.setValue("#alarmThreshold", "0");
   T.check("alarm 0 shows Off", T.$("#alarmThreshold").parentElement.querySelector(".val").textContent === "Off");
 
@@ -866,7 +869,7 @@ PAGE_TEST.raceSettings = async (T) => {
     return { lapMs: all[all.length - 1], best: Math.min(...all.slice(0, -1)) };
   };
   const lap1 = await nextLap();
-  T.check("callout uses the race's pilot and target", T.spoken.some((t) => t.startsWith("Maverick lap")) && T.spoken.includes(T.callout(lap1.lapMs, 4400)),
+  T.check("callout: the lap without a pilot name, against the race's target", T.spoken.some((t) => t.startsWith("lap ")) && T.spoken.includes(T.callout(lap1.lapMs, 4400)),
     { ...lap1, spoken: T.spoken });
   await T.otherPhone({ anType: 1 }); // Announce each lap: Beep
   await T.until(() => T.$("#announcerSelect").value === "beep");
@@ -1543,10 +1546,63 @@ PAGE_TEST.voice = async (T) => {
   T.check("starting", state('micState = ""; micError = null').startsWith("Starting voice recognition"));
   T.$("#micHelpClose").click();
   T.check("Close hides it", !T.shown("#micHelp"));
+  // The announcer's parts all refer to the same value (the lap, or the last 2 or 3 laps):
+  // the callout, "Best …" when it beats every one before, the comparison with the best one or
+  // the target. Laps 9.31, 9.17, 9.80, 8.06; target 9.00
+  const race = { name: "Jura", laps: [0, 9310, 9170, 9800, 8060] }; // [0]: the first pass
+  const spokenFor = (n, target = 0) => {
+    T.spoken.length = 0;
+    T.w.announceLap(race, n, target);
+    return T.spoken.join(" | ");
+  };
+  T.$("#anBest").checked = true;
+  T.setValue("#announcerSelect", "best");
+  T.v('lapCompare = "best"');
+  T.check("Best lap time only: lap 1 spoken as the first reference, no pilot name", spokenFor(1) === "lap 1, 9.31", spokenFor(1));
+  T.check("a faster lap: 'best lap' with its time, then the comparison", spokenFor(2) === "best lap 9.17 | minus 0.14", spokenFor(2));
+  T.check("a slower lap: silence, no comparison either", spokenFor(3) === "", spokenFor(3));
+  T.check("the next best lap again", spokenFor(4) === "best lap 8.06 | minus 1.11", spokenFor(4));
+  T.setValue("#announcerSelect", "1lap");
+  T.check("Lap time: every lap spoken, a best lap said so, the comparison with the best lap",
+    spokenFor(3) === "lap 3, 9.80 | plus 0.63" && spokenFor(4) === "lap 4, 8.06 | Best lap | minus 1.11", [spokenFor(3), spokenFor(4)]);
+  T.w.renderAnnouncerPreview();
+  const preview = () => T.$("#announcerPreview").textContent.split("\n"); // (T.text collapses the line breaks)
+  T.check("the preview in Setup shows the same lines for the example laps",
+    preview()[0] === "What you'll hear, for example:" && preview()[2] === "Lap 2 · 9.17 → “lap 2, 9.17” “Best lap” “minus 0.14”" && preview()[3] === "Lap 3 · 9.80 → “lap 3, 9.80” “plus 0.63”",
+    preview());
+  T.v('lapCompare = "target"');
+  T.check("Lap time, target: the comparison with the target from lap 1", spokenFor(1, 9000) === "lap 1, 9.31 | plus 0.31", spokenFor(1, 9000));
+  T.v('lapCompare = "best"');
+  T.$("#anBest").checked = false;
+  T.check("'Say best' off: the callout and the comparison only", spokenFor(4) === "lap 4, 8.06 | minus 1.11", spokenFor(4));
+  T.setValue("#announcerSelect", "best");
+  T.check("'Say best' off in 'Best lap time only': the best lap as a plain lap, slower laps still silent",
+    spokenFor(4) === "lap 4, 8.06 | minus 1.11" && spokenFor(3) === "", [spokenFor(4), spokenFor(3)]);
+  T.$("#anBest").checked = true;
+  T.setValue("#announcerSelect", "2lap");
+  T.check("2 laps: nothing until there are two, then the pair without a comparison (no earlier pair)",
+    spokenFor(1) === "" && spokenFor(2) === "2 laps 18.48", [spokenFor(1), spokenFor(2)]);
+  T.check("the preview follows the choice: silence as 'nothing', the beep as a word",
+    preview()[1] === "Lap 1 · 9.31 → nothing" && preview()[2] === "Lap 2 · 9.17 → “2 laps 18.48”" && (T.setValue("#announcerSelect", "beep"), preview()[1] === "Lap 1 · 9.31 → beep") &&
+    (T.setValue("#announcerSelect", "2lap"), true), preview());
+  T.check("2 laps: compared with the best pair so far; a best pair said so", spokenFor(3) === "2 laps 18.97 | plus 0.49" && spokenFor(4) === "2 laps 17.86 | Best 2 laps | minus 0.62",
+    [spokenFor(3), spokenFor(4)]);
+  T.v('lapCompare = "target"');
+  T.check("2 laps, target: against twice the lap target", spokenFor(2, 9000) === "2 laps 18.48 | plus 0.48" && spokenFor(4, 9000) === "2 laps 17.86 | Best 2 laps | minus 0.14",
+    [spokenFor(2, 9000), spokenFor(4, 9000)]);
+  T.v('lapCompare = "best"');
+  T.setValue("#announcerSelect", "3lap");
+  T.check("3 laps: silent until lap 3 (no lone 'Best lap' at lap 2), then compared with the best three",
+    spokenFor(2) === "" && spokenFor(3) === "3 laps 28.28" && spokenFor(4) === "3 laps 27.03 | Best 3 laps | minus 1.25", [spokenFor(2), spokenFor(3), spokenFor(4)]);
+  T.setValue("#announcerSelect", "none");
+  T.check("Nothing + compare with the best: the comparison, 'Best lap' with it", spokenFor(3) === "plus 0.63" && spokenFor(4) === "Best lap | minus 1.11",
+    [spokenFor(3), spokenFor(4)]);
+  T.v('lapCompare = "none"');
+  T.check("Nothing + Nothing: silence, even on a best lap", spokenFor(4) === "", spokenFor(4));
+  T.setValue("#announcerSelect", "1lap");
   T.check("no script errors", T.errors.length === 0, T.errors);
 };
 
-// ── Firmware update page ──
 // ── Internet name (DuckDNS): checks at both ends, every outcome said, the token never shown ──
 PAGE_TEST.ddns = async (T) => {
   await T.mock("info?mode=wifi");
@@ -1616,6 +1672,7 @@ PAGE_TEST.ddns = async (T) => {
   T.check("ddns: no script errors", T.errors.length === 0, T.errors);
 };
 
+// ── Firmware update page ──
 PAGE_TEST.update = async (T) => {
   const w = await T.open("/update.html");
   await T.until(() => T.text("#version") !== "–", 4000);

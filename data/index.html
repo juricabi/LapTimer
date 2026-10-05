@@ -121,7 +121,15 @@
             <option value="1lap">Lap time</option>
             <option value="2lap">2 consecutive laps</option>
             <option value="3lap">3 consecutive laps</option>
+            <option value="best">Best lap time only</option>
           </select>
+        </label>
+        <label class="switch-row">
+          <span>
+            <span class="switch-title">Say "best" on a new best</span><br />
+            <span class="hint">"Best lap", "Best 2 laps" or "Best 3 laps" when the announced value beats every one before it</span>
+          </span>
+          <span class="switch"><input type="checkbox" id="anBest" /><span class="slider"></span></span>
         </label>
         <div class="field">
           <span class="field-label" id="lapCompareLabel">Then compare with</span>
@@ -132,6 +140,7 @@
           </div>
           <p class="hint" id="lapCompareHint"></p>
         </div>
+        <p class="note" id="announcerPreview" style="white-space: pre-line"></p>
         <div class="field">
           <label class="field-label" for="rate">Speech rate</label>
           <div class="input-with-value">
@@ -329,7 +338,7 @@
     <div id="rsPilot" class="rs-pilot"></div>
   </div>
 
-  <script src="script.js?v=085677c7"></script>
+  <script src="script.js?v=f45d3a04"></script>
 </body>
 
 </html>

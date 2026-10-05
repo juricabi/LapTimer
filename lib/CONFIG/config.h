@@ -66,10 +66,11 @@
 #define CONFIG_MAGIC_MASK (0b11U << 30)
 #define CONFIG_MAGIC (0b01U << 30)
 // v0: v1.0.0. v3: race settings. v4: pace target. v5: announce target (v4 and v5: v1.2.0).
+// v6: the "best" exclamation switch (v1.2.5).
 // (v1 and v2 were multi-pilot development builds with another layout after the v0 fields.)
 // Older versions keep the fields they had and get defaults for the newer ones (Config::load
 // migrates one version at a time).
-#define CONFIG_VERSION 5U
+#define CONFIG_VERSION 6U
 // A newer version than this is someone else's layout or noise: start from the defaults
 #define CONFIG_VERSION_NEWEST_KEPT 63U
 
@@ -110,6 +111,7 @@ typedef struct
     uint32_t targetLapMs;   // pace target, 0 = off (used by the page only)
     // --- v5 ---
     bool announceTarget;    // compare each lap with the pace target (page only); never with announceDelta
+    bool announceBest;      // say "best lap" / "best 2 laps" / "best 3 laps" on a new best (page only)
 } laptimer_config_t;
 
 static_assert(sizeof(laptimer_config_t) <= EEPROM_RESERVED_SIZE, "config does not fit the reserved EEPROM size");

@@ -190,10 +190,14 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
 ### Voice
 
 - **Announcer** (Setup → Announcer, saved on the timer): **Announce each lap** (lap time, 2 or
-  3 consecutive laps, a beep on the phone, or nothing), **Then compare with** (nothing, your
-  best lap: "minus 0.12", or your target lap: "plus 0.40", "On target" within 0.05 s; one of
-  them, with any choice above, a beep too; "Best lap" still comes), and the speech rate.
-  Every phone with Voice on speaks it. The timer's own buzzer is separate (Setup → Alerts).
+  3 consecutive laps, a beep on the phone, nothing, or **best lap time only**: lap 1, then
+  only a lap faster than all before it, "best lap 9.17"), **Say "best" on a new best** ("Best
+  lap", "Best 2 laps", "Best 3 laps"), **Then compare with** (nothing, your best so far:
+  "minus 0.12", or the target: "plus 0.40", "On target" within 0.05 s), and the speech rate.
+  Everything refers to the value announced: with 2 or 3 laps the comparison is with your best
+  2 or 3 laps, or with 2 or 3 times the target lap. A preview under the settings shows what
+  you'll hear for four example laps. Every phone with Voice on speaks it. The timer's own
+  buzzer is separate (Setup → Alerts).
 - **This phone** (Setup → This phone, for each phone, not saved on the timer): **Voice**
   (speaks lap times, race events and the answers to voice commands), **Voice commands**, and
   **Test voice**. Phones allow speech only after a tap: tap Test voice once after opening the

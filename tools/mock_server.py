@@ -32,7 +32,7 @@ DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 LOCK = threading.Lock()
 
 DEFAULT_CONFIG = {
-    "freq": 5800, "minLap": 50, "alarm": 0, "anType": 2, "anRate": 10, "anDelta": True, "anTarget": False, "buzzerOn": True,
+    "freq": 5800, "minLap": 50, "alarm": 0, "anType": 2, "anRate": 10, "anDelta": True, "anTarget": False, "anBest": True, "buzzerOn": True,
     "enterRssi": 120, "exitRssi": 100, "name": "Maverick",
     "raceMode": 0, "raceSec": 60, "raceLaps": 5, "countdown": False, "target": 0,
 }
@@ -304,6 +304,8 @@ def apply_config(data):
     new["minLap"] = within(new["minLap"], 10, 200)
     new["anRate"] = within(new["anRate"], 1, 20)
     new["alarm"] = within(new["alarm"], 0, 42)
+    new["anType"] = within(new["anType"], 0, 5)  # the page's six choices
+    new["anBest"] = bool(new["anBest"])
     new["target"] = clamp_target(new["target"])
     if new["anDelta"] and new["anTarget"]:  # best lap or target, never both: the one switched on now wins
         if data.get("anTarget"):

@@ -106,7 +106,10 @@ try:
     check("other settings leave the pace target alone", req("/config")[1].get("target") == 45000)
     req("/config", {"anType": 7})
     an_type = req("/config")[1]["anType"]
-    check("announce type kept within the page's five choices", 0 <= an_type <= 4, an_type)
+    check("announce type kept within the page's six choices", 0 <= an_type <= 5, an_type)
+    req("/config", {"anBest": False})
+    check("the 'Say best' switch saved and reported", req("/config")[1].get("anBest") is False)
+    req("/config", {"anBest": original.get("anBest", True)})
     req("/config", {"anType": original["anType"]})
     req("/config", {k: original[k] for k in original})
 
