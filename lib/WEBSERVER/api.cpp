@@ -262,9 +262,9 @@ void Webserver::registerApi()
         snprintf(buf, sizeof(buf),
                  "{\"samplesPerSec\":%u,\"core0RoundsPerSec\":%u,\"cpuMhz\":%u,"
                  "\"wifiMode\":%d,\"txPowerDbm\":%.2f,\"protoAp\":%u,\"protoSta\":%u,\"bwAp\":%d,\"ps\":%d,"
-                 "\"channel\":%d,\"apClients\":%d,\"txLoop\":%d,\"txGain\":%d,\"txAnaGain\":\"%08x\",\"txAnaCal\":\"%02x\",\"calBest\":\"%02x\",\"cal\":\"%s\",\"rst\":%d}",
+                 "\"channel\":%d,\"apClients\":%d,\"txLoop\":%d,\"txGain\":%d,\"txAnaGain\":\"%08x\",\"txAnaCal\":\"%02x\",\"calBest\":\"%02x\",\"cal\":\"%s\",\"rst\":%d,\"rst0\":%d}",
                  timer->getSamplesPerSec(), core0RoundsPerSec, getCpuFrequencyMhz(),
-                 mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), txPowerLoopOn(), txGainByte(), txAnaGain(), txAnaCalibrated, RadioCal::bestCode(), RadioCal::lastEvent(), (int)esp_reset_reason());
+                 mode, txPower * 0.25f, protoAp, protoSta, bwAp, ps, WiFi.channel(), WiFi.softAPgetStationNum(), txPowerLoopOn(), txGainByte(), txAnaGain(), txAnaCalibrated, RadioCal::bestCode(), RadioCal::lastEvent(), (int)esp_reset_reason(), RadioCal::resetReason());
         request->send(200, "application/json", buf); });
 
     // Diagnostics: apply the held transmit gain again, or another value (?k=, until the next

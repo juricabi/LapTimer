@@ -21,6 +21,7 @@ void beginBoot();                     // setup(), first of all: decides, may sle
 void afterWifiStart(uint8_t anaCode); // after the first WiFi start, with the code the calibration chose
 uint8_t bestCode();                   // 0 = none kept yet
 const char *lastEvent();              // what this start did (/api/debug/load: cal)
+int resetReason();                    // esp_reset_reason_t of the reset before the deep-sleep hop (which hides it)
 bool forget();                        // erase the stored calibration and the best: the next start calibrates
 bool setBestCode(int code);           // diagnostics: only the recorded code, to force the next power-on's outcome
 void setHop(bool on);                 // diagnostics: off = starts calibrate as the library does, until a power cycle

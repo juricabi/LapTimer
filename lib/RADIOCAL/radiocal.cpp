@@ -34,6 +34,7 @@ static const char *KEY_VERSION = "cal_version", *KEY_MAC = "cal_mac", *KEY_DATA 
 static RTC_NOINIT_ATTR uint32_t rtcMagic;    // the two below are valid (RTC memory is random at power-up)
 static RTC_NOINIT_ATTR uint32_t rtcPlain;    // diagnostics: starts calibrate as the library does
 static RTC_NOINIT_ATTR uint32_t rtcRestored; // the start before this one put the best back
+static RTC_NOINIT_ATTR uint32_t rtcResetBefore; // the reset reason seen before the deep-sleep hop (it hides it)
 
 static bool fresh = false; // this start calibrates and the library stores the result
 static bool plain = false;
@@ -120,6 +121,8 @@ void RadioCal::beginBoot()
         return;
     }
     esp_reset_reason_t reason = esp_reset_reason();
+    if (reason != ESP_RST_DEEPSLEEP)
+        rtcResetBefore = reason; // a crash (panic 4, watchdog 5-7, brownout 9) stays readable
     bool stored = hasCal(PHY_NS);
     if (stored && haveBest && (reason == ESP_RST_POWERON || reason == ESP_RST_EXT))
     {
@@ -183,6 +186,7 @@ void RadioCal::afterWifiStart(uint8_t code)
 
 uint8_t RadioCal::bestCode() { return haveBest ? best : 0; }
 const char *RadioCal::lastEvent() { return event; }
+int RadioCal::resetReason() { return rtcMagic == RTC_MAGIC ? (int)rtcResetBefore : (int)esp_reset_reason(); }
 
 bool RadioCal::forget()
 {
@@ -205,6 +209,7 @@ void RadioCal::beginBoot() {}
 void RadioCal::afterWifiStart(uint8_t code) { (void)code; }
 uint8_t RadioCal::bestCode() { return 0; }
 const char *RadioCal::lastEvent() { return "none"; }
+int RadioCal::resetReason() { return (int)esp_reset_reason(); }
 bool RadioCal::forget() { return esp_phy_erase_cal_data_in_nvs() == ESP_OK; }
 bool RadioCal::setBestCode(int code) { (void)code; return false; }
 void RadioCal::setHop(bool on) { (void)on; }

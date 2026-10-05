@@ -83,8 +83,10 @@ open file).
 running. Refusals say why ("After the race", "Not during a race", "Password: 8-63
 characters"). Anything that would drop data asks first (a full WiFi list forgets the oldest; ×
 on a saved pilot). Recovery needs no button (retries, reachability checks). A timer restart
-during a race is reported (`#raceLostNote`). Find and reproduce root causes rather than adding
-retries that hide them.
+during a race is reported (`#raceLostNote`). "Offline" is counted from the last answer or from
+the page's return to the front (a background tab polls slowly, so its last answer is old), and
+Setup → Timer lists the gaps the page saw (when, how long, page in front or not, what the
+polls reported). Find and reproduce root causes rather than adding retries that hide them.
 
 **7. The announcer is current, not complete.** Callouts that would come late are dropped: laps
 that arrive together say only the newest, and a lap's callouts not spoken when the next lap
@@ -125,7 +127,9 @@ at every build (cached a day; keep new assets in its `ASSETS`).
   `Emulation.setDeviceMetricsOverride` (a desktop window keeps its page zoom).
 - **On the timer**: `device_test.py` (API checks, cleans up after itself; its rename checks need
   a saved race). `cal_test.py <port> <ip>` (the kept radio calibration: power-ons through the
-  serial port's RTS line). `noise_races.py` records test races from RSSI noise (Enter/Exit just inside the
+  serial port's RTS line). `node tools/load_probe.js <ip> [seconds]` (two pages' traffic plus
+  a page load every 15 s: it crashed the old network library within minutes; run it with
+  `boot_log.py` recording, and `rst0` in `/api/debug/load` shows a crash after the restart). `noise_races.py` records test races from RSSI noise (Enter/Exit just inside the
   noise; `--one` one race, `--thresholds` tests Enter/Exit during a race); when every channel is
   too quiet it records nothing. Record races after the last web-files upload. With a drone:
   `rssi_log.py`. Radio: `hotspot_signal.py` (beacon dBm), `fake_dhcp.py`, `boot_log.py`.
@@ -177,12 +181,20 @@ at every build (cached a day; keep new assets in its `ASSETS`).
 - **Connection dropped near boot**: in the first minute after a boot a request that writes
   flash occasionally gets its connection reset (no crash, no reboot). The page retries; root
   cause not found.
-- **Heap corruption crash** (2026-10-04): `device_test.py` restarted the timer in 2 of 6 runs
-  (once during rapid settings saves, once at "start during a scan", logged with
-  `boot_log.py <port> 420` alongside): `CORRUPT HEAP: Bad tail`, assert in `multi_heap_free`
-  from AsyncTCP's `_async_service_task`. A run on the firmware before the analog-gain hold
-  broke off near the same step (not logged). Root cause not found. An interrupted device test
+- **Web server crash, fixed 2026-10-05**: up to v1.2.2 the timer rebooted under fast parallel
+  requests (`device_test.py` in 2 of 6 runs; a page load while two pages polled, within
+  minutes: `tools/load_probe.js`): the 2019 AsyncTCP fork acknowledged received bytes on a
+  connection it no longer had (lwIP assert `tcp_update_rcv_ann_wnd` from `_tcp_recved_api`,
+  earlier `CORRUPT HEAP` in `_async_service_task`). Phones saw "Offline" for the reboot. The
+  maintained `ESP32Async/AsyncTCP` + `ESPAsyncWebServer` (with ElegantOTA 4, whose
+  dependencies match; 3.1.6 pulls the old libraries in again) fixed it on the same platform:
+  10 minutes of the probe, 8617 requests, 0 failed, no restart. An interrupted device test
   leaves its test settings on the timer.
+- **About 16 connections at once** (the framework's `CONFIG_LWIP_MAX_ACTIVE_TCP`, every
+  answer is `Connection: close`): with `load_probe.js` running (two pages plus page loads), a
+  third page lost 3 polls in a row during a page load, 14 s of "Offline" with the timer up;
+  the probe's own first second (20 connections at once) loses ~9 requests. Not seen with one
+  to three phones. Keep-alive on the timer's side would cut the churn.
 - **Web-files upload**: once two files were missing after an upload that reported success;
   `ota_upload.py` now compares every file (upload again if it complains).
 - Not fixed (audit 2026-10-01): a hidden network is tried only if it is the newest saved one;
