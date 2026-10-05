@@ -517,9 +517,11 @@ Battery Voltage:\t%0.1fv";
         // reply OK and then schedule a short delayed restart so response is sent
         request->send(200, "application/json", "{\"status\": \"OK\"}");
         led->on(200);
-        // create a small task to restart after 500ms to allow response to be transmitted
+        // create a small task to restart after 500ms to allow response to be transmitted;
+        // on no particular core: the ESP32-C3 has one, and a task pinned to core 1 aborts
+        // at creation there (FreeRTOS asserts the core exists), a panic instead of a restart
         const uint32_t delayMs = 500;
-        xTaskCreatePinnedToCore(restart_task, "restart_task", 2048, (void *)(uintptr_t)delayMs, 1, NULL, 1);
+        xTaskCreatePinnedToCore(restart_task, "restart_task", 2048, (void *)(uintptr_t)delayMs, 1, NULL, tskNO_AFFINITY);
     });
 
     server.on("/config", HTTP_GET, [this](AsyncWebServerRequest *request)

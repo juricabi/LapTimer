@@ -37,7 +37,8 @@ both cores, so during a race the timer refuses everything that writes flash or e
 settings to EEPROM only afterwards; the page sends saved pilots after the race. Replies are
 built in memory (`sendJson`), never with `AsyncResponseStream` (O(n^2)). All ADC reads stay on
 core 1 (`analogRead()` isn't safe across cores: the battery read on core 0 froze every second
-boot).
+boot). The ESP32-C3 has one core: pin tasks to core 0 or `tskNO_AFFINITY`, never core 1 (the
+task's creation asserts and the board panics; the restart task did until v1.2.6).
 
 **2. A race owns its settings.** `LapTimer::start` copies mode, time, laps, countdown, minimum
 lap, channel, pilot name and pace target; the race reports them (`/api/race`, `/api/status`, the
