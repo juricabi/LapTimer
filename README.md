@@ -8,9 +8,9 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 [PhobosLT_pooling](https://github.com/nikbg3/PhobosLT_pooling).
 
 <p align="center">
-  <img src="docs/images/setup.png" width="240" alt="Setup: pilot, channel, target lap and saved pilots" />
-  <img src="docs/images/race.png" width="240" alt="Race: clock, pace target and lap stats" />
-  <img src="docs/images/race-screen.png" width="240" alt="Race screen: big numbers for the field, best 2 and 3 laps, target" />
+  <img src="docs/images/setup.png" height="440" alt="Setup: pilot, channel, target lap and saved pilots" />
+  <img src="docs/images/race.png" height="440" alt="Race: clock, pace target and lap stats" />
+  <img src="docs/images/race-screen.png" height="440" alt="Race screen: big numbers for the field, best 2 and 3 laps, target" />
 </p>
 
 ## Features
@@ -61,13 +61,13 @@ Based on [PhobosLT](https://github.com/phobos-/PhobosLT) and
 - Settings save automatically and stay consistent across several open phones.
 
 <p align="center">
-  <img src="docs/images/calibrate.png" width="240" alt="Calibration graph with Enter and Exit, and auto-calibration's suggestion" />
-  <img src="docs/images/channel-scan.png" width="240" alt="Channel scan with the pilot's channel marked" />
-  <img src="docs/images/history.png" width="240" alt="A saved race: stats and the lap chart with the target, the best 3 in a row and a crash lap kept off the scale" />
+  <img src="docs/images/calibrate.png" height="440" alt="Calibration graph with Enter and Exit, and auto-calibration's suggestion" />
+  <img src="docs/images/channel-scan.png" height="440" alt="Channel scan with the pilot's channel marked" />
+  <img src="docs/images/history.png" height="440" alt="A saved race: stats and the lap chart with the target, the best 3 in a row and a crash lap kept off the scale" />
 </p>
 <p align="center">
-  <img src="docs/images/fix-laps.png" width="240" alt="Fixing laps in the race history" />
-  <img src="docs/images/race-image.png" width="240" alt="The race picture to share: stats, chart, target and every lap" />
+  <img src="docs/images/fix-laps.png" height="440" alt="Fixing laps in the race history" />
+  <img src="docs/images/race-image.png" height="440" alt="The race picture to share: stats, chart, target and every lap" />
 </p>
 
 ## Hardware
@@ -111,7 +111,7 @@ Later updates can go over WiFi: open **Setup → Timer → Firmware update**, or
 `python tools/ota_upload.py <timer-ip> fw fs`.
 
 <p align="center">
-  <img src="docs/images/update.png" width="240" alt="Firmware update page" />
+  <img src="docs/images/update.png" height="440" alt="Firmware update page" />
 </p>
 
 ## Connect
