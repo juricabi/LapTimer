@@ -247,7 +247,7 @@ in a headless Chrome (every tab, both themes at phone width, two phones, connect
 
 ## Support
 
-LapTimer is based on PhobosLT by phobos- and PhobosLT_pooling by nikbg3. If you like it, you can buy me a coffee:
+If you like it, you can buy me a coffee:
 
 [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/juricabi)
 
