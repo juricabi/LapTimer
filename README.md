@@ -245,6 +245,12 @@ in a headless Chrome (every tab, both themes at phone width, two phones, connect
 `python tools/device_test.py <timer-ip>` checks the timer's API (also against the mock).
 `node tools/readme_images.js` takes this README's screenshots from the mock.
 
+## Support
+
+If it's useful to you, you can buy me a coffee:
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/juricabi)
+
 ## License
 
 MIT, see [LICENSE](LICENSE). Based on PhobosLT by phobos- and PhobosLT_pooling by nikbg3.
